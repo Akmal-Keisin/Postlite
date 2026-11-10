@@ -18,6 +18,8 @@ const AUTH_LABELS = {
 const SECRET_MASK = "••••••••";
 
 const state = {
+  workspaces: [],
+  activeWorkspaceId: null,
   collections: [],
   environments: [],
   tabs: [],
@@ -110,12 +112,29 @@ function newEnvironment(fields = {}) {
   };
 }
 
+// A workspace groups collections and environments; openTabs/openTabId are the
+// runtime tab strip that belongs to it (never serialized directly — persist
+// writes their requests back into `tabs`).
+function newWorkspace(fields = {}) {
+  return {
+    id: fields.id ?? uid(),
+    name: fields.name ?? "My Workspace",
+    collections: fields.collections ?? [],
+    environments: fields.environments ?? [],
+    openTabs: fields.openTabs ?? [],
+    openTabId: fields.openTabId ?? null,
+  };
+}
+
 // workspace.json written before folders existed kept requests in a flat field.
 const migrateCollection = (stored) =>
   newCollection(stored.name ?? "Collection", { ...stored, items: stored.items ?? stored.requests ?? [] });
 
 const activeTab = () => state.tabs.find((t) => t.id === state.activeTabId) ?? null;
 const activeReq = () => activeTab()?.req ?? null;
+
+const locateWorkspace = (id) => state.workspaces.find((w) => w.id === id) ?? null;
+const activeWorkspace = () => locateWorkspace(state.activeWorkspaceId);
 
 /* --------------------------------------------------------------- url / headers */
 
@@ -407,11 +426,22 @@ const debounce = (fn, ms) => {
 
 const persist = debounce(() => {
   renderTabbar();
+  const current = activeWorkspace();
+  if (current) {
+    current.openTabs = state.tabs;
+    current.openTabId = state.activeTabId;
+  }
   const payload = {
-    collections: state.collections,
-    environments: state.environments,
-    tabs: state.tabs.map((t) => t.req),
-    activeTabId: state.activeTabId,
+    version: 2,
+    activeWorkspaceId: state.activeWorkspaceId,
+    workspaces: state.workspaces.map((ws) => ({
+      id: ws.id,
+      name: ws.name,
+      collections: ws.collections,
+      environments: ws.environments,
+      tabs: (ws.openTabs ?? []).map((t) => t.req),
+      activeTabId: ws.openTabId ?? null,
+    })),
   };
   $(".statusbar").classList.add("saving");
   $("#save-state").textContent = "Saving…";
@@ -431,22 +461,116 @@ function showError(message) {
   $("#error").textContent = message;
 }
 
+function hydrateWorkspace(saved) {
+  const ws = newWorkspace({ id: saved.id, name: saved.name ?? "My Workspace" });
+  ws.collections = (saved.collections ?? []).map(migrateCollection);
+  ws.environments = (saved.environments ?? []).map(newEnvironment);
+  ws.openTabs = (saved.tabs ?? []).map((req) => ({ id: uid(), req: newRequest(req), response: null }));
+  ws.openTabId = ws.openTabs.some((t) => t.id === saved.activeTabId)
+    ? saved.activeTabId
+    : ws.openTabs[0]?.id ?? null;
+  return ws;
+}
+
 async function loadWorkspace() {
   const raw = await invoke("load_workspace");
   if (raw) {
     try {
       const saved = JSON.parse(raw);
-      state.collections = (saved.collections ?? []).map(migrateCollection);
-      state.environments = (saved.environments ?? []).map(newEnvironment);
-      state.tabs = (saved.tabs ?? []).map((req) => ({ id: uid(), req: newRequest(req), response: null }));
-      state.activeTabId = state.tabs.some((t) => t.id === saved.activeTabId)
-        ? saved.activeTabId
-        : state.tabs[0]?.id ?? null;
+      if (Array.isArray(saved.workspaces)) {
+        // v2 file: an explicit list of workspaces.
+        state.workspaces = saved.workspaces.map(hydrateWorkspace);
+        state.activeWorkspaceId = state.workspaces.some((w) => w.id === saved.activeWorkspaceId)
+          ? saved.activeWorkspaceId
+          : state.workspaces[0]?.id ?? null;
+      } else if (saved.collections || saved.environments || saved.tabs) {
+        // v1 file: one implicit workspace, which becomes the default.
+        const ws = hydrateWorkspace(saved);
+        state.workspaces = [ws];
+        state.activeWorkspaceId = ws.id;
+      }
     } catch {
       showError("saved workspace was unreadable, starting fresh");
     }
   }
+  if (!state.workspaces.length) {
+    const ws = newWorkspace();
+    state.workspaces.push(ws);
+    state.activeWorkspaceId = ws.id;
+  }
+  if (!state.activeWorkspaceId) state.activeWorkspaceId = state.workspaces[0].id;
+  enterWorkspace(activeWorkspace());
+}
+
+// Rebind the live state onto a workspace's data; each workspace keeps its own
+// tab strip, collections, and environments.
+function enterWorkspace(ws) {
+  state.activeWorkspaceId = ws.id;
+  state.collections = ws.collections;
+  state.environments = ws.environments;
+  state.tabs = ws.openTabs ?? [];
+  state.activeTabId = ws.openTabId ?? null;
+  state.selected = null;
+  state.expanded = new Set();
+  state.filter = "";
+  $("#tree-search").value = "";
   if (!state.tabs.length) addTab();
+}
+
+function switchWorkspace(id) {
+  const next = locateWorkspace(id);
+  if (!next || next.id === state.activeWorkspaceId) {
+    render();
+    return;
+  }
+  const current = activeWorkspace();
+  if (current) {
+    current.openTabs = state.tabs;
+    current.openTabId = state.activeTabId;
+  }
+  enterWorkspace(next);
+  render();
+  persist();
+}
+
+const confirmDialog = $("#confirm-dialog");
+
+function confirmDialogShow({ title, message, action = "Delete" }) {
+  $("#confirm-title").textContent = title;
+  $("#confirm-message").textContent = message;
+  $("#confirm-ok").textContent = action;
+  confirmDialog.showModal();
+  return new Promise((resolve) => {
+    confirmDialog.addEventListener("close", () => resolve(confirmDialog.returnValue === "confirm"), { once: true });
+  });
+}
+
+// Removing an environment also clears any binding to it, in every workspace.
+function deleteEnvironment(id) {
+  state.environments = state.environments.filter((e) => e.id !== id);
+  for (const ws of state.workspaces) {
+    for (const collection of ws.collections) {
+      if (collection.environmentId === id) collection.environmentId = null;
+    }
+  }
+  if (state.selected?.kind === "environment" && state.selected.id === id) state.selected = null;
+  persist();
+  render();
+}
+
+async function deleteWorkspace(id) {
+  const ws = locateWorkspace(id);
+  if (!ws) return;
+  const confirmed = await confirmDialogShow({
+    title: "Delete workspace",
+    message: `“${ws.name}” will be removed with its collections, environments, and open tabs. This cannot be undone.`,
+  });
+  if (!confirmed) return;
+  state.workspaces = state.workspaces.filter((w) => w.id !== id);
+  if (!state.workspaces.length) state.workspaces.push(newWorkspace());
+  if (!locateWorkspace(state.activeWorkspaceId)) enterWorkspace(state.workspaces[0]);
+  persist();
+  render();
 }
 
 function addTab(req = newRequest()) {
@@ -746,14 +870,46 @@ function exportEnvironment(env) {
 
 function render() {
   renderRail();
+  renderWorkspaceBar();
   renderSidebar();
   renderTabbar();
   renderEnvBar();
   renderRequest();
   renderSettings();
   renderResponse();
+  $("#stat-workspaces").textContent = state.workspaces.length;
   $("#stat-collections").textContent = state.collections.length;
   $("#stat-tabs").textContent = state.tabs.length;
+}
+
+const wsMeta = (ws) => {
+  const collections = ws.collections.length;
+  const environments = ws.environments.length;
+  const parts = [`${collections} collection${collections === 1 ? "" : "s"}`];
+  if (environments) parts.push(`${environments} env${environments === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+};
+
+function renderWorkspaceBar() {
+  $("#ws-button-label").textContent = activeWorkspace()?.name ?? "No workspace";
+  $("#ws-list").innerHTML =
+    state.workspaces
+      .map((ws) => {
+        const active = ws.id === state.activeWorkspaceId;
+        return `
+        <div class="ws-row ${active ? "is-active" : ""}" data-id="${ws.id}" role="option" aria-selected="${active}" title="${esc(ws.name)}">
+          <svg class="ic" aria-hidden="true"><use href="#i-grid" /></svg>
+          <span class="ws-row-name">${esc(ws.name)}</span>
+          <svg class="ic ws-check" aria-hidden="true"><use href="#i-check" /></svg>
+          <span class="ws-row-acts">
+            <button class="node-act" data-act="rename" title="Rename workspace" aria-label="Rename ${esc(ws.name)}">${icon("pencil")}</button>
+            <button class="node-act" data-act="delete" title="Delete workspace" aria-label="Delete ${esc(ws.name)}">${icon("trash")}</button>
+          </span>
+          <span class="ws-row-meta">${esc(wsMeta(ws))}</span>
+        </div>`;
+      })
+      .join("") ||
+    `<div class="ws-empty">No workspaces yet</div>`;
 }
 
 // The collection that owns the active tab's request; null for an unsaved tab.
@@ -769,10 +925,29 @@ function renderEnvBar() {
   const collection = activeCollection();
   bar.hidden = !collection;
   if (!collection) return;
-  const select = $("#env-select");
-  select.innerHTML = envSelectMarkup();
-  select.value = envForCollection(collection) ? collection.environmentId : "";
+  const bound = envForCollection(collection);
+  $("#env-button-label").textContent = bound ? bound.name : "No environment";
+  $("#env-list").innerHTML =
+    `<div class="ws-row ${bound ? "" : "is-active"}" data-id="" role="option" aria-selected="${!bound}" title="No environment">
+      <svg class="ic env-none" aria-hidden="true"><use href="#i-x" /></svg>
+      <span class="ws-row-name">No environment</span>
+      <svg class="ic ws-check" aria-hidden="true"><use href="#i-check" /></svg>
+      <span class="ws-row-meta">send without environment variables</span>
+    </div>` + state.environments.map((env) => envRowMarkup(env, bound?.id === env.id)).join("");
 }
+
+const envRowMarkup = (env, bound) => `
+  <div class="ws-row ${bound ? "is-active" : ""}" data-id="${env.id}" role="option" aria-selected="${bound}" title="${esc(env.name)}">
+    <svg class="ic" aria-hidden="true"><use href="#i-globe" /></svg>
+    <span class="ws-row-name">${esc(env.name)}</span>
+    <svg class="ic ws-check" aria-hidden="true"><use href="#i-check" /></svg>
+    <span class="ws-row-acts">
+      <button class="node-act" data-act="export" title="Export Postman environment JSON" aria-label="Export ${esc(env.name)}">${icon("export")}</button>
+      <button class="node-act" data-act="rename" title="Rename environment" aria-label="Rename ${esc(env.name)}">${icon("pencil")}</button>
+      <button class="node-act" data-act="delete" title="Delete environment" aria-label="Delete ${esc(env.name)}">${icon("trash")}</button>
+    </span>
+    <span class="ws-row-meta">${esc(envPreview(env))}</span>
+  </div>`;
 
 function renderSidebar() {
   const isEnv = state.sidebarView === "environments";
@@ -1023,11 +1198,6 @@ function settingsNode() {
   return node && node.kind !== "request" ? node : null;
 }
 
-const envSelectMarkup = () =>
-  `<option value="">No environment</option>${state.environments
-    .map((env) => `<option value="${env.id}">${esc(env.name)}</option>`)
-    .join("")}`;
-
 function renderSettings() {
   const node = settingsNode();
   const kind = state.selected?.kind;
@@ -1246,21 +1416,21 @@ function openSaveDialog() {
 
 const DIALOG_SUB = {
   environment: "Environments hold a set of variables a collection can bind to.",
+  workspace: "Workspaces group collections and environments.",
   default: "Collections and folders can hold requests and subfolders.",
 };
 
 function openRenameDialog(target) {
   renameTarget = target;
   $("#collection-name").value = target.name;
-  $("#collection-dialog .dialog-sub").textContent =
-    target.kind === "environment" ? DIALOG_SUB.environment : DIALOG_SUB.default;
+  $("#collection-dialog .dialog-sub").textContent = DIALOG_SUB[target.kind] ?? DIALOG_SUB.default;
   collectionDialog.showModal();
 }
 
 function openCreateDialog(kind) {
   renameTarget = { kind, id: null };
   $("#collection-name").value = "";
-  $("#collection-dialog .dialog-sub").textContent = kind === "environment" ? DIALOG_SUB.environment : DIALOG_SUB.default;
+  $("#collection-dialog .dialog-sub").textContent = DIALOG_SUB[kind] ?? DIALOG_SUB.default;
   collectionDialog.showModal();
 }
 
@@ -1274,8 +1444,13 @@ collectionDialog.addEventListener("close", () => {
   const name = $("#collection-name").value.trim();
   if (!name) return;
   if (renameTarget.id) {
-    const target = nodeFor(renameTarget);
+    const target = renameTarget.kind === "workspace" ? locateWorkspace(renameTarget.id) : nodeFor(renameTarget);
     if (target) target.name = name;
+  } else if (renameTarget.kind === "workspace") {
+    const ws = newWorkspace({ name });
+    state.workspaces.push(ws);
+    switchWorkspace(ws.id);
+    return;
   } else if (renameTarget.kind === "collection") {
     state.collections.push(newCollection(name));
   } else if (renameTarget.kind === "environment") {
@@ -1366,13 +1541,7 @@ $("#environments").addEventListener("click", (event) => {
   const action = event.target.closest("[data-act]")?.dataset.act;
 
   if (action === "delete") {
-    state.environments = state.environments.filter((e) => e.id !== id);
-    for (const collection of state.collections) {
-      if (collection.environmentId === id) collection.environmentId = null;
-    }
-    if (state.selected?.id === id) state.selected = null;
-    persist();
-    render();
+    deleteEnvironment(id);
     return;
   }
   if (action === "rename") {
@@ -1385,6 +1554,45 @@ $("#environments").addEventListener("click", (event) => {
   }
   state.selected = { id, kind: "environment" };
   render();
+});
+
+/* ----------------------------------------------------------- workspace switcher */
+
+function closeWsPop() {
+  $("#ws-pop").hidden = true;
+  $("#ws-button").setAttribute("aria-expanded", "false");
+}
+
+$("#ws-button").addEventListener("click", () => {
+  const pop = $("#ws-pop");
+  const opening = pop.hidden;
+  pop.hidden = !opening;
+  $("#ws-button").setAttribute("aria-expanded", String(opening));
+});
+
+$("#ws-list").addEventListener("click", (event) => {
+  const action = event.target.closest("[data-act]")?.dataset.act;
+  const row = event.target.closest(".ws-row");
+  if (!row) return;
+  const ws = locateWorkspace(row.dataset.id);
+  if (!ws) return;
+  if (action === "rename") {
+    closeWsPop();
+    openRenameDialog({ kind: "workspace", id: ws.id, name: ws.name });
+    return;
+  }
+  if (action === "delete") {
+    closeWsPop();
+    deleteWorkspace(ws.id);
+    return;
+  }
+  closeWsPop();
+  switchWorkspace(ws.id);
+});
+
+$("#ws-new").addEventListener("click", () => {
+  closeWsPop();
+  openCreateDialog("workspace");
 });
 
 $("#tree-search").addEventListener("input", (event) => {
@@ -1512,8 +1720,12 @@ $("#tab-menu").addEventListener("click", (event) => {
 });
 document.addEventListener("click", (event) => {
   if (!$("#tab-menu").hidden && !event.target.closest("#tab-menu")) closeTabMenu();
+  if (!$("#ws-pop").hidden && !event.target.closest("#ws-bar")) closeWsPop();
+  if (!$("#env-pop").hidden && !event.target.closest("#env-bar")) closeEnvPop();
 });
 window.addEventListener("blur", closeTabMenu);
+window.addEventListener("blur", closeWsPop);
+window.addEventListener("blur", closeEnvPop);
 
 function activateTab(navSel, panelSel, tab) {
   for (const button of $$(navSel)) button.classList.toggle("is-active", button === tab);
@@ -1608,12 +1820,48 @@ $("[data-add-vars]").addEventListener("click", () => {
   persist();
 });
 
-$("#env-select").addEventListener("change", (event) => {
+function closeEnvPop() {
+  $("#env-pop").hidden = true;
+  $("#env-button").setAttribute("aria-expanded", "false");
+}
+
+$("#env-button").addEventListener("click", () => {
+  const pop = $("#env-pop");
+  const opening = pop.hidden;
+  pop.hidden = !opening;
+  $("#env-button").setAttribute("aria-expanded", String(opening));
+});
+
+$("#env-list").addEventListener("click", (event) => {
+  const action = event.target.closest("[data-act]")?.dataset.act;
+  const row = event.target.closest(".ws-row");
+  if (!row) return;
+  const env = locateEnvironment(row.dataset.id);
+  if (action === "export") {
+    if (env) exportEnvironment(env);
+    return;
+  }
+  if (action === "rename") {
+    closeEnvPop();
+    if (env) openRenameDialog({ kind: "environment", id: env.id, name: env.name });
+    return;
+  }
+  if (action === "delete") {
+    closeEnvPop();
+    if (env) deleteEnvironment(env.id);
+    return;
+  }
   const collection = activeCollection();
   if (!collection) return;
-  collection.environmentId = event.target.value || null;
+  collection.environmentId = row.dataset.id || null;
+  closeEnvPop();
   render();
   persist();
+});
+
+$("#env-new").addEventListener("click", () => {
+  closeEnvPop();
+  openCreateDialog("environment");
 });
 
 function wireAuthControls(selectSel, fieldsSel, readAuth) {
@@ -1997,6 +2245,8 @@ $("#env-import-file").addEventListener("change", async (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !$("#var-overlay").hidden) closeVarOverlay();
   if (event.key === "Escape" && !$("#tab-menu").hidden) closeTabMenu();
+  if (event.key === "Escape" && !$("#ws-pop").hidden) closeWsPop();
+  if (event.key === "Escape" && !$("#env-pop").hidden) closeEnvPop();
   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
     event.preventDefault();
     send();

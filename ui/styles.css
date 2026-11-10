@@ -1749,38 +1749,257 @@ textarea#body {
   margin-bottom: 10px;
 }
 
-.env-bar {
+/* workspace switcher: pill button + anchored popover list */
+
+.ws-bar {
+  position: relative;
+}
+
+.ws-button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 4px 3px 9px;
+  gap: 7px;
+  max-width: 260px;
+  padding: 5px 10px 5px 11px;
   background: var(--bg-3);
   border: 1px solid var(--line);
   border-radius: var(--r-s);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
 }
 
-.env-bar .ic {
+.ws-button:hover,
+.ws-button[aria-expanded="true"] {
+  border-color: #35404d;
+  background: var(--bg-2);
+}
+
+.ws-button .ic {
   width: 14px;
   height: 14px;
-  color: var(--cyan);
+  color: var(--accent-hi);
+  flex: none;
 }
 
-#env-select {
-  min-width: 150px;
-  max-width: 220px;
-  padding: 3px 24px 3px 7px;
-  background-color: transparent;
-  border-color: transparent;
-  font-size: 12px;
+.ws-button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-#env-select:hover {
-  border-color: var(--line);
+.ws-caret {
+  color: var(--faint) !important;
+  transform: rotate(90deg);
+  transition: transform var(--t-fast) var(--ease);
 }
 
-#env-select option {
-  background: var(--bg-1);
+.ws-button[aria-expanded="true"] .ws-caret {
+  transform: rotate(-90deg);
+}
+
+.ws-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  width: 300px;
+  padding: 5px;
+  background: linear-gradient(180deg, #171d25, #12161c);
+  border: 1px solid var(--line);
+  border-radius: var(--r-m);
+  box-shadow: var(--shadow-pop);
+  animation: paneIn 140ms var(--ease);
+}
+
+.ws-list {
+  display: grid;
+}
+.ws-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  grid-template-areas: "ic name check" "ic meta meta";
+  column-gap: 9px;
+  align-items: center;
+  padding: 7px 9px;
+  border-radius: var(--r-s);
+  cursor: pointer;
+  color: var(--dim);
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.ws-row:hover {
+  background: var(--bg-3);
   color: var(--fg);
+}
+
+.ws-row.is-active {
+  color: var(--fg);
+}
+
+.ws-row > .ic {
+  grid-area: ic;
+  width: 14px;
+  height: 14px;
+  color: var(--accent-hi);
+}
+
+.ws-row-name {
+  grid-area: name;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  padding-right: 46px;
+}
+
+.ws-row-meta {
+  grid-area: meta;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.ws-check {
+  grid-area: check;
+  color: var(--ok);
+  opacity: 0;
+}
+
+.ws-row.is-active .ws-check {
+  opacity: 1;
+}
+
+.ws-row:hover .ws-check {
+  opacity: 0;
+}
+
+.ws-row-acts {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease);
+}
+
+.ws-row:hover .ws-row-acts,
+.ws-row-acts:focus-within {
+  opacity: 1;
+}
+
+.ws-row-acts .node-act {
+  color: var(--faint);
+}
+
+.ws-row-acts .node-act:hover {
+  color: var(--fg);
+}
+
+.ws-row-acts .node-act[data-act="delete"]:hover {
+  color: var(--err);
+}
+
+.ws-row .ic.env-none {
+  color: var(--faint);
+}
+
+.ws-empty {
+  padding: 14px 10px;
+  color: var(--faint);
+  font-size: 12px;
+  text-align: center;
+}
+
+.ws-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 9px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-s);
+  background: transparent;
+  color: var(--dim);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+
+.ws-new:hover {
+  color: var(--fg);
+  border-color: #35404d;
+  background: var(--bg-3);
+}
+
+.ws-new .ic {
+  width: 13px;
+  height: 13px;
+  color: var(--accent-hi);
+}
+
+/* confirmation dialog */
+
+.confirm-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.confirm-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 10px;
+  background: rgba(255, 93, 115, 0.12);
+  border: 1px solid rgba(255, 93, 115, 0.32);
+  color: var(--err);
+}
+
+.confirm-icon .ic {
+  width: 16px;
+  height: 16px;
+}
+
+.confirm-head h3 {
+  margin: 0;
+}
+
+button.danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 18px;
+  background: linear-gradient(180deg, #ff6d80, #e6415a);
+  border: 1px solid #ff8091;
+  border-radius: var(--r-m);
+  color: #2a060b;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  box-shadow: 0 2px 14px rgba(255, 93, 115, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  transition: filter var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+
+button.danger:hover {
+  filter: brightness(1.07);
+}
+
+button.danger:active {
+  transform: scale(0.97);
+}
+
+/* the environment picker wraps the same pill button + popover as the workspace one */
+.env-bar {
+  position: relative;
 }
 
 .auth-fields {
