@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>postlite</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <svg class="sprite" aria-hidden="true" focusable="false">
+      <symbol id="i-caret" viewBox="0 0 16 16"><path d="M5 3.5 10.5 8 5 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 16 16"><path d="M2 4.2h4.4l1.2 1.6H14v7.4H2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+      <symbol id="i-folder-plus" viewBox="0 0 16 16"><path d="M2 4.2h4.4l1.2 1.6H14v7.4H2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 8v3.4M6.3 9.7h3.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+      <symbol id="i-stack" viewBox="0 0 16 16"><path d="M8 2.2 14 5l-6 2.8L2 5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="m2 8.4 6 2.8 6-2.8M2 11.4l6 2.8 6-2.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3.4v9.2M3.4 8h9.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+      <symbol id="i-file-plus" viewBox="0 0 16 16"><path d="M4 2.2h5.4L12.6 5.4v8.4H4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8.3 7v4M6.3 9h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+      <symbol id="i-pencil" viewBox="0 0 16 16"><path d="m3 13 .7-2.6 7-7 1.9 1.9-7 7z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="m9.6 4.4 1.9 1.9" stroke="currentColor" stroke-width="1.3"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 16 16"><path d="M3 4.4h10M6.4 4.4V3h3.2v1.4M4.4 4.4l.6 9h6l.6-9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-x" viewBox="0 0 16 16"><path d="m4.4 4.4 7.2 7.2M11.6 4.4l-7.2 7.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+      <symbol id="i-import" viewBox="0 0 16 16"><path d="M8 2.4v7.2M5.2 6.8 8 9.6l2.8-2.8M2.6 11.4v2.2h10.8v-2.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-bolt" viewBox="0 0 16 16"><path d="M9.2 1.8 3.6 9h3.4l-.6 5.2L12 7H8.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 4.8V8l2.2 1.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+      <symbol id="i-weight" viewBox="0 0 16 16"><path d="M5.4 5.4h5.2l1.8 8H3.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="3.8" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+      <symbol id="i-check" viewBox="0 0 16 16"><path d="m3.6 8.4 2.8 2.8 6-6.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-braces" viewBox="0 0 16 16"><path d="M6 2.6c-1.3 0-1.6.7-1.6 1.6v2.1c0 .8-.5 1.2-1.4 1.7.9.5 1.4.9 1.4 1.7v2.1c0 .9.3 1.6 1.6 1.6M10 2.6c1.3 0 1.6.7 1.6 1.6v2.1c0 .8.5 1.2 1.4 1.7-.9.5-1.4.9-1.4 1.7v2.1c0 .9-.3 1.6-1.6 1.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+      <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="m10.3 10.3 3.2 3.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+      <symbol id="i-unfold" viewBox="0 0 16 16"><path d="m4 4.5 4 4 4-4M4 9.5l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-fold" viewBox="0 0 16 16"><path d="m4 11.5 4-4 4 4M4 6.5l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5.4" y="5.4" width="8" height="8" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M10.6 3.4v-.8H2.6v8h.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+      <symbol id="i-globe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.3 8h11.4M8 2.2c1.7 1.8 2.5 3.7 2.5 5.8S9.7 12 8 13.8C6.3 12 5.5 10.1 5.5 8S6.3 4 8 2.2z" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
+      <symbol id="i-export" viewBox="0 0 16 16"><path d="M8 9.8V2.6M5.2 5.4 8 2.6l2.8 2.8M2.6 11.4v2.2h10.8v-2.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    </svg>
+
+    <header class="topbar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+          <defs>
+            <linearGradient id="lg-brand" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#ff8352" />
+              <stop offset=".55" stop-color="#ff6b35" />
+              <stop offset="1" stop-color="#ff2e88" />
+            </linearGradient>
+          </defs>
+          <rect x="1.5" y="1.5" width="21" height="21" rx="6.5" fill="url(#lg-brand)" />
+          <path d="M5.4 12h3l1.7-4 2.6 8 1.7-4h4.2" fill="none" stroke="#16090b" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="brand-name">postlite</span>
+        <span class="brand-tag">http workspace</span>
+      </div>
+      <div class="topbar-actions">
+        <span class="kbd-hint"><kbd>Ctrl</kbd>+<kbd>&#8629;</kbd> send</span>
+        <span class="env-bar" id="env-bar" hidden title="Environment bound to the active request's collection">
+          <svg class="ic" aria-hidden="true"><use href="#i-globe" /></svg>
+          <select id="env-select" aria-label="Active collection environment"></select>
+        </span>
+        <button id="import-btn" class="tool outlined">
+          <svg class="ic" aria-hidden="true"><use href="#i-import" /></svg>
+          Import
+        </button>
+        <input type="file" id="import-file" accept=".json,application/json" hidden />
+      </div>
+    </header>
+
+    <div class="shell">
+      <nav class="rail" aria-label="Workspace sections">
+        <button id="rail-collections" class="rail-btn is-active" title="Collections" aria-label="Show collections sidebar">
+          <svg class="ic" aria-hidden="true"><use href="#i-stack" /></svg>
+        </button>
+        <button id="rail-environments" class="rail-btn" title="Environments" aria-label="Show environments sidebar">
+          <svg class="ic" aria-hidden="true"><use href="#i-globe" /></svg>
+        </button>
+      </nav>
+
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <span class="sidebar-title" id="sidebar-title">Collections</span>
+          <span class="sidebar-head-acts">
+            <button id="env-import-btn" class="icon-btn" hidden title="Import Postman environment JSON" aria-label="Import environment JSON">
+              <svg class="ic" aria-hidden="true"><use href="#i-import" /></svg>
+            </button>
+            <input type="file" id="env-import-file" accept=".json,application/json" hidden multiple />
+            <button id="expand-all" class="icon-btn" title="Expand all folders" aria-label="Expand all folders">
+              <svg class="ic" aria-hidden="true"><use href="#i-unfold" /></svg>
+            </button>
+            <button id="collapse-all" class="icon-btn" title="Collapse all folders" aria-label="Collapse all folders">
+              <svg class="ic" aria-hidden="true"><use href="#i-fold" /></svg>
+            </button>
+            <button id="new-collection" class="icon-btn" title="New collection" aria-label="New collection">
+              <svg class="ic" aria-hidden="true"><use href="#i-plus" /></svg>
+            </button>
+            <button id="new-environment" class="icon-btn" hidden title="New environment" aria-label="New environment">
+              <svg class="ic" aria-hidden="true"><use href="#i-plus" /></svg>
+            </button>
+          </span>
+        </div>
+        <div class="sidebar-search">
+          <svg class="ic" aria-hidden="true"><use href="#i-search" /></svg>
+          <input id="tree-search" type="text" placeholder="Filter collections…" autocomplete="off" spellcheck="false" aria-label="Filter collections" />
+          <button id="tree-search-clear" class="icon-btn" hidden title="Clear filter" aria-label="Clear filter">
+            <svg class="ic" aria-hidden="true"><use href="#i-x" /></svg>
+          </button>
+        </div>
+        <div class="sidebar-body" id="collections"></div>
+        <div class="sidebar-body" id="environments" hidden></div>
+      </aside>
+
+      <div
+        class="sidebar-resizer"
+        id="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize collections sidebar"
+        aria-valuemin="180"
+        aria-valuemax="480"
+        aria-valuenow="276"
+        tabindex="0"
+        title="Drag to resize · double-click to reset"
+      ></div>
+
+      <main class="main">
+        <div class="tabbar" id="tabbar"></div>
+        <div class="ctx-menu" id="tab-menu" role="menu" hidden>
+          <button class="ctx-item" data-menu="close-others" role="menuitem">Close other tabs</button>
+          <button class="ctx-item" data-menu="close-all" role="menuitem">Close all tabs</button>
+        </div>
+
+        <section class="req" id="req-pane">
+          <div class="urlbar">
+            <div class="urlbox">
+              <select id="method" aria-label="HTTP method">
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="PATCH">PATCH</option>
+                <option value="DELETE">DELETE</option>
+                <option value="HEAD">HEAD</option>
+                <option value="OPTIONS">OPTIONS</option>
+                <option value="QUERY">QUERY</option>
+              </select>
+              <input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="https://api.example.com/users" aria-label="Request URL" />
+              <button id="var-peek" class="var-peek" hidden aria-expanded="false" title="Show variable values" aria-label="Show variable values">
+                <svg class="ic" aria-hidden="true"><use href="#i-braces" /></svg>
+                <span class="var-count">0</span>
+              </button>
+            </div>
+            <button id="send" class="primary" title="Send request (Ctrl+Enter)">Send</button>
+            <button id="save" class="tool outlined" title="Save request (Ctrl+S)">Save</button>
+            <div class="var-overlay" id="var-overlay" hidden role="dialog" aria-label="Variables used in URL"></div>
+          </div>
+
+          <nav class="tabs" id="req-tabs" aria-label="Request sections">
+            <button class="tab is-active" data-tab="params">Params <span class="count" id="params-count"></span></button>
+            <button class="tab" data-tab="auth">Auth</button>
+            <button class="tab" data-tab="headers">Headers <span class="count" id="headers-count"></span></button>
+            <button class="tab" data-tab="body">Body</button>
+            <button class="tab" data-tab="scripts">Scripts</button>
+          </nav>
+
+          <div class="pane is-active" data-pane="params">
+            <table class="kv" id="params-table">
+              <thead>
+                <tr><th class="c-check"></th><th>Key</th><th>Value</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <button class="link" data-add="params">+ Add param</button>
+          </div>
+
+          <div class="pane" data-pane="auth">
+            <select id="req-auth-type" class="auth-type" aria-label="Authorization type"></select>
+            <div id="req-auth-fields" class="auth-fields"></div>
+          </div>
+
+          <div class="pane" data-pane="headers">
+            <table class="kv" id="headers-table">
+              <thead>
+                <tr><th class="c-check"></th><th>Key</th><th>Value</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <button class="link" data-add="headers">+ Add header</button>
+          </div>
+
+          <div class="pane" data-pane="body">
+            <div class="body-mode">
+              <label><input type="radio" name="body-mode" value="none" /> none</label>
+              <label><input type="radio" name="body-mode" value="form-data" /> form-data</label>
+              <label><input type="radio" name="body-mode" value="raw" /> raw</label>
+              <select id="content-type" aria-label="Body content type">
+                <option value="">text</option>
+                <option value="application/json">application/json</option>
+                <option value="application/x-www-form-urlencoded">x-www-form-urlencoded</option>
+                <option value="text/plain">text/plain</option>
+                <option value="application/xml">application/xml</option>
+              </select>
+            </div>
+            <div id="form-wrap">
+              <table class="kv" id="form-table">
+                <thead>
+                  <tr><th>Key</th><th>Value</th><th></th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+              <button class="link" data-add="form">+ Add field</button>
+            </div>
+            <p class="hint" id="body-empty-hint" hidden>This request has no body. Switch to form-data or raw to add one.</p>
+            <textarea id="body" spellcheck="false" aria-label="Raw request body"></textarea>
+          </div>
+
+          <div class="pane" data-pane="scripts">
+            <label class="pane-label" for="req-pre">Pre-request script</label>
+            <textarea id="req-pre" class="script" spellcheck="false"></textarea>
+            <label class="pane-label" for="req-test">Tests</label>
+            <textarea id="req-test" class="script" spellcheck="false"></textarea>
+          </div>
+        </section>
+
+        <section class="settings" id="settings-pane" hidden>
+          <div class="settings-head">
+            <span id="settings-kind"></span>
+            <span id="settings-title"></span>
+          </div>
+          <nav class="tabs" id="settings-tabs" aria-label="Collection settings">
+            <button class="tab is-active" data-tab="node-auth">Auth</button>
+            <button class="tab" data-tab="node-vars">Variables <span class="count" id="vars-count"></span></button>
+            <button class="tab" data-tab="node-scripts">Scripts</button>
+          </nav>
+          <div class="pane is-active" data-pane="node-auth">
+            <select id="node-auth-type" class="auth-type" aria-label="Authorization type"></select>
+            <div id="node-auth-fields" class="auth-fields"></div>
+          </div>
+          <div class="pane" data-pane="node-vars">
+            <table class="kv" id="vars-table">
+              <thead>
+                <tr><th class="c-check"></th><th>Key</th><th>Value</th><th class="c-secret">Secret</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <button class="link" data-add-vars="1">+ Add variable</button>
+          </div>
+          <div class="pane" data-pane="node-scripts">
+            <label class="pane-label" for="node-pre">Pre-request script</label>
+            <textarea id="node-pre" class="script" spellcheck="false"></textarea>
+            <label class="pane-label" for="node-test">Tests</label>
+            <textarea id="node-test" class="script" spellcheck="false"></textarea>
+          </div>
+        </section>
+
+        <section class="res" id="res-pane">
+          <div class="res-head">
+            <span class="res-title">Response</span>
+            <span id="status" class="pill">&mdash;</span>
+            <span id="time" class="metric"></span>
+            <span id="size" class="metric"></span>
+            <span id="error" class="error" role="alert"></span>
+            <button id="copy-res" class="icon-btn" hidden title="Copy response body" aria-label="Copy response body">
+              <svg class="ic" aria-hidden="true"><use href="#i-copy" /></svg>
+            </button>
+          </div>
+          <nav class="tabs" id="res-tabs" aria-label="Response views">
+            <button class="tab is-active" data-tab="pretty">Pretty</button>
+            <button class="tab" data-tab="raw">Raw</button>
+            <button class="tab" data-tab="res-headers">Headers <span class="count" id="res-headers-count"></span></button>
+            <button class="tab" data-tab="tests">Tests <span class="count" id="tests-count"></span></button>
+          </nav>
+          <pre id="pretty" class="is-active" data-tab="pretty"></pre>
+          <pre id="raw" data-tab="raw"></pre>
+          <table id="res-headers" class="kv" data-tab="res-headers"><tbody></tbody></table>
+          <ul id="tests" class="tests" data-tab="tests"></ul>
+        </section>
+      </main>
+    </div>
+
+    <footer class="statusbar">
+      <span class="save-dot" aria-hidden="true"></span>
+      <span id="save-state">Workspace ready</span>
+      <span class="status-sep" aria-hidden="true"></span>
+      <span><b id="stat-collections">0</b> collections</span>
+      <span><b id="stat-tabs">0</b> open tabs</span>
+      <span class="status-right">postlite 0.1.0 &middot; local-first</span>
+    </footer>
+
+    <dialog id="save-dialog">
+      <form method="dialog">
+        <h3>Save request</h3>
+        <p class="dialog-sub">Store the current tab in a collection or folder.</p>
+        <label>Name <input id="save-name" type="text" autocomplete="off" /></label>
+        <label>Collection <select id="save-collection"></select></label>
+        <div class="dialog-actions">
+          <button value="cancel" class="tool outlined">Cancel</button>
+          <button value="save" class="primary">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="collection-dialog">
+      <form method="dialog">
+        <h3>Name</h3>
+        <p class="dialog-sub">Collections and folders can hold requests and subfolders.</p>
+        <label>Name <input id="collection-name" type="text" autocomplete="off" /></label>
+        <div class="dialog-actions">
+          <button value="cancel" class="tool outlined">Cancel</button>
+          <button value="create" class="primary">OK</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,148 @@
+{
+  "info": {
+    "_postman_id": "0e6f1a2b-0000-4000-8000-sample00001",
+    "name": "Sample Import",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8099" },
+    { "key": "apiKey", "value": "secret-key" },
+    { "key": "scope", "value": "collection-scope" }
+  ],
+  "auth": { "type": "noauth" },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test(\"collection level test ran\", function () {",
+          "    pm.expect(pm.response.code).to.equal(200);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Users",
+      "variable": [{ "key": "scope", "value": "folder-users-scope" }],
+      "auth": {
+        "type": "apikey",
+        "apikey": [
+          { "key": "key", "value": "X-Api-Key", "type": "string" },
+          { "key": "value", "value": "{{apiKey}}", "type": "string" },
+          { "key": "in", "value": "header", "type": "string" }
+        ]
+      },
+      "item": [
+        {
+          "name": "Admin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.variables.set(\"stamp\", \"admin-token\");"]
+              }
+            }
+          ],
+          "auth": {
+            "type": "bearer",
+            "bearer": [{ "key": "token", "value": "{{stamp}}", "type": "string" }]
+          },
+          "item": [
+            {
+              "name": "Purge cache",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": { "raw": "{{baseUrl}}/admin/purge", "query": [] }
+              }
+            }
+          ]
+        },
+        {
+          "name": "List users",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/users?page=2&limit=10",
+              "query": [
+                { "key": "page", "value": "2" },
+                { "key": "limit", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create user",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"sample\",\"role\":\"tester\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/users", "query": [] }
+          }
+        },
+        {
+          "name": "Upload form",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.request.headers.set(\"X-Scripted\", \"yes\");"]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"server accepted a multipart body\", function () {",
+                  "    pm.expect(pm.response.text()).to.include(\"multipart/form-data\");",
+                  "});",
+                  "pm.test(\"deliberately failing assertion\", function () {",
+                  "    pm.expect(pm.response.code).to.equal(418);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "note", "value": "{{apiKey}}", "type": "text" },
+                { "key": "scope", "value": "{{scope}}", "type": "text" }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/upload", "query": [] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ping",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "auth": {
+          "type": "basic",
+          "basic": [
+            { "key": "username", "value": "alice", "type": "string" },
+            { "key": "password", "value": "wonderland", "type": "string" }
+          ]
+        },
+        "url": "http://127.0.0.1:8099/ping"
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "postlite window IPC",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

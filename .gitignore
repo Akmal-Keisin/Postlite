@@ -1,0 +1,18 @@
+# Rust / Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Node (verification harnesses run with plain node, no deps installed)
+node_modules/
+
+# Local app data pulled into the repo by mistake
+*.log
+
+# Verification harness outputs — these can contain real workspace data
+# and screenshots of it. Never commit them.
+.verify/workspace.*.json
+.verify/*.png
+
+# Internal design notes reference private collections and the local
+# backup workflow. Remove this line to publish them after scrubbing.
+docs/

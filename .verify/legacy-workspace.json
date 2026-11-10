@@ -1,0 +1,21 @@
+{
+  "collections": [
+    {
+      "id": "legacy1",
+      "name": "Legacy Collection",
+      "requests": [
+        {
+          "id": "legacyreq1",
+          "name": "Old flat request",
+          "method": "GET",
+          "url": "http://127.0.0.1:8099/legacy",
+          "params": [],
+          "headers": [{ "key": "Accept", "value": "*/*", "enabled": true }],
+          "body": { "mode": "none", "raw": "", "contentType": "" }
+        }
+      ]
+    }
+  ],
+  "tabs": [],
+  "activeTabId": null
+}

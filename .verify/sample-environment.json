@@ -1,0 +1,11 @@
+{
+  "id": "fixture-imported-env",
+  "name": "Prod Imported",
+  "values": [
+    { "key": "apiKey", "value": "prod-api-key", "type": "default", "enabled": true },
+    { "key": "token", "value": "prod-secret-token", "type": "secret", "enabled": true },
+    { "key": "offByPostman", "value": "disabled-row", "type": "default", "enabled": false }
+  ],
+  "_postman_id": "fixture-imported-env",
+  "_postman_exported_using": "Postman/11.0.0"
+}
