@@ -2472,7 +2472,7 @@ dependencies = [
 
 [[package]]
 name = "postlite"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
