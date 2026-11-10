@@ -14,6 +14,7 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) + Rus
 - **Variables** — `{{token}}` interpolation with collection, folder, and environment scopes. Precedence is `collection < environment < folder`. A peek overlay under the URL bar resolves each token and names the scope it came from. Values can be flagged **secret** and are masked in the UI (raw values are still sent).
 - **Environments** — managed in their own sidebar tab, scoped per workspace, bound to a collection through the selector in the top bar (next to **Import**). Bindings persist per collection.
 - **Scripts** — pre-request and test scripts run against a minimal `pm` sandbox (`pm.request`, `pm.response`, and variables); results appear in the response Tests tab.
+- **Settings** — a global preferences dialog (open with `Ctrl+,`) covers theme (light / dark / system), auto-save and session restore, request defaults (timeout, redirect policy, TLS verification, cache, response size cap), response view options (default tab, syntax highlighting, JSON indent, word wrap), privacy masking, the fixed keyboard shortcuts, and reset. Values live in `workspace.json` under `settings`, and the whole block can be exported or imported as JSON.
 - **Persistence** — collections, tabs, environments, and settings are saved to a single JSON file in the OS app-data directory.
 
 ## Tech stack
@@ -55,7 +56,7 @@ Everything is stored in one file under the OS app-data directory for identifier 
 - **macOS:** `~/Library/Application Support/app.postlite.desktop/workspace.json`
 - **Linux:** `~/.local/share/app.postlite.desktop/workspace.json`
 
-The file is plain JSON (`version`, `activeWorkspaceId`, `workspaces` — each with `collections`, `environments`, `tabs`, `activeTabId`), so it is easy to back up or move between machines.
+The file is plain JSON (`version`, `settings`, `activeWorkspaceId`, `workspaces` — each with `collections`, `environments`, `tabs`, `activeTabId`, `activeTabIndex`), so it is easy to back up or move between machines.
 
 ## Project layout
 

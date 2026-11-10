@@ -17,7 +17,39 @@ const AUTH_LABELS = {
 
 const SECRET_MASK = "••••••••";
 
+const DEFAULT_SETTINGS = {
+  general: { theme: "dark", autoSave: true, autoSaveIntervalMs: 350, confirmBeforeDelete: true, restoreLastSession: true },
+  request: { defaultMethod: "GET", requestTimeoutMs: 60000, followRedirects: true, maxRedirects: 10, sslVerify: true, disableCache: false, decodeResponse: true },
+  response: { defaultView: "pretty", syntaxHighlight: true, jsonIndent: 2, wordWrap: true, showHeaders: true, showTime: true, showSize: true, maxResponseSizeKB: 2000 },
+  privacy: { maskSensitiveHeaders: true, maskSecretVariables: true },
+  sidebarWidth: 276,
+};
+const SETTING_OPTIONS = {
+  theme: ["light", "dark", "system"],
+  defaultMethod: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "QUERY"],
+  defaultView: ["pretty", "raw"],
+  jsonIndent: [2, 4, "tab"],
+};
+const SETTING_RANGES = {
+  autoSaveIntervalMs: [100, 60000], requestTimeoutMs: [1, 3600000], maxRedirects: [0, 100],
+  maxResponseSizeKB: [1, 102400], sidebarWidth: [180, 480],
+};
+
+function normalizeSettings(raw, defaults = DEFAULT_SETTINGS) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  return Object.fromEntries(Object.entries(defaults).map(([key, fallback]) => {
+    const value = Object.hasOwn(source, key) ? source[key] : undefined;
+    if (fallback && typeof fallback === "object") return [key, normalizeSettings(value, fallback)];
+    const range = SETTING_RANGES[key];
+    const valid = SETTING_OPTIONS[key] ? SETTING_OPTIONS[key].includes(value)
+      : range ? Number.isInteger(value) && value >= range[0] && value <= range[1]
+      : typeof value === typeof fallback;
+    return [key, valid ? value : fallback];
+  }));
+}
+
 const state = {
+  settings: normalizeSettings(),
   workspaces: [],
   activeWorkspaceId: null,
   collections: [],
@@ -68,7 +100,7 @@ function newRequest(fields = {}) {
     kind: "request",
     id: fields.id ?? uid(),
     name: fields.name ?? "Untitled Request",
-    method: fields.method ?? "GET",
+    method: fields.method ?? state.settings.request.defaultMethod,
     url: fields.url ?? "",
     params: normRows(fields.params),
     headers: fields.headers === undefined ? [{ key: "Accept", value: "*/*", enabled: true }] : normRows(fields.headers),
@@ -416,23 +448,27 @@ function runScript(code, pm, label, results) {
 
 /* ------------------------------------------------------------------- workspace */
 
-const debounce = (fn, ms) => {
-  let timer;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  };
-};
+let workspaceReady = false;
+let saveTimer;
+let saveQueue = Promise.resolve();
+let revision = 0;
+let savedRevision = 0;
 
-const persist = debounce(() => {
-  renderTabbar();
+function syncWorkspace() {
   const current = activeWorkspace();
   if (current) {
+    current.collections = state.collections;
+    current.environments = state.environments;
     current.openTabs = state.tabs;
     current.openTabId = state.activeTabId;
   }
-  const payload = {
+}
+
+function workspacePayload() {
+  syncWorkspace();
+  return {
     version: 2,
+    settings: state.settings,
     activeWorkspaceId: state.activeWorkspaceId,
     workspaces: state.workspaces.map((ws) => ({
       id: ws.id,
@@ -440,43 +476,76 @@ const persist = debounce(() => {
       collections: ws.collections,
       environments: ws.environments,
       tabs: (ws.openTabs ?? []).map((t) => t.req),
+      activeTabIndex: (ws.openTabs ?? []).findIndex((t) => t.id === ws.openTabId),
       activeTabId: ws.openTabId ?? null,
     })),
   };
-  $(".statusbar").classList.add("saving");
-  $("#save-state").textContent = "Saving…";
-  invoke("save_workspace", { state: JSON.stringify(payload) })
-    .then(() => {
-      $(".statusbar").classList.remove("saving");
-      $("#save-state").textContent = `Saved ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
-    })
-    .catch((err) => {
-      $(".statusbar").classList.remove("saving");
+}
+
+function flushWorkspace() {
+  clearTimeout(saveTimer);
+  if (!workspaceReady) return Promise.resolve();
+  const savingRevision = revision;
+  const payload = JSON.stringify(workspacePayload());
+  const save = saveQueue.catch(() => {}).then(async () => {
+    $(".statusbar").classList.add("saving");
+    $("#save-state").textContent = "Saving…";
+    try {
+      await invoke("save_workspace", { state: payload });
+      savedRevision = savingRevision;
+      $(".statusbar").classList.toggle("unsaved", savedRevision !== revision);
+      $("#save-state").textContent = savedRevision !== revision ? "Unsaved"
+        : `Saved ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+    } catch (err) {
+      $(".statusbar").classList.add("unsaved");
       $("#save-state").textContent = "Save failed";
       showError(String(err));
-    });
-}, 350);
+      throw err;
+    } finally {
+      $(".statusbar").classList.remove("saving");
+    }
+  });
+  saveQueue = save;
+  return save;
+}
+
+function persist(structural = true) {
+  if (!workspaceReady) return;
+  revision++;
+  syncWorkspace();
+  renderTabbar();
+  $(".statusbar").classList.add("unsaved");
+  $("#save-state").textContent = "Unsaved";
+  clearTimeout(saveTimer);
+  if (structural) void flushWorkspace().catch(() => {});
+  else if (state.settings.general.autoSave) {
+    saveTimer = setTimeout(() => void flushWorkspace().catch(() => {}), state.settings.general.autoSaveIntervalMs);
+  }
+}
 
 function showError(message) {
   $("#error").textContent = message;
+  if ($("#app-settings-dialog")?.open) $("#preferences-message").textContent = message;
 }
 
 function hydrateWorkspace(saved) {
   const ws = newWorkspace({ id: saved.id, name: saved.name ?? "My Workspace" });
   ws.collections = (saved.collections ?? []).map(migrateCollection);
   ws.environments = (saved.environments ?? []).map(newEnvironment);
-  ws.openTabs = (saved.tabs ?? []).map((req) => ({ id: uid(), req: newRequest(req), response: null }));
-  ws.openTabId = ws.openTabs.some((t) => t.id === saved.activeTabId)
-    ? saved.activeTabId
-    : ws.openTabs[0]?.id ?? null;
+  ws.openTabs = state.settings.general.restoreLastSession
+    ? (saved.tabs ?? []).map((req) => ({ id: uid(), req: newRequest(req), response: null })) : [];
+  ws.openTabId = ws.openTabs[saved.activeTabIndex]?.id ?? ws.openTabs[0]?.id ?? null;
   return ws;
 }
 
 async function loadWorkspace() {
+  migrateSidebarWidth();
   const raw = await invoke("load_workspace");
   if (raw) {
     try {
       const saved = JSON.parse(raw);
+      state.settings = normalizeSettings(saved.settings);
+      if (!Object.hasOwn(saved.settings ?? {}, "sidebarWidth")) migrateSidebarWidth();
       if (Array.isArray(saved.workspaces)) {
         // v2 file: an explicit list of workspaces.
         state.workspaces = saved.workspaces.map(hydrateWorkspace);
@@ -514,7 +583,6 @@ function enterWorkspace(ws) {
   state.expanded = new Set();
   state.filter = "";
   $("#tree-search").value = "";
-  if (!state.tabs.length) addTab();
 }
 
 function switchWorkspace(id) {
@@ -523,11 +591,7 @@ function switchWorkspace(id) {
     render();
     return;
   }
-  const current = activeWorkspace();
-  if (current) {
-    current.openTabs = state.tabs;
-    current.openTabId = state.activeTabId;
-  }
+  syncWorkspace();
   enterWorkspace(next);
   render();
   persist();
@@ -539,6 +603,8 @@ function confirmDialogShow({ title, message, action = "Delete" }) {
   $("#confirm-title").textContent = title;
   $("#confirm-message").textContent = message;
   $("#confirm-ok").textContent = action;
+  if (confirmDialog.open) return Promise.resolve(false);
+  confirmDialog.returnValue = "cancel";
   confirmDialog.showModal();
   return new Promise((resolve) => {
     confirmDialog.addEventListener("close", () => resolve(confirmDialog.returnValue === "confirm"), { once: true });
@@ -546,7 +612,9 @@ function confirmDialogShow({ title, message, action = "Delete" }) {
 }
 
 // Removing an environment also clears any binding to it, in every workspace.
-function deleteEnvironment(id) {
+async function deleteEnvironment(id) {
+  const env = locateEnvironment(id);
+  if (!env || !await confirmDeletion("environment", env.name)) return;
   state.environments = state.environments.filter((e) => e.id !== id);
   for (const ws of state.workspaces) {
     for (const collection of ws.collections) {
@@ -573,24 +641,36 @@ async function deleteWorkspace(id) {
   render();
 }
 
+function confirmDeletion(kind, name) {
+  if (!state.settings.general.confirmBeforeDelete) return Promise.resolve(true);
+  return confirmDialogShow({ title: `Delete ${kind}`, message: `Remove “${name}”? This cannot be undone.` });
+}
+
 function addTab(req = newRequest()) {
   const tab = { id: uid(), req, response: null };
   state.tabs.push(tab);
   state.activeTabId = tab.id;
   state.selected = null;
   render();
+  persist();
   return tab;
 }
 
-function closeTab(id) {
+async function confirmCloseTabs(count) {
+  if (!count || !state.settings.general.confirmBeforeDelete) return true;
+  return confirmDialogShow({ title: "Close tabs", message: `Close ${count} tab${count === 1 ? "" : "s"}? Changes not saved to a collection will be discarded.`, action: "Close tabs" });
+}
+
+async function closeTab(id) {
+  if (!state.tabs.some((t) => t.id === id) || !await confirmCloseTabs(1)) return;
   state.tabs = state.tabs.filter((t) => t.id !== id);
   if (state.activeTabId === id) state.activeTabId = state.tabs.at(-1)?.id ?? null;
-  if (!state.tabs.length) addTab();
   render();
   persist();
 }
 
-function closeOtherTabs(id) {
+async function closeOtherTabs(id) {
+  if (!await confirmCloseTabs(state.tabs.filter((t) => t.id !== id).length)) return;
   state.tabs = state.tabs.filter((t) => t.id === id);
   state.activeTabId = id;
   state.selected = null;
@@ -598,10 +678,11 @@ function closeOtherTabs(id) {
   persist();
 }
 
-function closeAllTabs() {
+async function closeAllTabs() {
+  if (!await confirmCloseTabs(state.tabs.length)) return;
   state.tabs = [];
   state.activeTabId = null;
-  addTab();
+  render();
   persist();
 }
 
@@ -712,6 +793,7 @@ function saveToCollection(name, containerId) {
 
 function fromPostmanAuth(raw) {
   if (!raw || !raw.type) return null;
+  if (raw.type === "noauth") return normAuth(null, "noauth");
   const list = (name) => (Array.isArray(raw[name]) ? raw[name] : []);
   const field = (name, key) => list(name).find((entry) => entry.key === key)?.value ?? "";
   if (raw.type === "bearer") return normAuth({ type: "bearer", bearer: { token: field("bearer", "token") } }, "noauth");
@@ -741,7 +823,7 @@ function fromPostmanEvents(events) {
 }
 
 const postmanVars = (rows) =>
-  (rows ?? []).map((row) => ({ key: row.key ?? "", value: String(row.value ?? ""), enabled: true }));
+  (rows ?? []).map((row) => ({ key: row.key ?? "", value: String(row.value ?? ""), enabled: row.enabled !== false && !row.disabled, secret: row.secret === true || row.type === "secret" }));
 
 function importPostmanItems(items) {
   const out = [];
@@ -751,7 +833,7 @@ function importPostmanItems(items) {
         newFolder({
           name: item.name ?? "Folder",
           items: importPostmanItems(item.item),
-          auth: fromPostmanAuth(item.auth),
+          auth: fromPostmanAuth(item.auth) ?? normAuth(null, "inherit"),
           variables: postmanVars(item.variable),
           scripts: fromPostmanEvents(item.event),
         })
@@ -766,8 +848,8 @@ function importPostmanItems(items) {
 function fromPostman(doc) {
   return newCollection(doc?.info?.name ?? "Imported collection", {
     items: importPostmanItems(doc.item),
-    auth: doc.auth,
-    variables: doc.variable,
+    auth: fromPostmanAuth(doc.auth),
+    variables: postmanVars(doc.variable),
     scripts: fromPostmanEvents(doc.event),
   });
 }
@@ -791,7 +873,10 @@ function mapPostmanItem(item) {
   if (req.body?.mode === "raw" && typeof req.body.raw === "string") {
     body.mode = "raw";
     body.raw = req.body.raw;
-    body.contentType = req.body.options?.raw?.language ?? "";
+    const language = req.body.options?.raw?.language;
+    body.contentType = req.body.options?.raw?.contentType
+      ?? headers.find((h) => h.enabled && h.key.toLowerCase() === "content-type")?.value
+      ?? ({ json: "application/json", xml: "application/xml", html: "text/html", text: "text/plain", javascript: "application/javascript" }[language] ?? "");
   } else if (req.body?.mode === "formdata") {
     body.mode = "form-data";
     body.form = (req.body.formdata ?? []).map((field) => ({
@@ -807,15 +892,15 @@ function mapPostmanItem(item) {
     body.contentType = "application/x-www-form-urlencoded";
   }
 
-  const contentType =
-    body.contentType || headers.find((h) => h.key.toLowerCase() === "content-type")?.value || "application/json";
+  const contentType = req.body?.options?.raw?.contentType
+    ?? (body.contentType || headers.find((h) => h.key.toLowerCase() === "content-type")?.value || "application/json");
 
   return newRequest({
     name: item.name ?? "Request",
     method: (req.method ?? "GET").toUpperCase(),
     url: base,
-    params: params.length ? params : fromRaw,
-    headers: headers.length ? headers : undefined,
+    params: Array.isArray(url.query) ? params : fromRaw,
+    headers: Array.isArray(req.header) ? headers : undefined,
     body: { ...body, contentType },
     auth: fromPostmanAuth(req.auth),
     scripts: fromPostmanEvents(item.event),
@@ -852,10 +937,58 @@ function toPostmanEnvironment(env) {
   };
 }
 
-function exportEnvironment(env) {
-  const file = `${String(env.name || "environment").replace(/[^\w.-]+/g, "_")}.postman_environment.json`;
+function toPostmanAuth(auth) {
+  if (auth.type === "inherit") return undefined;
+  if (auth.type === "noauth") return { type: "noauth" };
+  const fields = auth.type === "apikey"
+    ? { key: auth.apikey.key, value: auth.apikey.value, in: auth.apikey.addTo } : auth[auth.type];
+  return { type: auth.type, [auth.type]: Object.entries(fields).map(([key, value]) => ({ key, value, type: "string" })) };
+}
+
+function toPostmanEvents(scripts) {
+  return [["prerequest", scripts.pre], ["test", scripts.test]].filter(([, code]) => code)
+    .map(([listen, code]) => ({ listen, script: { type: "text/javascript", exec: code.split("\n") } }));
+}
+
+function toPostmanVariables(rows) {
+  return rows.map((row) => ({ key: row.key, value: row.value, type: "string", disabled: !row.enabled, secret: row.secret === true }));
+}
+
+function toPostmanItem(node) {
+  const common = { name: node.name, event: toPostmanEvents(node.scripts) };
+  if (node.kind === "folder") return { ...common, auth: toPostmanAuth(node.auth), variable: toPostmanVariables(node.variables), item: node.items.map(toPostmanItem) };
+  const request = {
+    method: node.method,
+    url: { raw: joinQuery(node.url, node.params.filter((row) => row.enabled)), query: node.params.map((row) => ({ key: row.key, value: row.value, disabled: !row.enabled })) },
+    header: node.headers.map((row) => ({ key: row.key, value: row.value, disabled: !row.enabled })),
+    auth: toPostmanAuth(node.auth),
+  };
+  if (node.body.mode === "raw") {
+    if (node.body.contentType && !node.headers.some((row) => row.enabled && row.key.toLowerCase() === "content-type")) {
+      request.header.push({ key: "Content-Type", value: node.body.contentType, disabled: false });
+    }
+    request.body = { mode: "raw", raw: node.body.raw, options: { raw: {
+      language: ({ "application/json": "json", "application/xml": "xml", "text/html": "html", "application/javascript": "javascript" })[node.body.contentType] ?? "text",
+      contentType: node.body.contentType,
+    } } };
+  } else if (node.body.mode === "form-data") {
+    request.body = { mode: "formdata", formdata: node.body.form.map((row) => ({ key: row.key, value: row.value, type: "text", disabled: !row.enabled })) };
+  }
+  return { ...common, request };
+}
+
+function toPostmanCollection(collection) {
+  const variables = [...collection.variables, ...(envForCollection(collection)?.variables ?? []).filter((row) => row.enabled !== false)];
+  return {
+    info: { name: collection.name, schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+    auth: toPostmanAuth(collection.auth), variable: toPostmanVariables(variables),
+    event: toPostmanEvents(collection.scripts), item: collection.items.map(toPostmanItem),
+  };
+}
+
+function downloadJson(file, data) {
   const url = URL.createObjectURL(
-    new Blob([JSON.stringify(toPostmanEnvironment(env), null, 2)], { type: "application/json" })
+    new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
   );
   const link = document.createElement("a");
   link.href = url;
@@ -864,6 +997,29 @@ function exportEnvironment(env) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+  persist();
+}
+
+function exportEnvironment(env) {
+  downloadJson(`${String(env.name || "environment").replace(/[^\w.-]+/g, "_")}.postman_environment.json`, toPostmanEnvironment(env));
+}
+
+async function exportCollection(collection) {
+  const confirmed = await confirmDialogShow({ title: "Export collection", message: "This file includes auth tokens, secret variables, and bound environment values unchanged. Store it securely and do not commit it to source control.", action: "Export" });
+  if (confirmed) downloadJson(`${String(collection.name || "collection").replace(/[^\w.-]+/g, "_")}.postman_collection.json`, toPostmanCollection(collection));
+}
+
+function exportSettings() {
+  downloadJson("postlite.settings.json", { kind: "postlite.settings", version: 1, settings: normalizeSettings(state.settings) });
+}
+
+function importSettings(doc) {
+  if (doc?.kind !== "postlite.settings" || doc.version !== 1 || !doc.settings || typeof doc.settings !== "object" || Array.isArray(doc.settings)) {
+    throw new Error("Not a supported postlite settings file.");
+  }
+  state.settings = normalizeSettings(doc.settings);
+  applyAppSettings();
+  persist();
 }
 
 /* ---------------------------------------------------------------------- render */
@@ -995,7 +1151,7 @@ function envPreview(env) {
   return rows.length
     ? `${rows
         .slice(0, 2)
-        .map((row) => `${esc(row.key)}=${row.secret ? SECRET_MASK : esc(row.value)}`)
+        .map((row) => `${esc(row.key)}=${maskVariable(row.key, row.secret) ? SECRET_MASK : esc(row.value)}`)
         .join(" · ")}${rows.length > 2 ? ` · +${rows.length - 2}` : ""}`
     : "no variables";
 }
@@ -1081,6 +1237,7 @@ function nodeMarkup(node, depth, cid, kind = node.kind, override = null) {
         <svg class="ic folder-ic" aria-hidden="true"><use href="#i-${kind === "collection" ? "stack" : "folder"}" /></svg>
         <span class="node-name">${esc(node.name)}</span>
         <span class="node-acts">
+          ${kind === "collection" ? `<button class="node-act" data-act="export" title="Export collection (includes secrets)" aria-label="Export collection, includes secrets">${icon("export")}</button>` : ""}
           <button class="node-act" data-act="new-request" title="New request" aria-label="New request">${icon("file-plus")}</button>
           <button class="node-act" data-act="new-folder" title="New folder" aria-label="New folder">${icon("folder-plus")}</button>
           <button class="node-act" data-act="rename" title="Rename" aria-label="Rename">${icon("pencil")}</button>
@@ -1105,6 +1262,7 @@ function renderTabbar() {
       </div>`;
     })
     .join("");
+  $("#tabbar").insertAdjacentHTML("beforeend", `<button class="icon-btn" data-act="new-tab" title="New request (Ctrl+N)" aria-label="New request">${icon("plus")}</button>`);
   $("#tabbar .tab-item.is-active")?.scrollIntoView({ inline: "nearest", block: "nearest" });
 }
 
@@ -1150,7 +1308,7 @@ function renderRows(tbody, rows, options = {}) {
       <tr data-index="${index}">
         ${check ? `<td class="c-check"><input type="checkbox" data-field="enabled" ${row.enabled ? "checked" : ""} /></td>` : ""}
         <td><input type="text" data-field="key" value="${esc(row.key)}" spellcheck="false" /></td>
-        <td><input type="${secret && row.secret ? "password" : "text"}" data-field="value" value="${esc(row.value)}" spellcheck="false" /></td>
+        <td><input type="${secret && row.secret && state.settings.privacy.maskSecretVariables ? "password" : "text"}" data-field="value" value="${esc(row.value)}" spellcheck="false" /></td>
         ${secret ? `<td class="c-secret"><input type="checkbox" data-field="secret" ${row.secret ? "checked" : ""} aria-label="Secret" title="Mask this value in the UI" /></td>` : ""}
         <td class="c-del"><button class="del" data-act="drop-row" title="Remove" aria-label="Remove row">${icon("x")}</button></td>
       </tr>`
@@ -1215,7 +1373,7 @@ function renderSettings() {
   $("#settings-kind").textContent = kind;
   $("#settings-title").textContent = node.name;
   if (!isEnv) {
-    renderAuth($("#node-auth-type"), $("#node-auth-fields"), node.auth, false);
+    renderAuth($("#node-auth-type"), $("#node-auth-fields"), node.auth, kind === "folder");
     $("#node-pre").value = node.scripts.pre;
     $("#node-test").value = node.scripts.test;
   }
@@ -1244,13 +1402,32 @@ function highlightJson(text) {
   return out + esc(text.slice(last));
 }
 
+const sensitiveName = (name) => /^(authorization|proxy-authorization|cookie|set-cookie)$|token|secret|key/i.test(name);
+const maskVariable = (name, secret) => (state.settings.privacy.maskSecretVariables && secret)
+  || (state.settings.privacy.maskSensitiveHeaders && sensitiveName(name));
+const shownHeader = (header) => state.settings.privacy.maskSensitiveHeaders && sensitiveName(header.key) ? SECRET_MASK : header.value;
+
+function responseCopyText() {
+  const response = activeTab()?.response;
+  if (!response) return "";
+  const view = $("#res-tabs .tab.is-active")?.dataset.tab;
+  if (view === "res-headers") return response.headers.map((header) => `${header.key}: ${shownHeader(header)}`).join("\n");
+  if (view === "tests") return $("#tests").textContent;
+  return response.body;
+}
+
 let lastRenderedResponse;
 
 function renderResponse() {
   const response = activeTab()?.response;
   const pill = $("#status");
   $("#error").textContent = "";
+  $("#time").hidden = !state.settings.response.showTime;
+  $("#size").hidden = !state.settings.response.showSize;
+  $("#response-limit").hidden = !response?.truncated;
+  $("#response-limit").textContent = response?.truncated ? `Response truncated, shown up to ${response.limitKB ?? state.settings.response.maxResponseSizeKB} KB.` : "";
   if (response !== lastRenderedResponse) {
+    activateTab("#res-tabs .tab", "#pretty, #raw, #res-headers, .tests", $(`#res-tabs [data-tab="${state.settings.response.defaultView}"]`));
     lastRenderedResponse = response;
     const res = $("#res-pane");
     res.classList.remove("flash");
@@ -1259,7 +1436,7 @@ function renderResponse() {
   }
   if (!response) {
     pill.className = "pill";
-    pill.textContent = "—";
+    pill.textContent = "No response";
     $("#time").textContent = "";
     $("#size").textContent = "";
     $("#pretty").textContent = "";
@@ -1277,6 +1454,10 @@ function renderResponse() {
     $("#time").textContent = `${response.elapsed_ms} ms`;
     $("#size").textContent = "";
     $("#copy-res").hidden = true;
+    $("#pretty").textContent = "";
+    $("#raw").textContent = "";
+    $("#res-headers").tBodies[0].innerHTML = "";
+    $("#res-headers-count").textContent = "";
     showError(response.error);
     return;
   }
@@ -1288,14 +1469,18 @@ function renderResponse() {
   $("#time").textContent = `${response.elapsed_ms} ms`;
   $("#size").textContent = formatSize(response.size_bytes);
   $("#raw").textContent = response.body;
-  try {
-    $("#pretty").innerHTML = highlightJson(JSON.stringify(JSON.parse(response.body), null, 2));
-  } catch {
-    $("#pretty").textContent = response.body;
+  $("#pretty").textContent = response.body;
+  if (state.settings.request.decodeResponse) {
+    try {
+      const indent = state.settings.response.jsonIndent;
+      const text = JSON.stringify(JSON.parse(response.body), null, indent === "tab" ? "\t" : indent);
+      if (state.settings.response.syntaxHighlight) $("#pretty").innerHTML = highlightJson(text);
+      else $("#pretty").textContent = text;
+    } catch {}
   }
   $("#res-headers-count").textContent = response.headers.length;
   $("#res-headers").tBodies[0].innerHTML = response.headers
-    .map((h) => `<tr><td>${esc(h.key)}</td><td>${esc(h.value)}</td></tr>`)
+    .map((h) => `<tr><td>${esc(h.key)}</td><td>${esc(shownHeader(h))}</td></tr>`)
     .join("");
 }
 
@@ -1330,7 +1515,9 @@ function formatSize(bytes) {
 /* ------------------------------------------------------------------------ send */
 
 async function send() {
-  const req = activeReq();
+  if ($("#send").disabled) return;
+  const tab = activeTab();
+  const req = tab?.req;
   if (!req || !req.url.trim()) {
     $("#url").focus();
     return;
@@ -1373,6 +1560,8 @@ async function send() {
   button.disabled = true;
   button.textContent = "Sending";
   let response;
+  const settings = state.settings;
+  const limitKB = settings.response.maxResponseSizeKB;
   try {
     response = await invoke("http_send", {
       request: {
@@ -1381,8 +1570,15 @@ async function send() {
         headers: prepared.headers,
         body: prepared.body,
         form: prepared.form,
+        settings: {
+          request_timeout_ms: settings.request.requestTimeoutMs, follow_redirects: settings.request.followRedirects,
+          max_redirects: settings.request.maxRedirects, ssl_verify: settings.request.sslVerify,
+          disable_cache: settings.request.disableCache, max_response_size_kb: limitKB,
+        },
       },
     });
+  } catch (err) {
+    response = { error: String(err), elapsed_ms: 0 };
   } finally {
     button.disabled = false;
     button.textContent = "Send";
@@ -1393,7 +1589,7 @@ async function send() {
       runScript(node.scripts?.test, buildPm({ vars, response, results }), node.name, results);
   }
 
-  activeTab().response = { ...response, results };
+  tab.response = { ...response, results, limitKB };
   renderResponse();
 }
 
@@ -1406,11 +1602,16 @@ let renameTarget = null;
 function openSaveDialog() {
   const req = activeReq();
   if (!req) return;
-  if (!state.collections.length) state.collections.push(newCollection("My Collection"));
+  if (!state.collections.length) {
+    state.collections.push(newCollection("My Collection"));
+    persist();
+    renderSidebar();
+  }
   $("#save-name").value = req.name;
   const options = containerOptions();
   $("#save-collection").innerHTML = options.map((o) => `<option value="${o.id}">${esc(o.label)}</option>`).join("");
   $("#save-collection").value = homeOf(req.id) ?? options[0].id;
+  saveDialog.returnValue = "cancel";
   saveDialog.showModal();
 }
 
@@ -1424,6 +1625,7 @@ function openRenameDialog(target) {
   renameTarget = target;
   $("#collection-name").value = target.name;
   $("#collection-dialog .dialog-sub").textContent = DIALOG_SUB[target.kind] ?? DIALOG_SUB.default;
+  collectionDialog.returnValue = "cancel";
   collectionDialog.showModal();
 }
 
@@ -1431,6 +1633,7 @@ function openCreateDialog(kind) {
   renameTarget = { kind, id: null };
   $("#collection-name").value = "";
   $("#collection-dialog .dialog-sub").textContent = DIALOG_SUB[kind] ?? DIALOG_SUB.default;
+  collectionDialog.returnValue = "cancel";
   collectionDialog.showModal();
 }
 
@@ -1464,13 +1667,18 @@ collectionDialog.addEventListener("close", () => {
 
 /* ---------------------------------------------------------------------- events */
 
-$("#collections").addEventListener("click", (event) => {
+$("#collections").addEventListener("click", async (event) => {
   const action = event.target.closest("[data-act]")?.dataset.act;
   const node = event.target.closest(".node");
   if (!node) return;
   const { id, cid, kind } = node.dataset;
 
+  if (action === "export" && kind === "collection") {
+    await exportCollection(locateCollection(id));
+    return;
+  }
   if (action === "delete") {
+    if (!await confirmDeletion(kind, nodeFor({ kind, id })?.name ?? kind)) return;
     if (kind === "collection") state.collections = state.collections.filter((c) => c.id !== id);
     else {
       removeFromTree(containerItems(cid), id);
@@ -1652,7 +1860,7 @@ $("#tabbar").addEventListener("auxclick", (event) => {
 let copyTimer;
 $("#copy-res").addEventListener("click", async () => {
   const button = $("#copy-res");
-  const body = activeTab()?.response?.body ?? "";
+  const body = responseCopyText();
   let ok = true;
   try {
     await navigator.clipboard.writeText(body);
@@ -1678,12 +1886,13 @@ $("#copy-res").addEventListener("click", async () => {
   clearTimeout(copyTimer);
   copyTimer = setTimeout(() => {
     button.classList.remove("copied", "copy-fail");
-    button.title = "Copy response body";
+    button.title = "Copy response body or selected headers";
     button.querySelector("use").setAttribute("href", "#i-copy");
   }, 1400);
 });
 
 $("#tabbar").addEventListener("click", (event) => {
+  if (event.target.closest('[data-act="new-tab"]')) { addTab(); return; }
   const item = event.target.closest(".tab-item");
   if (!item) return;
   if (event.target.closest('[data-act="close-tab"]')) closeTab(item.dataset.id);
@@ -1691,6 +1900,7 @@ $("#tabbar").addEventListener("click", (event) => {
     state.activeTabId = item.dataset.id;
     state.selected = null;
     render();
+    persist();
   }
 });
 
@@ -1764,7 +1974,7 @@ for (const [sel, key] of [
       event.target.type === "checkbox" ? event.target.checked : event.target.value;
     const counter = { params: "#params-count", headers: "#headers-count" }[key];
     if (counter) $(counter).textContent = rows.filter((row) => row.enabled !== false && row.key).length || "";
-    persist();
+    persist(event.target.type === "checkbox");
   });
   $(sel).addEventListener("click", (event) => {
     if (event.target.closest("[data-act]")?.dataset.act !== "drop-row") return;
@@ -1796,7 +2006,7 @@ $("#vars-table").addEventListener("input", (event) => {
   $("#vars-count").textContent = node.variables.filter((row) => row.enabled !== false && row.key).length || "";
   renderVarPeek();
   refreshEnvRow(node);
-  persist();
+  persist(event.target.type === "checkbox");
 });
 
 $("#vars-table").addEventListener("click", (event) => {
@@ -1879,7 +2089,7 @@ function wireAuthControls(selectSel, fieldsSel, readAuth) {
     const auth = el.dataset.a ? readAuth() : null;
     if (!auth) return;
     auth[el.dataset.a][el.dataset.k] = el.value;
-    persist();
+    persist(el.tagName === "SELECT");
   };
   host.addEventListener("input", write);
   host.addEventListener("change", write);
@@ -1902,7 +2112,7 @@ for (const [sel, apply] of [
 ]) {
   $(sel).addEventListener("input", (event) => {
     apply(event.target.value);
-    persist();
+    persist(false);
   });
 }
 
@@ -1920,7 +2130,7 @@ $("#url").addEventListener("change", (event) => {
   req.url = base;
   if (params.length) req.params = params;
   renderRequest();
-  persist();
+  persist(false);
 });
 
 $$('input[name="body-mode"]').forEach((radio) =>
@@ -1938,7 +2148,7 @@ $("#content-type").addEventListener("change", (event) => {
 
 $("#body").addEventListener("input", (event) => {
   activeReq().body.raw = event.target.value;
-  persist();
+  persist(false);
 });
 
 $("#send").addEventListener("click", send);
@@ -2012,7 +2222,7 @@ function varSources(req) {
 function resolveVar(name, sources) {
   for (let i = sources.length - 1; i >= 0; i--) {
     if (sources[i].vars.has(name)) {
-      return { value: sources[i].vars.get(name), scope: sources[i].label, secret: sources[i].secret.has(name) };
+      return { value: sources[i].vars.get(name), scope: sources[i].label, secret: maskVariable(name, sources[i].secret.has(name)) };
     }
   }
   return null;
@@ -2095,7 +2305,14 @@ document.addEventListener("click", (event) => {
   closeVarOverlay();
 });
 
-$("#url").addEventListener("input", (event) => renderVarPeek(event.target.value));
+$("#url").addEventListener("input", (event) => {
+  if (!activeReq()) return;
+  const { base, params } = splitUrl(event.target.value);
+  activeReq().url = base;
+  if (params.length) activeReq().params = params;
+  renderVarPeek(event.target.value);
+  persist(false);
+});
 
 /* ---------------------------------------------------------- sidebar resize */
 
@@ -2116,26 +2333,23 @@ function applySidebarWidth(width, save = false) {
   shell.style.setProperty("--sidebar-w", `${w}px`);
   resizer.setAttribute("aria-valuenow", String(w));
   if (save) {
-    try {
-      localStorage.setItem(SIDEBAR_KEY, String(w));
-    } catch {}
+    state.settings.sidebarWidth = w;
+    persist();
   }
   return w;
 }
 
 function resetSidebarWidth() {
-  shell.style.removeProperty("--sidebar-w");
-  try {
-    localStorage.removeItem(SIDEBAR_KEY);
-  } catch {}
-  const w = Math.round($("#sidebar").getBoundingClientRect().width);
-  resizer.setAttribute("aria-valuenow", String(w));
+  applySidebarWidth(DEFAULT_SETTINGS.sidebarWidth, true);
+  try { localStorage.removeItem(SIDEBAR_KEY); } catch {}
 }
 
-try {
-  const saved = Number(localStorage.getItem(SIDEBAR_KEY));
-  if (Number.isFinite(saved) && saved > 0) applySidebarWidth(saved);
-} catch {}
+function migrateSidebarWidth() {
+  try {
+    const saved = Number(localStorage.getItem(SIDEBAR_KEY));
+    if (Number.isFinite(saved) && saved > 0) state.settings.sidebarWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, saved));
+  } catch {}
+}
 resizer.setAttribute(
   "aria-valuenow",
   String(Math.round($("#sidebar").getBoundingClientRect().width))
@@ -2166,9 +2380,7 @@ function endResize(event) {
   } catch {}
   const w = Math.round($("#sidebar").getBoundingClientRect().width);
   resizer.setAttribute("aria-valuenow", String(w));
-  try {
-    localStorage.setItem(SIDEBAR_KEY, String(w));
-  } catch {}
+  applySidebarWidth(w, true);
 }
 
 resizer.addEventListener("pointerup", endResize);
@@ -2210,9 +2422,8 @@ $("#import-file").addEventListener("change", async (event) => {
   if (!file) return;
   try {
     const doc = JSON.parse(await file.text());
-    if (!doc?.item) throw new Error("not a Postman collection export");
+    if (!Array.isArray(doc?.item)) throw new Error("not a Postman collection export");
     const collection = fromPostman(doc);
-    if (!collection.items.length) throw new Error("collection has no requests");
     state.collections.push(collection);
     persist();
     render();
@@ -2242,20 +2453,173 @@ $("#env-import-file").addEventListener("change", async (event) => {
   event.target.value = "";
 });
 
+const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+const appSettingsDialog = $("#app-settings-dialog");
+
+function applyTheme() {
+  const theme = state.settings.general.theme;
+  document.documentElement.dataset.theme = theme === "system" ? (systemTheme.matches ? "dark" : "light") : theme;
+}
+
+function refreshPreferenceControls() {
+  for (const control of $$('[data-setting]', appSettingsDialog)) {
+    const [group, key] = control.dataset.setting.split(".");
+    const value = key ? state.settings[group][key] : state.settings[group];
+    if (control.type === "checkbox") control.checked = value;
+    else control.value = String(value);
+  }
+  $("#pref-autoSaveIntervalMs").disabled = !state.settings.general.autoSave;
+  $("#pref-maxRedirects").disabled = !state.settings.request.followRedirects;
+}
+
+function applyAppSettings() {
+  applyTheme();
+  applySidebarWidth(state.settings.sidebarWidth);
+  for (const pane of $$("#pretty, #raw")) pane.classList.toggle("word-wrap", state.settings.response.wordWrap);
+  $('#res-tabs [data-tab="res-headers"]').hidden = !state.settings.response.showHeaders;
+  activateTab("#res-tabs .tab", "#pretty, #raw, #res-headers, .tests", $(`#res-tabs [data-tab="${state.settings.response.defaultView}"]`));
+  refreshPreferenceControls();
+  render();
+}
+
+function refreshTransferOptions() {
+  for (const [selector, items] of [["#settings-collection", state.collections], ["#settings-environment", state.environments]]) {
+    const select = $(selector);
+    select.innerHTML = items.length ? items.map((item) => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join("")
+      : '<option value="">None in this workspace</option>';
+    select.disabled = !items.length;
+    $(selector.replace("settings-", "settings-export-")).disabled = !items.length;
+  }
+}
+
+function openAppSettings() {
+  if ($("dialog[open]")) return;
+  closeWsPop();
+  closeEnvPop();
+  closeVarOverlay();
+  refreshPreferenceControls();
+  refreshTransferOptions();
+  $("#preferences-message").textContent = "Changes apply immediately across all workspaces.";
+  appSettingsDialog.showModal();
+}
+
+systemTheme.addEventListener("change", applyTheme);
+$("#open-app-settings").addEventListener("click", openAppSettings);
+$("#app-settings-close").addEventListener("click", () => appSettingsDialog.close());
+$("#app-settings-tabs").addEventListener("click", (event) => {
+  const tab = event.target.closest(".tab");
+  if (tab) activateTab("#app-settings-tabs .tab", "#app-settings-dialog .pane", tab);
+});
+appSettingsDialog.addEventListener("change", (event) => {
+  const control = event.target.closest("[data-setting]");
+  if (!control) return;
+  if (!control.checkValidity()) { control.reportValidity(); return; }
+  const [group, key] = control.dataset.setting.split(".");
+  let value = control.type === "checkbox" ? control.checked : control.value;
+  if (control.type === "number" || (key === "jsonIndent" && value !== "tab")) value = Number(value);
+  if (key) state.settings[group][key] = value;
+  else state.settings[group] = value;
+  state.settings = normalizeSettings(state.settings);
+  applyAppSettings();
+  persist();
+  $("#preferences-message").textContent = "Preference applied.";
+});
+
+async function saveWorkspaceNow() {
+  try {
+    await flushWorkspace();
+    $("#preferences-message").textContent = "Workspace saved.";
+  } catch (err) {
+    $("#preferences-message").textContent = `Save failed: ${String(err)}`;
+  }
+}
+$("#save-workspace-now").addEventListener("click", saveWorkspaceNow);
+$("#status-save-now").addEventListener("click", saveWorkspaceNow);
+$("#settings-export").addEventListener("click", () => {
+  exportSettings();
+  $("#preferences-message").textContent = "Settings exported. This file contains preferences only.";
+});
+$("#settings-import").addEventListener("click", () => $("#settings-file").click());
+$("#settings-file").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  $("#preferences-message").textContent = "Importing settings…";
+  try {
+    importSettings(JSON.parse(await file.text()));
+    $("#preferences-message").textContent = "Settings imported.";
+  } catch (err) {
+    $("#preferences-message").textContent = `Import failed: ${err.message}`;
+  } finally { event.target.value = ""; }
+});
+$("#settings-reset").addEventListener("click", async () => {
+  if (!await confirmDialogShow({ title: "Reset application settings", message: "Restore default preferences? Collections, environments, and requests will not be deleted.", action: "Reset settings" })) return;
+  state.settings = normalizeSettings();
+  try { localStorage.removeItem(SIDEBAR_KEY); } catch {}
+  applyAppSettings();
+  persist();
+  $("#preferences-message").textContent = "Default settings restored. Your workspace data is unchanged.";
+});
+$("#settings-import-collection").addEventListener("click", () => {
+  appSettingsDialog.close();
+  $("#import-file").click();
+});
+$("#settings-import-environment").addEventListener("click", () => {
+  appSettingsDialog.close();
+  $("#env-import-file").click();
+});
+$("#settings-export-collection").addEventListener("click", () => {
+  const collection = locateCollection($("#settings-collection").value);
+  if (collection) void exportCollection(collection);
+});
+$("#settings-export-environment").addEventListener("click", () => {
+  const env = locateEnvironment($("#settings-environment").value);
+  if (env) exportEnvironment(env);
+});
+
 document.addEventListener("keydown", (event) => {
+  if (document.body.inert) { event.preventDefault(); return; }
   if (event.key === "Escape" && !$("#var-overlay").hidden) closeVarOverlay();
   if (event.key === "Escape" && !$("#tab-menu").hidden) closeTabMenu();
   if (event.key === "Escape" && !$("#ws-pop").hidden) closeWsPop();
   if (event.key === "Escape" && !$("#env-pop").hidden) closeEnvPop();
-  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-    event.preventDefault();
-    send();
-  }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-    event.preventDefault();
-    openSaveDialog();
-  }
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.repeat) return;
+  const key = event.key.toLowerCase();
+  if (!["enter", "s", "n", "k", ","].includes(key)) return;
+  event.preventDefault();
+  if ($("dialog[open]")) return;
+  if (key === "enter") void send();
+  else if (key === "s") openSaveDialog();
+  else if (key === "n" && event.shiftKey) openCreateDialog("collection");
+  else if (key === "n") addTab();
+  else if (key === "k") { $("#tree-search").focus(); $("#tree-search").select(); }
+  else if (key === ",") openAppSettings();
 });
 
 await loadWorkspace();
-render();
+workspaceReady = true;
+applyAppSettings();
+
+try {
+  const version = await window.__TAURI__.app.getVersion();
+  for (const label of $$("#app-version, .app-version")) label.textContent = version;
+} catch { $("#app-version").textContent = "Unavailable"; }
+
+try {
+  const appWindow = window.__TAURI__.window.getCurrentWindow();
+  let closing = false;
+  await appWindow.onCloseRequested(async (event) => {
+    event.preventDefault();
+    if (closing) return;
+    closing = true;
+    try {
+      document.activeElement?.blur();
+      document.body.inert = true;
+      do { await flushWorkspace(); } while (savedRevision !== revision);
+      await appWindow.destroy();
+    } catch (err) {
+      document.body.inert = false;
+      closing = false;
+      showError(`Could not close safely: ${String(err)}`);
+    }
+  });
+} catch (err) { showError(`Close-time saving unavailable: ${String(err)}`); }
