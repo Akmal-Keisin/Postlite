@@ -6,12 +6,13 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) + Rus
 
 ## Features
 
+- **Workspaces** — multiple workspaces, each with its own collections, environments, and open tabs. Create, rename, and switch from the top bar; deleting a workspace (with confirmation) removes everything in it. Older single-workspace files are migrated automatically.
 - **HTTP core** — every standard verb plus `QUERY`, URL with query params, headers, and request bodies (none / raw / form-data). Responses show status, latency, size, headers, and a pretty-printed JSON view with syntax highlighting; the body can be copied in one click.
 - **Collections** — nested folders, create/rename/delete, save the active request into any folder, a filterable tree, expand/collapse, and a draggable sidebar.
 - **Postman interop** — import and export Collection v2.1, and import/export Environment JSON, so you can move work between postlite and Postman.
 - **Auth** — none / basic / bearer / API-key, set at request, folder, or collection level with inheritance.
 - **Variables** — `{{token}}` interpolation with collection, folder, and environment scopes. Precedence is `collection < environment < folder`. A peek overlay under the URL bar resolves each token and names the scope it came from. Values can be flagged **secret** and are masked in the UI (raw values are still sent).
-- **Environments** — a global list managed in its own sidebar tab, bound to a collection through the selector in the top bar (next to **Import**). Bindings persist per collection.
+- **Environments** — managed in their own sidebar tab, scoped per workspace, bound to a collection through the selector in the top bar (next to **Import**). Bindings persist per collection.
 - **Scripts** — pre-request and test scripts run against a minimal `pm` sandbox (`pm.request`, `pm.response`, and variables); results appear in the response Tests tab.
 - **Persistence** — collections, tabs, environments, and settings are saved to a single JSON file in the OS app-data directory.
 
@@ -54,7 +55,7 @@ Everything is stored in one file under the OS app-data directory for identifier 
 - **macOS:** `~/Library/Application Support/app.postlite.desktop/workspace.json`
 - **Linux:** `~/.local/share/app.postlite.desktop/workspace.json`
 
-The file is plain JSON (`collections`, `tabs`, `activeTabId`, `environments`), so it is easy to back up or move between machines.
+The file is plain JSON (`version`, `activeWorkspaceId`, `workspaces` — each with `collections`, `environments`, `tabs`, `activeTabId`), so it is easy to back up or move between machines.
 
 ## Project layout
 

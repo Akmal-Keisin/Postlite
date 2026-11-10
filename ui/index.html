@@ -29,6 +29,7 @@
       <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5.4" y="5.4" width="8" height="8" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M10.6 3.4v-.8H2.6v8h.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
       <symbol id="i-globe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.3 8h11.4M8 2.2c1.7 1.8 2.5 3.7 2.5 5.8S9.7 12 8 13.8C6.3 12 5.5 10.1 5.5 8S6.3 4 8 2.2z" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
       <symbol id="i-export" viewBox="0 0 16 16"><path d="M8 9.8V2.6M5.2 5.4 8 2.6l2.8 2.8M2.6 11.4v2.2h10.8v-2.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-grid" viewBox="0 0 16 16"><rect x="2.4" y="2.4" width="4.6" height="4.6" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="2.4" width="4.6" height="4.6" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.4" y="9" width="4.6" height="4.6" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="9" width="4.6" height="4.6" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
     </svg>
 
     <header class="topbar">
@@ -49,9 +50,33 @@
       </div>
       <div class="topbar-actions">
         <span class="kbd-hint"><kbd>Ctrl</kbd>+<kbd>&#8629;</kbd> send</span>
+        <span class="ws-bar" id="ws-bar">
+          <button id="ws-button" class="ws-button" aria-haspopup="listbox" aria-expanded="false" title="Switch workspace">
+            <svg class="ic" aria-hidden="true"><use href="#i-grid" /></svg>
+            <span id="ws-button-label">&hellip;</span>
+            <svg class="ic ws-caret" aria-hidden="true"><use href="#i-caret" /></svg>
+          </button>
+          <div class="ws-pop" id="ws-pop" hidden role="listbox" aria-label="Workspaces">
+            <div class="ws-list" id="ws-list"></div>
+            <button class="ws-new" id="ws-new" role="menuitem">
+              <svg class="ic" aria-hidden="true"><use href="#i-plus" /></svg>
+              New workspace
+            </button>
+          </div>
+        </span>
         <span class="env-bar" id="env-bar" hidden title="Environment bound to the active request's collection">
-          <svg class="ic" aria-hidden="true"><use href="#i-globe" /></svg>
-          <select id="env-select" aria-label="Active collection environment"></select>
+          <button id="env-button" class="ws-button env-button" aria-haspopup="listbox" aria-expanded="false" title="Bind an environment to the active request's collection">
+            <svg class="ic" aria-hidden="true"><use href="#i-globe" /></svg>
+            <span id="env-button-label">&hellip;</span>
+            <svg class="ic ws-caret" aria-hidden="true"><use href="#i-caret" /></svg>
+          </button>
+          <div class="ws-pop env-pop" id="env-pop" hidden role="listbox" aria-label="Bind environment">
+            <div class="ws-list" id="env-list"></div>
+            <button class="ws-new" id="env-new" role="menuitem">
+              <svg class="ic" aria-hidden="true"><use href="#i-plus" /></svg>
+              New environment
+            </button>
+          </div>
         </span>
         <button id="import-btn" class="tool outlined">
           <svg class="ic" aria-hidden="true"><use href="#i-import" /></svg>
@@ -275,6 +300,7 @@
       <span class="save-dot" aria-hidden="true"></span>
       <span id="save-state">Workspace ready</span>
       <span class="status-sep" aria-hidden="true"></span>
+      <span><b id="stat-workspaces">0</b> workspaces</span>
       <span><b id="stat-collections">0</b> collections</span>
       <span><b id="stat-tabs">0</b> open tabs</span>
       <span class="status-right">postlite 0.1.0 &middot; local-first</span>
@@ -301,6 +327,22 @@
         <div class="dialog-actions">
           <button value="cancel" class="tool outlined">Cancel</button>
           <button value="create" class="primary">OK</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="confirm-dialog">
+      <form method="dialog">
+        <div class="confirm-head">
+          <span class="confirm-icon" aria-hidden="true">
+            <svg class="ic"><use href="#i-trash" /></svg>
+          </span>
+          <h3 id="confirm-title">Delete</h3>
+        </div>
+        <p class="dialog-sub" id="confirm-message"></p>
+        <div class="dialog-actions">
+          <button value="cancel" class="tool outlined">Cancel</button>
+          <button value="confirm" class="danger" id="confirm-ok">Delete</button>
         </div>
       </form>
     </dialog>
