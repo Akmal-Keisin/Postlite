@@ -9,8 +9,17 @@ permissions:
   contents: write
 
 jobs:
-  release-windows:
-    runs-on: windows-latest
+  release:
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: '--bundles nsis'
+          - platform: ubuntu-22.04
+            args: '--bundles deb,appimage,rpm'
+    runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,6 +32,12 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf rpm
+
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v1
         env:
@@ -30,6 +45,17 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'Postlite v__VERSION__'
-          releaseBody: 'See the assets below to download and install this version.'
+          releaseBody: 'See the assets below to download this version. Windows: installer (*-setup.exe) or portable (*-portable.exe, no install needed). Linux: AppImage (portable), .deb (Debian/Ubuntu), .rpm (Fedora/RHEL). Builds are unsigned.'
           releaseDraft: false
           prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Upload Windows portable executable
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          cp src-tauri/target/release/postlite.exe "postlite_${VER}_x64-portable.exe"
+          gh release upload "${GITHUB_REF_NAME}" "postlite_${VER}_x64-portable.exe" --clobber
