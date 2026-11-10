@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "postlite",
-  "version": "0.1.0",
   "identifier": "app.postlite.desktop",
   "build": {
     "frontendDist": "../ui"
