@@ -174,7 +174,14 @@
             </div>
             <button id="send" class="primary" title="Send request (Ctrl+Enter)">Send</button>
             <button id="save" class="tool outlined" title="Save request (Ctrl+S)">Save</button>
+            <button id="code-btn" class="tool outlined" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="code-menu" title="Copy as cURL or generate code from this request">Code<svg class="ic ws-caret" aria-hidden="true"><use href="#i-caret" /></svg></button>
             <div class="var-overlay" id="var-overlay" hidden role="dialog" aria-label="Variables used in URL"></div>
+          </div>
+
+          <div class="ctx-menu" id="code-menu" role="menu" aria-label="Code and cURL" hidden>
+            <button class="ctx-item" data-code="copy-curl" role="menuitem">Copy as cURL</button>
+            <button class="ctx-item" data-code="generate" role="menuitem">Generate code&hellip;</button>
+            <button class="ctx-item" data-code="import" role="menuitem">Import cURL&hellip;</button>
           </div>
 
           <nav class="tabs" id="req-tabs" aria-label="Request sections">
@@ -309,6 +316,7 @@
       <span><b id="stat-workspaces">0</b> workspaces</span>
       <span><b id="stat-collections">0</b> collections</span>
       <span><b id="stat-tabs">0</b> open tabs</span>
+      <span id="tool-note" class="tool-note" role="status" aria-live="polite" aria-atomic="true"></span>
       <span class="status-right">postlite <span class="app-version">Loading…</span> &middot; local-first</span>
     </footer>
 
@@ -502,7 +510,7 @@
 
           <section id="pref-transfer" class="pane" data-pane="pref-transfer" aria-labelledby="pref-transfer-title">
             <h3 id="pref-transfer-title">Import / Export</h3>
-            <p id="settings-export-warning" class="preferences-warning preferences-note">Collection and environment exports include secrets unchanged, including auth tokens and secret variables. Store these files securely and do not commit them to source control.</p>
+            <p id="settings-export-warning" class="preferences-warning preferences-note">Collection, environment, and backup exports include secrets unchanged, including auth tokens and secret variables. Store these files securely and do not commit them to source control.</p>
             <fieldset class="preferences-transfer">
               <legend>Postman collection</legend>
               <label for="settings-collection">Collection in this workspace</label>
@@ -529,6 +537,15 @@
                 <button id="settings-export" class="tool outlined" type="button" aria-describedby="settings-transfer-help"><svg class="ic" aria-hidden="true"><use href="#i-export" /></svg>Export settings</button>
               </div>
               <input id="settings-file" type="file" accept=".json,application/json" aria-label="Import application settings JSON" hidden />
+            </fieldset>
+            <fieldset class="preferences-transfer">
+              <legend>Full backup</legend>
+              <p id="settings-backup-help" class="preferences-intro">Every workspace in one file: collections, environments, open tabs, and preferences.</p>
+              <div class="preferences-actions">
+                <button id="settings-export-backup" class="tool outlined" type="button" aria-describedby="settings-export-warning"><svg class="ic" aria-hidden="true"><use href="#i-export" /></svg>Export backup</button>
+                <button id="settings-import-backup" class="tool outlined" type="button" aria-describedby="settings-backup-help"><svg class="ic" aria-hidden="true"><use href="#i-import" /></svg>Import backup</button>
+              </div>
+              <input id="backup-file" type="file" accept=".json,application/json" aria-label="Import full backup JSON" hidden />
             </fieldset>
           </section>
 
@@ -598,6 +615,59 @@
       </form>
     </dialog>
 
+    <dialog id="code-dialog" class="code-dialog">
+      <h3>Generate code</h3>
+      <p class="dialog-sub">The snippet below is the current request, with variables and inherited auth already resolved.</p>
+      <label for="code-target">Target
+        <select id="code-target"></select>
+      </label>
+      <pre id="code-output" class="code-output" tabindex="0" role="region" aria-label="Generated snippet"></pre>
+      <p id="code-note" class="code-note" role="status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button id="code-close" class="tool outlined" type="button">Close</button>
+        <button id="code-copy" class="primary" type="button"><svg class="ic" aria-hidden="true"><use href="#i-copy" /></svg>Copy snippet</button>
+      </div>
+    </dialog>
+
+    <dialog id="curl-dialog">
+      <form method="dialog">
+        <h3>Import cURL</h3>
+        <p class="dialog-sub">Paste a curl command. It becomes a new request tab; flags postlite cannot express are reported, not guessed.</p>
+        <label for="curl-input">Command
+          <textarea id="curl-input" spellcheck="false" autocomplete="off" placeholder="curl -X POST 'https://api.example.com/users' -H 'Content-Type: application/json' -d '{&quot;name&quot;:&quot;rina&quot;}'"></textarea>
+        </label>
+        <p id="curl-status" class="curl-status" role="status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="curl-cancel" class="tool outlined" type="button">Cancel</button>
+          <button id="curl-import" class="primary" type="button">Import request</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="restore-dialog" class="restore-dialog">
+      <h3>Restore backup</h3>
+      <p class="dialog-sub" id="restore-summary"></p>
+      <p class="restore-existing" id="restore-existing"></p>
+      <fieldset class="restore-mode">
+        <legend>How should it be applied?</legend>
+        <label class="restore-option">
+          <input type="radio" name="restore-mode" value="merge" checked />
+          <span>Add to what is here now</span>
+          <em>Restored workspaces appear beside your current ones. Your preferences stay untouched.</em>
+        </label>
+        <label class="restore-option">
+          <input type="radio" name="restore-mode" value="replace" />
+          <span>Replace everything</span>
+          <em>Discards the workspaces now stored and applies the backup's preferences. Asks once more.</em>
+        </label>
+      </fieldset>
+      <div class="dialog-actions">
+        <button id="restore-cancel" class="tool outlined" type="button">Cancel</button>
+        <button id="restore-apply" class="primary" type="button">Restore</button>
+      </div>
+    </dialog>
+
+    <script src="./codegen.js"></script>
     <script type="module" src="./app.js"></script>
   </body>
 </html>

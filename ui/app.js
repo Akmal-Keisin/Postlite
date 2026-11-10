@@ -546,18 +546,9 @@ async function loadWorkspace() {
       const saved = JSON.parse(raw);
       state.settings = normalizeSettings(saved.settings);
       if (!Object.hasOwn(saved.settings ?? {}, "sidebarWidth")) migrateSidebarWidth();
-      if (Array.isArray(saved.workspaces)) {
-        // v2 file: an explicit list of workspaces.
-        state.workspaces = saved.workspaces.map(hydrateWorkspace);
-        state.activeWorkspaceId = state.workspaces.some((w) => w.id === saved.activeWorkspaceId)
-          ? saved.activeWorkspaceId
-          : state.workspaces[0]?.id ?? null;
-      } else if (saved.collections || saved.environments || saved.tabs) {
-        // v1 file: one implicit workspace, which becomes the default.
-        const ws = hydrateWorkspace(saved);
-        state.workspaces = [ws];
-        state.activeWorkspaceId = ws.id;
-      }
+      // v1 files carry one implicit workspace; applySavedPayload handles both.
+      if (saved.workspaces?.length || saved.collections || saved.environments || saved.tabs)
+        applySavedPayload(saved, "load");
     } catch {
       showError("saved workspace was unreadable, starting fresh");
     }
@@ -1020,6 +1011,256 @@ function importSettings(doc) {
   state.settings = normalizeSettings(doc.settings);
   applyAppSettings();
   persist();
+}
+
+/* -------------------------------------------------------------- text interop */
+
+let noteTimer = null;
+function notify(message) {
+  clearTimeout(noteTimer);
+  $("#tool-note").textContent = message;
+  noteTimer = setTimeout(() => { $("#tool-note").textContent = ""; }, 8000);
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.tabIndex = -1;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    const copied = document.execCommand("copy");
+    area.remove();
+    return copied;
+  }
+}
+
+// Exporters need a request with a URL; the reason is surfaced instead of
+// copying an empty command.
+function exportSource() {
+  const req = activeReq();
+  if (!req) return { error: "Open a request first." };
+  if (!req.url.trim()) return { error: "Enter a URL before exporting." };
+  return { request: exportTarget(req) };
+}
+
+async function copyAsCurl() {
+  const { request, error } = exportSource();
+  if (error) {
+    notify(error);
+    $("#url").focus();
+    return;
+  }
+  const command = postliteText.toCurl(request);
+  notify(await copyText(command)
+    ? `cURL copied (${command.length} characters, variables resolved)`
+    : "The clipboard is not available.");
+}
+
+const codeDialog = $("#code-dialog");
+const curlDialog = $("#curl-dialog");
+
+function renderCodeOutput() {
+  const output = $("#code-output");
+  const note = $("#code-note");
+  const copy = $("#code-copy");
+  const { request, error } = exportSource();
+  copy.disabled = Boolean(error);
+  $("#code-target").disabled = Boolean(error);
+  if (error) {
+    output.textContent = error;
+    note.textContent = "A snippet needs the current request to have a URL.";
+    return;
+  }
+  let code;
+  try {
+    code = postliteText.toCode(request, $("#code-target").value);
+  } catch (err) {
+    output.textContent = String(err.message ?? err);
+    note.textContent = "";
+    return;
+  }
+  output.textContent = code;
+  // The emitters carry their own dependency line, so the note cannot drift.
+  const required = /(?:\/\/|#) Requires: (.+)/.exec(code);
+  note.textContent = `${required ? `Needs ${required[1]}.` : "No third-party package needed."} Variables are resolved in the output.`;
+}
+
+async function importCurlCommand() {
+  const status = $("#curl-status");
+  const text = $("#curl-input").value.trim();
+  if (!text) {
+    status.textContent = "Paste a cURL command first.";
+    $("#curl-input").focus();
+    return;
+  }
+  let parsed;
+  try {
+    parsed = postliteText.parseCurl(text);
+  } catch (err) {
+    status.textContent = String(err.message ?? err);
+    return;
+  }
+  const { base, params } = splitUrl(parsed.url);
+  addTab(newRequest({
+    method: parsed.method,
+    url: base,
+    params,
+    headers: parsed.headers,
+    body: parsed.form.length
+      ? { mode: "form-data", form: parsed.form }
+      : { mode: parsed.body ? "raw" : "none", raw: parsed.body, contentType: parsed.contentType },
+    auth: normAuth(parsed.auth, "inherit"),
+  }));
+  const skipped = [...parsed.ignored, ...parsed.notes];
+  curlDialog.close();
+  notify(skipped.length
+    ? `cURL imported into a new tab. Not carried over: ${skipped.join(", ")}`
+    : "cURL imported into a new tab.");
+}
+
+function openCodeDialog() {
+  const select = $("#code-target");
+  if (!select.options.length) {
+    select.insertAdjacentHTML("beforeend",
+      postliteText.CODE_TARGETS.map((t) => `<option value="${t.id}">${t.label}</option>`).join(""));
+  }
+  renderCodeOutput();
+  codeDialog.showModal();
+  select.focus();
+}
+
+function openCurlDialog() {
+  $("#curl-input").value = "";
+  $("#curl-status").textContent = "";
+  curlDialog.showModal();
+  $("#curl-input").focus();
+}
+
+/* ------------------------------------------------------------- full data backup */
+const backupStamp = () => new Date().toISOString().slice(0, 10);
+
+function describePayload(payload) {
+  const workspaces = Array.isArray(payload.workspaces)
+    ? payload.workspaces
+    : payload.collections || payload.environments || payload.tabs ? [payload] : [];
+  const count = (field) => workspaces.reduce((total, ws) => total + (ws[field]?.length ?? 0), 0);
+  return {
+    workspaces: workspaces.length,
+    collections: count("collections"),
+    environments: count("environments"),
+    tabs: count("tabs"),
+    summary: `${workspaces.length} workspace(s), ${count("collections")} collection(s), ${count("environments")} environment(s), ${count("tabs")} open tab(s)`,
+  };
+}
+
+function validateBackup(doc) {
+  if (doc?.kind !== "postlite.backup" || doc.version !== 1 || !doc.payload || typeof doc.payload !== "object" || Array.isArray(doc.payload))
+    throw new Error("Not a supported postlite backup file.");
+  const described = describePayload(doc.payload);
+  // describePayload reports counts, not the list itself.
+  if (!described.workspaces) throw new Error("The backup holds no workspace data.");
+  return { payload: doc.payload, described, exportedAt: doc.exportedAt ?? "unknown" };
+}
+
+async function exportBackup() {
+  await flushWorkspace();
+  const payload = workspacePayload();
+  const described = describePayload(payload);
+  const confirmed = await confirmDialogShow({
+    title: "Export full backup",
+    message: `This file contains everything the app stores (${described.summary}), including auth tokens and secret variables. Store it securely and do not commit it to source control.`,
+    action: "Export backup",
+  });
+  if (!confirmed) return;
+  downloadJson(`postlite.backup.${backupStamp()}.json`, {
+    kind: "postlite.backup", version: 1, exportedAt: new Date().toISOString(), payload,
+  });
+  notify(`Backup exported: ${described.summary}.`);
+}
+
+// Merge keeps the running preferences and adds the file's workspaces beside the
+// current ones; replace is the caller's decision and is confirmed separately.
+function applySavedPayload(saved, mode) {
+  const workspaces = Array.isArray(saved.workspaces)
+    ? saved.workspaces.map(hydrateWorkspace)
+    : saved.collections || saved.environments || saved.tabs
+      ? [hydrateWorkspace(saved)]
+      : [];
+  if (!workspaces.length) throw new Error("The backup holds no workspace data.");
+  if (mode === "merge") {
+    const taken = new Set(state.workspaces.map((ws) => ws.id));
+    for (const ws of workspaces) {
+      if (taken.has(ws.id)) ws.id = uid();
+      taken.add(ws.id);
+      state.workspaces.push(ws);
+    }
+    return workspaces;
+  }
+  state.workspaces = workspaces;
+  state.activeWorkspaceId = workspaces.some((ws) => ws.id === saved.activeWorkspaceId)
+    ? saved.activeWorkspaceId
+    : workspaces[0].id;
+  return workspaces;
+}
+
+let pendingRestore = null;
+const restoreDialog = $("#restore-dialog");
+
+function openRestoreDialog(file) {
+  pendingRestore = null;
+  let doc;
+  try {
+    doc = JSON.parse(file);
+  } catch {
+    notify("Restore failed: the file is not valid JSON.");
+    return;
+  }
+  try {
+    pendingRestore = validateBackup(doc);
+  } catch (err) {
+    notify(`Restore failed: ${err.message}`);
+    return;
+  }
+  $("#restore-summary").textContent =
+    `${pendingRestore.described.summary}, exported ${pendingRestore.exportedAt}.`;
+  $("#restore-existing").textContent =
+    `Currently open: ${describePayload(workspacePayload()).summary}. Your preferences stay as they are when you merge.`;
+  restoreDialog.showModal();
+}
+
+async function confirmRestore() {
+  if (!pendingRestore) return;
+  const mode = restoreDialog.querySelector('input[name="restore-mode"]:checked').value;
+  if (mode === "replace") {
+    const ok = await confirmDialogShow({
+      title: "Replace everything",
+      message: `Discard the ${describePayload(workspacePayload()).summary} currently stored and use the backup instead? postlite cannot undo this.`,
+      action: "Replace",
+    });
+    if (!ok) return;
+    state.settings = normalizeSettings(pendingRestore.payload.settings);
+    applyAppSettings();
+  }
+  try {
+    applySavedPayload(pendingRestore.payload, mode);
+  } catch (err) {
+    notify(`Restore failed: ${err.message}`);
+    return;
+  }
+  enterWorkspace(activeWorkspace());
+  pendingRestore = null;
+  restoreDialog.close();
+  persist();
+  await flushWorkspace();
+  notify(mode === "merge"
+    ? "Backup merged. The restored workspaces were added beside yours."
+    : "Backup restored. Everything stored in the app was replaced.");
 }
 
 /* ---------------------------------------------------------------------- render */
@@ -1514,36 +1755,31 @@ function formatSize(bytes) {
 
 /* ------------------------------------------------------------------------ send */
 
-async function send() {
-  if ($("#send").disabled) return;
-  const tab = activeTab();
-  const req = tab?.req;
-  if (!req || !req.url.trim()) {
-    $("#url").focus();
-    return;
-  }
+function prepareRequest(req) {
   const parents = parentChain(req.id);
   const vars = collectVars(parents);
   const auth = resolveAuth(req, parents);
-  const results = [];
-
-  const prepared = {
-    method: req.method,
-    url: req.url,
-    params: req.params.filter((p) => p.enabled && p.key.trim()).map((p) => ({ key: p.key, value: p.value })),
-    headers: enabledHeaders(req),
-    body: req.body.mode === "raw" ? req.body.raw : "",
-    form:
-      req.body.mode === "form-data"
-        ? req.body.form.filter((f) => f.enabled !== false && f.key.trim()).map((f) => ({ key: f.key, value: f.value }))
-        : [],
+  return {
+    parents,
+    vars,
+    auth,
+    prepared: {
+      method: req.method,
+      url: req.url,
+      params: req.params.filter((p) => p.enabled && p.key.trim()).map((p) => ({ key: p.key, value: p.value })),
+      headers: enabledHeaders(req),
+      body: req.body.mode === "raw" ? req.body.raw : "",
+      form:
+        req.body.mode === "form-data"
+          ? req.body.form.filter((f) => f.enabled !== false && f.key.trim()).map((f) => ({ key: f.key, value: f.value }))
+          : [],
+    },
   };
+}
 
-  // ancestors run first so a folder can prepare what its requests consume
-  const prePm = () => buildPm({ vars, request: prepared, results });
-  for (const node of parents) runScript(node.scripts?.pre, prePm(), node.name, results);
-  runScript(req.scripts.pre, prePm(), req.name, results);
-
+// Auth headers land after the pre-request scripts so a Content-Type set by a
+// script still wins, and every field is interpolated last.
+function finalizePrepared(prepared, auth, vars) {
   const userContentType = prepared.headers.some((h) => h.key.toLowerCase() === "content-type");
   for (const header of authHeaders(auth, vars)) {
     if (userContentType && header.key.toLowerCase() === "content-type") continue;
@@ -1555,6 +1791,44 @@ async function send() {
   prepared.params = prepared.params.map((p) => ({ key: interpolate(p.key, vars), value: interpolate(p.value, vars) }));
   prepared.headers = prepared.headers.map((h) => ({ key: interpolate(h.key, vars), value: interpolate(h.value, vars) }));
   prepared.form = prepared.form.map((f) => ({ key: interpolate(f.key, vars), value: interpolate(f.value, vars) }));
+  return prepared;
+}
+
+const effectiveUrl = (prepared, auth, vars) =>
+  joinQuery(prepared.url, [...prepared.params, ...authQuery(auth, vars)]);
+
+// Text exporters resolve variables so the copied command or snippet runs
+// unchanged, which means the clipboard can carry a live secret (see Settings,
+// Import/Export note).
+function exportTarget(req) {
+  const { prepared, auth, vars } = prepareRequest(req);
+  finalizePrepared(prepared, auth, vars);
+  return {
+    method: prepared.method,
+    url: effectiveUrl(prepared, auth, vars),
+    headers: prepared.headers,
+    body: prepared.body,
+    form: prepared.form,
+    sslVerify: state.settings.request.sslVerify,
+  };
+}
+
+async function send() {
+  if ($("#send").disabled) return;
+  const tab = activeTab();
+  const req = tab?.req;
+  if (!req || !req.url.trim()) {
+    $("#url").focus();
+    return;
+  }
+  const { parents, vars, auth, prepared } = prepareRequest(req);
+  const results = [];
+
+  // ancestors run first so a folder can prepare what its requests consume
+  const prePm = () => buildPm({ vars, request: prepared, results });
+  for (const node of parents) runScript(node.scripts?.pre, prePm(), node.name, results);
+  runScript(req.scripts.pre, prePm(), req.name, results);
+  finalizePrepared(prepared, auth, vars);
 
   const button = $("#send");
   button.disabled = true;
@@ -1566,7 +1840,7 @@ async function send() {
     response = await invoke("http_send", {
       request: {
         method: prepared.method,
-        url: joinQuery(prepared.url, [...prepared.params, ...authQuery(auth, vars)]),
+        url: effectiveUrl(prepared, auth, vars),
         headers: prepared.headers,
         body: prepared.body,
         form: prepared.form,
@@ -1928,12 +2202,45 @@ $("#tab-menu").addEventListener("click", (event) => {
   else if (action === "close-all") closeAllTabs();
   closeTabMenu();
 });
+
+/* code menu: the three ways to turn the current request into text, and back */
+function closeCodeMenu() {
+  $("#code-menu").hidden = true;
+  $("#code-btn").setAttribute("aria-expanded", "false");
+}
+
+function openCodeMenu() {
+  const menu = $("#code-menu");
+  const box = $("#code-btn").getBoundingClientRect();
+  const pad = 6;
+  menu.hidden = false;
+  menu.style.left = `${Math.max(pad, Math.min(box.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - pad))}px`;
+  menu.style.top = `${Math.min(box.bottom + 4, window.innerHeight - menu.offsetHeight - pad)}px`;
+  $("#code-btn").setAttribute("aria-expanded", "true");
+}
+
+$("#code-btn").addEventListener("click", () => {
+  if ($("#code-menu").hidden) openCodeMenu();
+  else closeCodeMenu();
+});
+
+$("#code-menu").addEventListener("click", (event) => {
+  const action = event.target.closest("[data-code]")?.dataset.code;
+  closeCodeMenu();
+  if (!action) return;
+  if (action === "copy-curl") void copyAsCurl();
+  else if (action === "generate") openCodeDialog();
+  else openCurlDialog();
+});
+
 document.addEventListener("click", (event) => {
   if (!$("#tab-menu").hidden && !event.target.closest("#tab-menu")) closeTabMenu();
+  if (!$("#code-menu").hidden && !event.target.closest("#code-menu") && !event.target.closest("#code-btn")) closeCodeMenu();
   if (!$("#ws-pop").hidden && !event.target.closest("#ws-bar")) closeWsPop();
   if (!$("#env-pop").hidden && !event.target.closest("#env-bar")) closeEnvPop();
 });
 window.addEventListener("blur", closeTabMenu);
+window.addEventListener("blur", closeCodeMenu);
 window.addEventListener("blur", closeWsPop);
 window.addEventListener("blur", closeEnvPop);
 
@@ -2576,10 +2883,45 @@ $("#settings-export-environment").addEventListener("click", () => {
   if (env) exportEnvironment(env);
 });
 
+/* code snippet + cURL import dialogs */
+$("#code-target").addEventListener("change", renderCodeOutput);
+$("#code-copy").addEventListener("click", async () => {
+  const code = $("#code-output").textContent;
+  notify(await copyText(code)
+    ? `Snippet copied (${code.length} characters, variables resolved)`
+    : "The clipboard is not available.");
+});
+$("#code-close").addEventListener("click", () => codeDialog.close());
+$("#curl-import").addEventListener("click", () => void importCurlCommand());
+$("#curl-cancel").addEventListener("click", () => curlDialog.close());
+
+/* full backup: everything the app stores, in one file */
+$("#settings-export-backup").addEventListener("click", () => void exportBackup());
+$("#settings-import-backup").addEventListener("click", () => {
+  appSettingsDialog.close();
+  $("#backup-file").click();
+});
+$("#backup-file").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    openRestoreDialog(await file.text());
+  } finally {
+    event.target.value = "";
+  }
+});
+$("#restore-apply").addEventListener("click", () => void confirmRestore());
+$("#restore-cancel").addEventListener("click", () => restoreDialog.close());
+
 document.addEventListener("keydown", (event) => {
-  if (document.body.inert) { event.preventDefault(); return; }
+  if (document.body.inert) {
+    // Behind a modal only the dialog's own Escape handling may run.
+    if (event.key !== "Escape") event.preventDefault();
+    return;
+  }
   if (event.key === "Escape" && !$("#var-overlay").hidden) closeVarOverlay();
   if (event.key === "Escape" && !$("#tab-menu").hidden) closeTabMenu();
+  if (event.key === "Escape" && !$("#code-menu").hidden) { closeCodeMenu(); $("#code-btn").focus(); }
   if (event.key === "Escape" && !$("#ws-pop").hidden) closeWsPop();
   if (event.key === "Escape" && !$("#env-pop").hidden) closeEnvPop();
   if (!(event.ctrlKey || event.metaKey) || event.altKey || event.repeat) return;

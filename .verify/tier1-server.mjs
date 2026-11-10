@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "../ui");
-const exposed = "state,DEFAULT_SETTINGS,normalizeSettings,newRequest,newFolder,newCollection,newEnvironment,toPostmanCollection,fromPostman,toPostmanEnvironment,fromPostmanEnvironment,exportSettings,importSettings,applyAppSettings,flushWorkspace,persist,workspacePayload,addTab,enterWorkspace,switchWorkspace,deleteEnvironment,responseCopyText,render,renderResponse,renderVarOverlay,send,openAppSettings";
+const exposed = "state,DEFAULT_SETTINGS,normalizeSettings,newRequest,newFolder,newCollection,newEnvironment,newWorkspace,toPostmanCollection,fromPostman,toPostmanEnvironment,fromPostmanEnvironment,exportSettings,importSettings,applyAppSettings,flushWorkspace,persist,workspacePayload,addTab,enterWorkspace,switchWorkspace,deleteEnvironment,responseCopyText,render,renderResponse,renderVarOverlay,send,openAppSettings,exportTarget,copyAsCurl,openCodeDialog,openCurlDialog,renderCodeOutput,importCurlCommand,exportBackup,openRestoreDialog,confirmRestore,applySavedPayload,validateBackup,describePayload,notify";
 const handler = (req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
   if (url.pathname === "/api/redirect") { res.writeHead(302, { location: "/api/echo" }); res.end(); return; }
@@ -22,7 +22,7 @@ const handler = (req, res) => {
     });
     return;
   }
-  const file = { "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/styles.css": "styles.css" }[url.pathname];
+  const file = { "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/codegen.js": "codegen.js", "/styles.css": "styles.css" }[url.pathname];
   if (!file) { res.writeHead(404); res.end(); return; }
   let source = readFileSync(resolve(root, file), "utf8");
   if (file === "app.js") source += `\nwindow.__verify = {${exposed}};\n`;

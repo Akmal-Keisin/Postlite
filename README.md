@@ -10,12 +10,13 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) + Rus
 - **HTTP core** — every standard verb plus `QUERY`, URL with query params, headers, and request bodies (none / raw / form-data). Responses show status, latency, size, headers, and a pretty-printed JSON view with syntax highlighting; the body can be copied in one click.
 - **Collections** — nested folders, create/rename/delete, save the active request into any folder, a filterable tree, expand/collapse, and a draggable sidebar.
 - **Postman interop** — import and export Collection v2.1, and import/export Environment JSON, so you can move work between postlite and Postman.
+- **cURL & code** — the **Code** button in the request bar copies the active request as a runnable `curl` command, generates it as JavaScript (fetch / axios), PHP (cURL / Guzzle), Python (requests / urllib), or Go (`net/http`), and turns a pasted `curl` command back into a request tab. Output carries resolved variables and inherited auth, so the same secret warning applies; flags postlite cannot express (`-x`, `--compressed`) are named on import rather than guessed.
 - **Auth** — none / basic / bearer / API-key, set at request, folder, or collection level with inheritance.
 - **Variables** — `{{token}}` interpolation with collection, folder, and environment scopes. Precedence is `collection < environment < folder`. A peek overlay under the URL bar resolves each token and names the scope it came from. Values can be flagged **secret** and are masked in the UI (raw values are still sent).
 - **Environments** — managed in their own sidebar tab, scoped per workspace, bound to a collection through the selector in the top bar (next to **Import**). Bindings persist per collection.
 - **Scripts** — pre-request and test scripts run against a minimal `pm` sandbox (`pm.request`, `pm.response`, and variables); results appear in the response Tests tab.
 - **Settings** — a global preferences dialog (open with `Ctrl+,`) covers theme (light / dark / system), auto-save and session restore, request defaults (timeout, redirect policy, TLS verification, cache, response size cap), response view options (default tab, syntax highlighting, JSON indent, word wrap), privacy masking, the fixed keyboard shortcuts, and reset. Values live in `workspace.json` under `settings`, and the whole block can be exported or imported as JSON.
-- **Persistence** — collections, tabs, environments, and settings are saved to a single JSON file in the OS app-data directory.
+- **Persistence** — collections, tabs, environments, and settings are saved to a single JSON file in the OS app-data directory. **Import / Export** in settings can also write that whole state to one `postlite.backup` file and read it back, either merged beside the workspaces you already have or replacing them (replace confirms twice and restores the backup's preferences).
 
 ## Tech stack
 
@@ -84,6 +85,17 @@ postlite is verified by driving the real app over Chrome DevTools Protocol rathe
    ```
 
 `.verify/workspace.*.json` files are local test/backup workspaces and, together with the generated screenshots, are ignored by git so real request data is never committed.
+
+The settings and interop harnesses use a separate debug build so they can never touch a real workspace: set `identifier` to `app.postlite.tier1verify20261110` and add `build.devUrl` `http://127.0.0.1:8100` in `src-tauri/tauri.conf.json` while building it, then revert both. `node .verify/tier1-server.mjs` serves the UI (plus a self-signed TLS endpoint) on `127.0.0.1:8100`/`8101` with a `window.__verify` hook, and the app is launched with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9235`. Run:
+
+```sh
+node .verify/tier1-verify.mjs     # preferences, masking, export warnings
+node .verify/tier1-edge.mjs       # restart, restore-session, legacy migration
+node .verify/tier1-close.mjs      # autosave on window close (closes the app)
+node .verify/tier2a-codegen.mjs   # cURL/code logic, no browser needed
+node .verify/tier2a-execute.mjs   # generated snippets run against a live fixture
+node .verify/tier2a-verify.mjs    # Code menu, import, backup/restore in the app
+```
 
 ## License
 
