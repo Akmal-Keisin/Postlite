@@ -107,7 +107,7 @@ try {
   await click('#res-tabs [data-tab="res-headers"]');
   await check('sensitive response headers masked', `!document.querySelector('#res-headers').textContent.includes('synthetic-auth') && document.querySelector('#res-headers').textContent.includes('••••')`);
   await click('#copy-res');
-  await check('copy headers respects masking', `__clipboard.includes('authorization: ••••') && !__clipboard.includes('synthetic-auth')`);
+  await check('copy headers carries real values (mask is display-only)', `__clipboard.includes('authorization: synthetic-auth') && !__clipboard.includes('••••')`);
   await click('#open-app-settings');
   await set('privacy.maskSensitiveHeaders',false);
   await check('sensitive header masking can be disabled', `document.querySelector('#res-headers').textContent.includes('synthetic-auth')`);
@@ -150,7 +150,7 @@ try {
   await check('explicit TLS opt-out accepts self-signed certificate', `(await __TAURI__.core.invoke('http_send',{request:{method:'GET',url:'https://127.0.0.1:8101/api/echo',headers:[],settings:{ssl_verify:false}}})).status===200`);
   await click('#open-app-settings');
   await click('#app-settings-tabs [data-tab="pref-about"]');
-  await check('about uses build version', `document.querySelector('#app-version').textContent==='0.1.2'`);
+  await check('about uses build version', `document.querySelector('#app-version').textContent===await __TAURI__.app.getVersion()`);
   await click('#settings-reset');
   await check('reset always requires confirmation', `document.querySelector('#confirm-dialog').open`);
   await click('#confirm-ok');

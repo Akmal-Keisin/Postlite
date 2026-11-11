@@ -1,4 +1,5 @@
-/* Tier 2A: cURL + code generation + full backup, driven through the real app. */
+/* Tier 2A: cURL + code generation + full backup, driven through the real app.
+   P10 rewrite: the Code menu/dialog moved into the right-side drawer (P6). */
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -35,13 +36,18 @@ const press = async (key, code, windowsVirtualKeyCode) => {
   await cmd('Input.dispatchKeyEvent', { type: 'keyDown', ...base });
   await cmd('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
 };
+const escape = () => press('Escape', 'Escape', 27);
 const setUrl = (url) => evaluate(`(() => { const i=document.querySelector('#url'); i.value=${lit(url)}; i.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`);
 const selectTarget = (id) => evaluate(`(() => { const s=document.querySelector('#code-target'); s.value=${lit(id)}; s.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
-// Dialogs fade in, so a capture taken immediately shows a half-transparent pane.
+// The drawer is non-modal and its links toggle, so re-opening goes through openDrawer
+// instead of clicking a link that might already be active.
+const openCode = () => evaluate(`(() => { if (!document.querySelector('#drawer').open || document.querySelector('[data-drawer-pane="code"]').hidden) __verify.openDrawer('code'); return true; })()`);
+// Dialogs and the drawer fade in, so a capture taken immediately shows a half-transparent pane.
 const shot = async (name) => {
   await evaluate(`new Promise((r) => setTimeout(r, 320))`);
   await screenshot(name);
 };
+const settle = () => evaluate(`new Promise((r) => setTimeout(r, 300))`);
 
 const ECHO = 'http://127.0.0.1:8100/api/echo';
 const CURL_FULL = `curl -u 'rina:o"b"x' -X POST ${ECHO} -H 'Content-Type: application/json' --data-raw '{"name":"rina"}'`;
@@ -81,47 +87,46 @@ try {
     return true;
   })()`);
 
-  /* ------------------------------------------------------------------- menu */
+  /* ---------------------------------------------------------------- drawer */
 
-  await click('#code-btn');
-  await check('Code button opens one menu with the three text actions',
-    `!document.querySelector('#code-menu').hidden && document.querySelector('#code-btn').getAttribute('aria-expanded')==='true' && [...document.querySelectorAll('#code-menu [data-code]')].map(b=>b.dataset.code).join()==='copy-curl,generate,import'`);
-  await check('menu sits inside the window, just under its button',
-    `(() => { const m=document.querySelector('#code-menu').getBoundingClientRect(); const b=document.querySelector('#code-btn').getBoundingClientRect(); return m.left>=0 && m.top>=b.bottom && m.right<=innerWidth && m.bottom<=innerHeight; })()`);
-  await shot('tier2a-menu.png');
-  await click('#url');
-  await check('clicking outside closes the menu',
-    `document.querySelector('#code-menu').hidden && document.querySelector('#code-btn').getAttribute('aria-expanded')==='false'`);
-  await click('#code-btn');
-  await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
-  await check('Escape closes the menu and returns focus to the button',
-    `document.querySelector('#code-menu').hidden && document.activeElement.id==='code-btn'`);
+  await click('#code-link');
+  await check('Code link opens the drawer with the three footer actions',
+    `document.querySelector('#drawer').open && document.querySelector('#code-link').getAttribute('aria-expanded')==='true' && ['code-copy','code-import','code-export'].every(id=>!!document.querySelector('#'+id))`);
+  await settle();
+  await check('drawer sits inside the window at a fixed 320px',
+    `(() => { const m=document.querySelector('#drawer').getBoundingClientRect(); return m.left>=0 && m.top>=0 && m.right<=innerWidth && m.bottom<=innerHeight && Math.round(m.width)===320; })()`);
+  await shot('tier2a-drawer.png');
+  await click('#code-link');
+  await check('clicking the open link closes the drawer',
+    `!document.querySelector('#drawer').open && document.querySelector('#code-link').getAttribute('aria-expanded')==='false'`);
+  await click('#code-link');
+  await escape();
+  await check('Escape closes the drawer and returns focus to the link',
+    `!document.querySelector('#drawer').open && document.activeElement.id==='code-link'`);
 
   /* ------------------------------------------------------------- copy cURL */
 
-  await click('#code-btn');
-  await click('#code-menu [data-code="copy-curl"]');
+  await openCode();
+  await click('#code-copy');
   await check('Copy as cURL resolves variables and secrets into the command',
     `(() => { const c=window.__clipboard; return c.includes('--request POST') && c.includes(${lit(ECHO)}) && c.includes('X-Token: secret-123') && c.includes('Content-Type: application/json') && c.includes(${lit(`--data-raw '{"name":"rina"}'`)}) && !c.includes('{{token}}'); })()`);
-  await wait(`document.querySelector('#tool-note').textContent.includes('cURL copied')`, 'copy never reported');
+  await wait(`document.querySelector('#tool-note').textContent.includes('Snippet copied')`, 'copy never reported');
   await check('the note names the resolved values and the real command length',
     `(() => { const n=document.querySelector('#tool-note').textContent; const m=n.match(/\\((\\d+) characters/); return n.includes('variables resolved') && m && Number(m[1])===window.__clipboard.length; })()`);
 
   const clipboardBefore = await evaluate('window.__clipboard');
   await setUrl('');
-  await click('#code-btn');
-  await click('#code-menu [data-code="copy-curl"]');
-  await wait(`document.querySelector('#tool-note').textContent.includes('Enter a URL')`, 'missing URL not reported');
+  await click('#code-copy');
   await check('a request without a URL explains itself instead of copying',
-    `window.__clipboard===${lit(clipboardBefore)} && document.activeElement.id==='url'`);
+    `window.__clipboard===${lit(clipboardBefore)} && document.querySelector('#code-copy').disabled && document.querySelector('#code-note').textContent.includes('URL')`);
   await setUrl(ECHO);
 
   /* -------------------------------------------------------- generate code */
 
-  await click('#code-btn');
-  await click('#code-menu [data-code="generate"]');
-  await check('Generate code opens a dialog focused on the target picker',
-    `document.querySelector('#code-dialog').open && document.activeElement.id==='code-target'`);
+  await escape();
+  await openCode();
+  await check('Code drawer opens focused on the target picker',
+    `document.querySelector('#drawer').open && document.activeElement.id==='code-target'`);
   await check('the picker offers every verified target',
     `(() => { const ids=[...document.querySelectorAll('#code-target option')].map(o=>o.value); return ids.join(',')===window.postliteText.CODE_TARGETS.map(t=>t.id).join(','); })()`);
   await check('the first snippet is the shell command with resolved values',
@@ -151,28 +156,35 @@ try {
   await wait(`window.__clipboard.length>0`, 'snippet copy never reached the clipboard');
   await check('Copy snippet puts exactly the shown text on the clipboard',
     `window.__clipboard===document.querySelector('#code-output').textContent && document.querySelector('#tool-note').textContent.includes('Snippet copied')`);
-  await press('Escape', 'Escape', 27);
-  await check('Escape closes the snippet dialog', `!document.querySelector('#code-dialog').open`);
+  await escape();
+  await check('Escape closes the drawer', `!document.querySelector('#drawer').open`);
 
   await setUrl('');
-  await evaluate(`__verify.openCodeDialog()`);
-  await check('an empty request shows the reason in the dialog and disables copy',
+  await openCode();
+  await check('an empty request shows the reason in the drawer and disables copy',
     `(() => { const o=document.querySelector('#code-output').textContent; return o.includes('Enter a URL before exporting') && document.querySelector('#code-copy').disabled && document.querySelector('#code-target').disabled && document.querySelector('#code-note').textContent.length>0; })()`);
   await shot('tier2a-code-empty.png');
-  await press('Escape', 'Escape', 27);
+  await escape();
   await setUrl(ECHO);
 
   /* --------------------------------------------------------- import cURL */
 
   const tabsBefore = await evaluate(`__verify.state.tabs.length`);
-  await click('#code-btn');
-  await click('#code-menu [data-code="import"]');
+  await openCode();
+  await click('#code-import');
   await check('Import cURL opens with an empty command box focused',
     `document.querySelector('#curl-dialog').open && document.activeElement.id==='curl-input' && document.querySelector('#curl-input').value==='' && document.querySelector('#curl-status').textContent===''`);
   await press('Tab', 'Tab', 9);
   await check('Tab from the command box reaches a dialog action',
     `['curl-cancel', 'curl-import'].includes(document.activeElement.id)`);
   await evaluate(`document.querySelector('#curl-input').focus()`);
+  // keyDown with text exercises the app's keydown handler AND inserts the char;
+  // a handler that preventDefaults typing would leave the box empty.
+  await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: 'x', code: 'KeyX', windowsVirtualKeyCode: 88, text: 'x' });
+  await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: 'x', code: 'KeyX', windowsVirtualKeyCode: 88 });
+  await check('typing reaches the command box while the modal is open',
+    `document.querySelector('#curl-input').value==='x'`);
+  await evaluate(`document.querySelector('#curl-input').value=''`);
   await shot('tier2a-curl.png');
   await click('#curl-import');
   await check('an empty command is refused with a hint',
@@ -188,8 +200,7 @@ try {
     `document.querySelector('#tool-note').textContent.startsWith('cURL imported into a new tab.')`);
 
   const tabsProxy = await evaluate(`__verify.state.tabs.length`);
-  await click('#code-btn');
-  await click('#code-menu [data-code="import"]');
+  await click('#code-import');
   await evaluate(`document.querySelector('#curl-input').value=${lit(CURL_PROXY)}`);
   await click('#curl-import');
   await wait(`__verify.state.tabs.length>${tabsProxy}`, 'proxy command imported no tab');
@@ -200,8 +211,7 @@ try {
     `(() => { const n=document.querySelector('#tool-note').textContent; return n.includes('-x') && n.includes('--compressed'); })()`);
 
   const tabsInvalid = await evaluate(`__verify.state.tabs.length`);
-  await click('#code-btn');
-  await click('#code-menu [data-code="import"]');
+  await click('#code-import');
   await evaluate(`document.querySelector('#curl-input').value='wget https://api.example.com'`);
   await click('#curl-import');
   await check('a command postlite cannot read is refused in place',
@@ -288,12 +298,13 @@ try {
 
   /* ---------------------------------------------------------------- narrow */
 
-  await cmd('Emulation.setDeviceMetricsOverride', { width: 900, height: 700, deviceScaleFactor: 1, mobile: false });
-  await evaluate(`__verify.openCodeDialog()`);
-  await check('the request bar keeps all four actions usable at 900px',
-    `(() => { const bar=document.querySelector('.urlbar').getBoundingClientRect(); const r=document.querySelector('#code-btn').getBoundingClientRect(); const send=document.querySelector('#send').getBoundingClientRect(); return r.right<=document.documentElement.clientWidth && r.left>=send.right && r.width>=28 && bar.height>0 && getComputedStyle(document.querySelector('#code-btn')).display!=='none'; })()`);
+  await cmd('Emulation.setDeviceMetricsOverride', { width: 1080, height: 700, deviceScaleFactor: 1, mobile: false });
+  await openCode();
+  await settle();
+  await check('the request bar keeps Send and both drawer links usable at the 1080px minimum',
+    `(() => { const d=document.querySelector('#drawer').getBoundingClientRect(); const s=document.querySelector('#send').getBoundingClientRect(); const u=document.querySelector('.urlbox').getBoundingClientRect(); const c=document.querySelector('#code-link').getBoundingClientRect(); const k=document.querySelector('#cookies-link').getBoundingClientRect(); return s.right<=d.left+1 && u.right<=d.left+1 && u.width>120 && c.width>=28 && k.width>=28 && c.right<=document.documentElement.clientWidth && getComputedStyle(document.querySelector('#code-link')).display!=='none'; })()`);
   await shot('tier2a-narrow.png');
-  await evaluate(`document.querySelector('#code-dialog').close()`);
+  await evaluate(`__verify.closeDrawer()`);
   await cmd('Emulation.clearDeviceMetricsOverride');
 
   await check('the whole tier 2a pass produced no runtime errors', `window.__runtimeErrors.length===0`);
@@ -308,7 +319,7 @@ try {
   console.log('PASS the last restore and the legacy load are written to workspace.json');
   passed++;
 
-  console.log(`PASS ${passed} tier 2a checks`);
+  console.log(`PASS ${passed} tier 2a checks (new baseline after the drawer move)`);
 } finally {
   close();
 }
