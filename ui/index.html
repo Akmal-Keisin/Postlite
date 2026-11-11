@@ -27,6 +27,8 @@
       <symbol id="i-unfold" viewBox="0 0 16 16"><path d="m4 4.5 4 4 4-4M4 9.5l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-fold" viewBox="0 0 16 16"><path d="m4 11.5 4-4 4 4M4 6.5l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5.4" y="5.4" width="8" height="8" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M10.6 3.4v-.8H2.6v8h.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+      <symbol id="i-eye" viewBox="0 0 16 16"><path d="M1.8 8s2.3-4.2 6.2-4.2S14.2 8 14.2 8 11.9 12.2 8 12.2 1.8 8 1.8 8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+      <symbol id="i-eye-off" viewBox="0 0 16 16"><path d="M3.2 3.2l9.6 9.6M6.5 4.1A6.6 6.6 0 0 1 8 3.8c3.9 0 6.2 4.2 6.2 4.2a11.4 11.4 0 0 1-2 2.6M9.4 11.9a6.4 6.4 0 0 1-1.4.3C4.1 12.2 1.8 8 1.8 8a11.6 11.6 0 0 1 2.5-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.7 6.7a1.9 1.9 0 0 0 2.6 2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
       <symbol id="i-globe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.3 8h11.4M8 2.2c1.7 1.8 2.5 3.7 2.5 5.8S9.7 12 8 13.8C6.3 12 5.5 10.1 5.5 8S6.3 4 8 2.2z" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
       <symbol id="i-export" viewBox="0 0 16 16"><path d="M8 9.8V2.6M5.2 5.4 8 2.6l2.8 2.8M2.6 11.4v2.2h10.8v-2.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-gear" viewBox="0 0 16 16"><path d="m6.5 2-.4 1.7-1 .6-1.7-.5-1.5 2.4L3.2 7v1.2l-1.3 1 1.5 2.5 1.7-.5 1 .6.4 1.7h3l.4-1.7 1-.6 1.7.5 1.5-2.5-1.3-1V7l1.3-.8-1.5-2.4-1.7.5-1-.6L9.5 2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="7.8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
@@ -174,14 +176,7 @@
             </div>
             <button id="send" class="primary" title="Send request (Ctrl+Enter)">Send</button>
             <button id="save" class="tool outlined" title="Save request (Ctrl+S)">Save</button>
-            <button id="code-btn" class="tool outlined" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="code-menu" title="Copy as cURL or generate code from this request">Code<svg class="ic ws-caret" aria-hidden="true"><use href="#i-caret" /></svg></button>
             <div class="var-overlay" id="var-overlay" hidden role="dialog" aria-label="Variables used in URL"></div>
-          </div>
-
-          <div class="ctx-menu" id="code-menu" role="menu" aria-label="Code and cURL" hidden>
-            <button class="ctx-item" data-code="copy-curl" role="menuitem">Copy as cURL</button>
-            <button class="ctx-item" data-code="generate" role="menuitem">Generate code&hellip;</button>
-            <button class="ctx-item" data-code="import" role="menuitem">Import cURL&hellip;</button>
           </div>
 
           <nav class="tabs" id="req-tabs" aria-label="Request sections">
@@ -190,6 +185,9 @@
             <button class="tab" data-tab="headers">Headers <span class="count" id="headers-count"></span></button>
             <button class="tab" data-tab="body">Body</button>
             <button class="tab" data-tab="scripts">Scripts</button>
+            <span class="tabs-spacer" aria-hidden="true"></span>
+            <button class="drawer-link" id="cookies-link" type="button" data-drawer="cookies" aria-controls="drawer" aria-expanded="false" title="Cookies this workspace has stored">Cookies</button>
+            <button class="drawer-link" id="code-link" type="button" data-drawer="code" aria-controls="drawer" aria-expanded="false" title="Copy as cURL, generate code, or import a cURL command">Code</button>
           </nav>
 
           <div class="pane is-active" data-pane="params">
@@ -305,6 +303,50 @@
           <ul id="tests" class="tests" data-tab="tests"></ul>
           <p id="response-limit" class="response-limit" role="status" hidden></p>
         </section>
+
+        <dialog id="drawer" class="drawer" aria-labelledby="drawer-title">
+          <header class="drawer-head">
+            <h3 id="drawer-title">Code</h3>
+            <button id="drawer-close" class="icon-btn" type="button" title="Close (Esc)" aria-label="Close drawer">
+              <svg class="ic" aria-hidden="true"><use href="#i-x" /></svg>
+            </button>
+          </header>
+
+          <section class="drawer-pane" data-drawer-pane="code">
+            <p class="drawer-sub">The current request, with variables and inherited auth already resolved.</p>
+            <label for="code-target">Target
+              <select id="code-target"></select>
+            </label>
+            <pre id="code-output" class="code-output" tabindex="0" role="region" aria-label="Generated snippet"></pre>
+            <p id="code-note" class="code-note" role="status" aria-live="polite"></p>
+            <footer class="drawer-foot">
+              <button id="code-copy" class="primary" type="button"><svg class="ic" aria-hidden="true"><use href="#i-copy" /></svg>Salin</button>
+              <button id="code-import" class="tool outlined" type="button">Impor cURL&hellip;</button>
+              <button id="code-export" class="tool outlined" type="button"><svg class="ic" aria-hidden="true"><use href="#i-export" /></svg>Ekspor</button>
+            </footer>
+          </section>
+
+          <section class="drawer-pane" data-drawer-pane="cookies" hidden>
+            <p class="drawer-sub" id="cookies-sub">Cookies this workspace has stored.</p>
+            <p class="cookie-note" id="cookie-note" role="status" hidden></p>
+            <div class="cookie-filter" id="cookie-filter" hidden>
+              <span class="cookie-filter-label">Domain</span>
+              <span class="cookie-filter-domain" id="cookie-filter-domain"></span>
+              <button class="icon-btn" id="cookie-filter-clear" type="button" title="Show all domains" aria-label="Show all domains">
+                <svg class="ic" aria-hidden="true"><use href="#i-x" /></svg>
+              </button>
+            </div>
+            <div class="cookie-list" id="cookie-list"></div>
+            <div class="drawer-empty" id="cookie-empty">
+              <p>No cookies yet.</p>
+              <p class="drawer-empty-sub">Send a request to a site that sets cookies and they appear here, grouped by domain.</p>
+            </div>
+            <footer class="drawer-foot">
+              <button id="cookie-delete-domain" class="tool outlined cookie-danger" type="button" disabled title="Filter to one domain to delete its cookies">Hapus domain</button>
+              <button id="cookie-show-all" class="tool outlined" type="button" disabled title="All domains are already shown">Buka semua</button>
+            </footer>
+          </section>
+        </dialog>
       </main>
     </div>
 
@@ -434,6 +476,60 @@
               </div>
               <input id="pref-decodeResponse" data-setting="request.decodeResponse" type="checkbox" checked aria-describedby="pref-decodeResponse-help" />
             </div>
+            <fieldset class="preferences-transfer">
+              <legend>Cookies</legend>
+              <div class="preferences-row">
+                <div class="preferences-copy">
+                  <label for="pref-persistCookies">Persist cookies</label>
+                  <p id="pref-persistCookies-help">Save persistent cookies encrypted between sessions; session cookies always die when the app closes. Off keeps cookies for this session only and saves nothing.</p>
+                </div>
+                <input id="pref-persistCookies" data-setting="request.persistCookies" type="checkbox" checked aria-describedby="pref-persistCookies-help" />
+              </div>
+              <div class="preferences-actions">
+                <button id="settings-clear-cookies" class="tool outlined preferences-danger" type="button">Clear all cookies for this workspace</button>
+              </div>
+            </fieldset>
+            <fieldset class="preferences-transfer">
+              <legend>Proxy</legend>
+              <div class="preferences-row stacked">
+                <div class="preferences-copy">
+                  <label for="pref-proxy-mode">Mode</label>
+                  <p id="pref-proxy-help">No proxy. Requests connect directly to the target.</p>
+                </div>
+                <select id="pref-proxy-mode" data-setting="request.proxy.mode" aria-describedby="pref-proxy-help">
+                  <option value="direct">Direct (no proxy)</option>
+                  <option value="manual">Manual</option>
+                  <option value="environment">Environment variables</option>
+                </select>
+              </div>
+              <div class="preferences-row stacked">
+                <div class="preferences-copy">
+                  <label for="pref-proxy-url">Proxy URL</label>
+                  <p id="pref-proxy-url-help">Manual mode only, e.g. http://127.0.0.1:8888.</p>
+                </div>
+                <input id="pref-proxy-url" data-setting="request.proxy.url" type="text" spellcheck="false" placeholder="http://127.0.0.1:8888" aria-describedby="pref-proxy-url-help" />
+              </div>
+              <div class="preferences-row stacked">
+                <div class="preferences-copy">
+                  <label for="pref-proxy-user">Username</label>
+                  <p id="pref-proxy-credentials-help">Stored in the OS secret store, never in settings or backups.</p>
+                </div>
+                <input id="pref-proxy-user" type="text" spellcheck="false" autocomplete="off" aria-describedby="pref-proxy-credentials-help" />
+              </div>
+              <div class="preferences-row stacked">
+                <div class="preferences-copy">
+                  <label for="pref-proxy-pass">Password</label>
+                </div>
+                <input id="pref-proxy-pass" type="password" autocomplete="off" aria-describedby="pref-proxy-credentials-help" />
+              </div>
+              <div class="preferences-row stacked">
+                <div class="preferences-copy">
+                  <label for="pref-proxy-bypass">Bypass list</label>
+                  <p id="pref-proxy-bypass-help">Comma list of hosts that connect directly, e.g. localhost,10.0.0.0/8,.internal.</p>
+                </div>
+                <input id="pref-proxy-bypass" data-setting="request.proxy.bypass" type="text" spellcheck="false" placeholder="localhost,10.0.0.0/8,.internal" aria-describedby="pref-proxy-bypass-help" />
+              </div>
+            </fieldset>
           </section>
 
           <section id="pref-response" class="pane" data-pane="pref-response" aria-labelledby="pref-response-title">
@@ -480,7 +576,7 @@
             <div class="preferences-row">
               <div class="preferences-copy">
                 <label for="pref-maskSensitiveHeaders">Mask sensitive headers</label>
-                <p id="pref-maskSensitiveHeaders-help">Hide authorization, cookies, and token, secret, or key values in read-only header views, variable previews, and copied headers. Editable request headers stay visible.</p>
+                <p id="pref-maskSensitiveHeaders-help">Hide authorization, cookies, and token, secret, or key values in the request header grid, Auth fields, the response header table, and the cookie manager. Masking changes display only; requests and copies carry real values.</p>
               </div>
               <input id="pref-maskSensitiveHeaders" data-setting="privacy.maskSensitiveHeaders" type="checkbox" checked aria-describedby="pref-maskSensitiveHeaders-help" />
             </div>
@@ -613,20 +709,6 @@
           <button value="confirm" class="danger" id="confirm-ok">Delete</button>
         </div>
       </form>
-    </dialog>
-
-    <dialog id="code-dialog" class="code-dialog">
-      <h3>Generate code</h3>
-      <p class="dialog-sub">The snippet below is the current request, with variables and inherited auth already resolved.</p>
-      <label for="code-target">Target
-        <select id="code-target"></select>
-      </label>
-      <pre id="code-output" class="code-output" tabindex="0" role="region" aria-label="Generated snippet"></pre>
-      <p id="code-note" class="code-note" role="status" aria-live="polite"></p>
-      <div class="dialog-actions">
-        <button id="code-close" class="tool outlined" type="button">Close</button>
-        <button id="code-copy" class="primary" type="button"><svg class="ic" aria-hidden="true"><use href="#i-copy" /></svg>Copy snippet</button>
-      </div>
     </dialog>
 
     <dialog id="curl-dialog">

@@ -50,8 +50,8 @@ const postliteText = (() => {
     ["-o", { arity: 1, role: "ignore" }], ["--output", { arity: 1, role: "ignore" }],
     ["-m", { arity: 1, role: "ignore" }], ["--max-time", { arity: 1, role: "ignore" }],
     ["--connect-timeout", { arity: 1, role: "ignore" }],
-    ["-c", { arity: 1, role: "ignore" }], ["--cookie-jar", { arity: 1, role: "ignore" }],
-    ["-x", { arity: 1, role: "ignore" }], ["--proxy", { arity: 1, role: "ignore" }],
+    ["-c", { arity: 1, role: "ignore", note: "cookie-jar flags are not applied" }], ["--cookie-jar", { arity: 1, role: "ignore", note: "cookie-jar flags are not applied" }],
+    ["-x", { arity: 1, role: "ignore", note: "proxy flags are not applied" }], ["--proxy", { arity: 1, role: "ignore", note: "proxy flags are not applied" }],
     ["--cacert", { arity: 1, role: "ignore" }], ["--cert", { arity: 1, role: "ignore" }],
     ["--key", { arity: 1, role: "ignore" }], ["--resolve", { arity: 1, role: "ignore" }],
     ["--retry", { arity: 1, role: "ignore" }],
@@ -183,7 +183,12 @@ const postliteText = (() => {
           case "data": found.data.push(value); break;
           case "form": found.form.push(value); break;
           case "user": found.user = value; break;
-          case "cookie": found.cookie = value; break;
+          case "cookie":
+            // A value with "=" is a cookie string (becomes a manual Cookie header); anything else
+            // is a filename, and reading a cookie file must not inject cookies into the workspace.
+            if (value.includes("=")) found.cookie = value;
+            else remember(notes, "cookie files are not imported");
+            break;
           case "userAgent": found.userAgent = value; break;
           case "referer": found.referer = value; break;
           case "get": found.get = true; break;

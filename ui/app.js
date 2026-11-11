@@ -19,7 +19,7 @@ const SECRET_MASK = "••••••••";
 
 const DEFAULT_SETTINGS = {
   general: { theme: "dark", autoSave: true, autoSaveIntervalMs: 350, confirmBeforeDelete: true, restoreLastSession: true },
-  request: { defaultMethod: "GET", requestTimeoutMs: 60000, followRedirects: true, maxRedirects: 10, sslVerify: true, disableCache: false, decodeResponse: true },
+  request: { defaultMethod: "GET", requestTimeoutMs: 60000, followRedirects: true, maxRedirects: 10, sslVerify: true, disableCache: false, decodeResponse: true, persistCookies: true, proxy: { mode: "direct", url: "", bypass: "" } },
   response: { defaultView: "pretty", syntaxHighlight: true, jsonIndent: 2, wordWrap: true, showHeaders: true, showTime: true, showSize: true, maxResponseSizeKB: 2000 },
   privacy: { maskSensitiveHeaders: true, maskSecretVariables: true },
   sidebarWidth: 276,
@@ -29,6 +29,7 @@ const SETTING_OPTIONS = {
   defaultMethod: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "QUERY"],
   defaultView: ["pretty", "raw"],
   jsonIndent: [2, 4, "tab"],
+  mode: ["direct", "manual", "environment"],
 };
 const SETTING_RANGES = {
   autoSaveIntervalMs: [100, 60000], requestTimeoutMs: [1, 3600000], maxRedirects: [0, 100],
@@ -584,8 +585,10 @@ function switchWorkspace(id) {
   }
   syncWorkspace();
   enterWorkspace(next);
+  cookieDomainFilter = null;
   render();
   persist();
+  refreshCookiesIfVisible();
 }
 
 const confirmDialog = $("#confirm-dialog");
@@ -625,6 +628,9 @@ async function deleteWorkspace(id) {
     message: `“${ws.name}” will be removed with its collections, environments, and open tabs. This cannot be undone.`,
   });
   if (!confirmed) return;
+  // The jar is keyed by workspace id, so deleting the workspace must delete its cookies too.
+  try { await invoke("cookie_purge", { workspaceId: id }); }
+  catch (err) { notify(`Cookies for the deleted workspace: ${String(err)}`); }
   state.workspaces = state.workspaces.filter((w) => w.id !== id);
   if (!state.workspaces.length) state.workspaces.push(newWorkspace());
   if (!locateWorkspace(state.activeWorkspaceId)) enterWorkspace(state.workspaces[0]);
@@ -1049,28 +1055,65 @@ function exportSource() {
   return { request: exportTarget(req) };
 }
 
-async function copyAsCurl() {
-  const { request, error } = exportSource();
-  if (error) {
-    notify(error);
-    $("#url").focus();
-    return;
+const curlDialog = $("#curl-dialog");
+
+/* Right-side drawer: one container, two contents (Code / Cookies). Non-modal so
+   the response stays readable; opening the other content swaps in place. */
+const drawer = $("#drawer");
+let drawerOpener = null;
+let drawerPane = null;
+
+function openDrawer(which, opener) {
+  const swap = drawer.open;
+  drawerPane = which;
+  if (opener) drawerOpener = opener;
+  $("#drawer-title").textContent = which === "code" ? "Code" : "Cookies";
+  for (const pane of $$("#drawer .drawer-pane")) pane.hidden = pane.dataset.drawerPane !== which;
+  for (const link of $$(".drawer-link")) {
+    const active = link.dataset.drawer === which;
+    link.classList.toggle("is-active", active);
+    link.setAttribute("aria-expanded", String(active));
   }
-  const command = postliteText.toCurl(request);
-  notify(await copyText(command)
-    ? `cURL copied (${command.length} characters, variables resolved)`
-    : "The clipboard is not available.");
+  if (which === "code") renderCodePane();
+  if (which === "cookies") void loadCookies();
+  if (!swap) {
+    drawer.show();
+    $(".main").classList.add("drawer-open");
+  }
+  const focusTarget = which === "code"
+    ? ($("#code-target").disabled ? $("#drawer-close") : $("#code-target"))
+    : $("#drawer-close");
+  focusTarget.focus();
 }
 
-const codeDialog = $("#code-dialog");
-const curlDialog = $("#curl-dialog");
+function closeDrawer() {
+  if (!drawer.open) return;
+  drawer.close();
+  $(".main").classList.remove("drawer-open");
+  for (const link of $$(".drawer-link")) {
+    link.classList.remove("is-active");
+    link.setAttribute("aria-expanded", "false");
+  }
+  drawerPane = null;
+  drawerOpener?.focus();
+  drawerOpener = null;
+}
+
+function renderCodePane() {
+  const select = $("#code-target");
+  if (!select.options.length) {
+    select.insertAdjacentHTML("beforeend",
+      postliteText.CODE_TARGETS.map((t) => `<option value="${t.id}">${t.label}</option>`).join(""));
+  }
+  renderCodeOutput();
+}
 
 function renderCodeOutput() {
   const output = $("#code-output");
   const note = $("#code-note");
-  const copy = $("#code-copy");
   const { request, error } = exportSource();
-  copy.disabled = Boolean(error);
+  $("#code-copy").disabled = Boolean(error);
+  $("#code-export").disabled = Boolean(error);
   $("#code-target").disabled = Boolean(error);
   if (error) {
     output.textContent = error;
@@ -1089,6 +1132,30 @@ function renderCodeOutput() {
   // The emitters carry their own dependency line, so the note cannot drift.
   const required = /(?:\/\/|#) Requires: (.+)/.exec(code);
   note.textContent = `${required ? `Needs ${required[1]}.` : "No third-party package needed."} Variables are resolved in the output.`;
+}
+
+const SNIPPET_EXT = {
+  curl: "sh", "js-fetch": "js", "js-axios": "js", "php-curl": "php",
+  "php-guzzle": "php", "py-requests": "py", "py-urllib": "py", "go-http": "go",
+};
+
+function downloadText(file, text, mime) {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = file;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function exportSnippet() {
+  const code = $("#code-output").textContent;
+  if (!code || $("#code-export").disabled) return;
+  const target = $("#code-target").value;
+  downloadText(`postlite-request.${SNIPPET_EXT[target] ?? "txt"}`, code, "text/plain;charset=utf-8");
+  notify("Snippet exported.");
 }
 
 async function importCurlCommand() {
@@ -1124,23 +1191,196 @@ async function importCurlCommand() {
     : "cURL imported into a new tab.");
 }
 
-function openCodeDialog() {
-  const select = $("#code-target");
-  if (!select.options.length) {
-    select.insertAdjacentHTML("beforeend",
-      postliteText.CODE_TARGETS.map((t) => `<option value="${t.id}">${t.label}</option>`).join(""));
-  }
-  renderCodeOutput();
-  codeDialog.showModal();
-  select.focus();
-}
-
 function openCurlDialog() {
   $("#curl-input").value = "";
   $("#curl-status").textContent = "";
   curlDialog.showModal();
   $("#curl-input").focus();
 }
+
+/* ---------------------------------------------------------- cookie manager */
+/* The drawer's Cookies pane. Values arrive real from the backend and are masked
+   only in the view (§10): type=password + a per-row eye, copy always real bytes. */
+let cookieSnapshot = { rows: [], note: null, persisting: true };
+let cookieDomainFilter = null;
+
+const cookieMasked = () => state.settings.privacy.maskSensitiveHeaders;
+
+function cookieExpiryLabel(row) {
+  if (row.session || row.expiresMs == null) return "sesi";
+  return new Date(row.expiresMs).toLocaleString(undefined, {
+    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function cookieRowMarkup(row) {
+  const chips = [
+    row.secure ? '<span class="chip chip-secure">Secure</span>' : "",
+    row.httpOnly ? '<span class="chip chip-httponly">HttpOnly</span>' : "",
+    row.sameSite ? `<span class="chip chip-samesite">${esc(row.sameSite)}</span>` : "",
+  ].join("");
+  const masked = cookieMasked();
+  return `
+    <div class="cookie-row" data-domain="${esc(row.domain)}" data-path="${esc(row.path)}" data-name="${esc(row.name)}">
+      <div class="cookie-row-top">
+        <span class="cookie-name" title="${esc(row.name)}">${esc(row.name)}</span>
+        <span class="cookie-chips">${chips}</span>
+        <button class="icon-btn cookie-del" type="button" title="Delete this cookie" aria-label="Delete cookie ${esc(row.name)}">
+          <svg class="ic" aria-hidden="true"><use href="#i-trash" /></svg>
+        </button>
+      </div>
+      <div class="cookie-row-value">
+        <input class="cookie-value" type="${masked ? "password" : "text"}" value="${esc(row.value)}" readonly spellcheck="false" autocomplete="off" aria-label="Value of cookie ${esc(row.name)}" />
+        <button class="icon-btn cookie-eye" type="button" aria-pressed="false" title="${masked ? "Reveal value" : "Hide value"}" aria-label="Toggle value visibility for ${esc(row.name)}">
+          <svg class="ic" aria-hidden="true"><use href="#${masked ? "i-eye" : "i-eye-off"}" /></svg>
+        </button>
+        <button class="icon-btn cookie-copy" type="button" title="Copy the real value" aria-label="Copy value of cookie ${esc(row.name)}">
+          <svg class="ic" aria-hidden="true"><use href="#i-copy" /></svg>
+        </button>
+      </div>
+      <div class="cookie-row-meta">
+        <span class="cookie-path" title="Path ${esc(row.path)}">${esc(row.path)}</span>
+        <span class="cookie-expiry ${row.session ? "is-session" : ""}" title="${row.session ? "Session cookie: cleared when the app closes" : `Expires ${new Date(row.expiresMs).toISOString()}`}">${esc(cookieExpiryLabel(row))}</span>
+      </div>
+    </div>`;
+}
+
+function renderCookies() {
+  const rows = cookieSnapshot.rows;
+  const filtered = cookieDomainFilter
+    ? rows.filter((r) => r.domain === cookieDomainFilter)
+    : rows;
+  const domains = [...new Set(filtered.map((r) => r.domain))];
+
+  const note = $("#cookie-note");
+  if (cookieSnapshot.note) {
+    note.textContent = cookieSnapshot.note;
+    note.hidden = false;
+  } else if (!cookieSnapshot.persisting) {
+    note.textContent = "Persist cookies is off: these live only until the app closes.";
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+  }
+
+  $("#cookies-sub").textContent = cookieDomainFilter
+    ? `${filtered.length} cookie${filtered.length === 1 ? "" : "s"} for ${cookieDomainFilter}`
+    : `${rows.length} cookie${rows.length === 1 ? "" : "s"} across ${new Set(rows.map((r) => r.domain)).size} domain${new Set(rows.map((r) => r.domain)).size === 1 ? "" : "s"}`;
+
+  const filterBar = $("#cookie-filter");
+  filterBar.hidden = !cookieDomainFilter;
+  if (cookieDomainFilter) $("#cookie-filter-domain").textContent = cookieDomainFilter;
+
+  const list = $("#cookie-list");
+  list.innerHTML = domains.map((domain) => {
+    const groupRows = filtered.filter((r) => r.domain === domain);
+    return `
+      <section class="cookie-group">
+        <button class="cookie-group-head" type="button" data-domain="${esc(domain)}" aria-pressed="${cookieDomainFilter === domain}" title="${cookieDomainFilter === domain ? "Show all domains" : "Filter to this domain"}">
+          <svg class="ic" aria-hidden="true"><use href="#i-globe" /></svg>
+          <span class="cookie-group-domain">${esc(domain)}</span>
+          <span class="count">${groupRows.length}</span>
+        </button>
+        <div class="cookie-group-rows">${groupRows.map(cookieRowMarkup).join("")}</div>
+      </section>`;
+  }).join("");
+
+  const empty = $("#cookie-empty");
+  empty.hidden = filtered.length > 0;
+  if (!filtered.length) {
+    empty.querySelector("p").textContent = cookieDomainFilter ? `No cookies for ${cookieDomainFilter}.` : "No cookies yet.";
+    empty.querySelector(".drawer-empty-sub").textContent = cookieDomainFilter
+      ? "This domain's jar is empty. Open all domains to see the rest."
+      : "Send a request to a site that sets cookies and they appear here, grouped by domain.";
+  }
+
+  $("#cookie-delete-domain").disabled = !cookieDomainFilter;
+  $("#cookie-delete-domain").title = cookieDomainFilter
+    ? `Delete every cookie for ${cookieDomainFilter}`
+    : "Filter to one domain to delete its cookies";
+  $("#cookie-show-all").disabled = !cookieDomainFilter;
+  $("#cookie-show-all").title = cookieDomainFilter ? "Show all domains" : "All domains are already shown";
+}
+
+async function loadCookies() {
+  const id = state.activeWorkspaceId;
+  if (!id) {
+    cookieSnapshot = { rows: [], note: null, persisting: true };
+    renderCookies();
+    return;
+  }
+  try {
+    cookieSnapshot = await invoke("cookie_list", { workspaceId: id });
+  } catch (err) {
+    cookieSnapshot = { rows: [], note: String(err), persisting: true };
+  }
+  // A filter pointing at a domain that no longer exists would show a dead end.
+  if (cookieDomainFilter && !cookieSnapshot.rows.some((r) => r.domain === cookieDomainFilter)) {
+    cookieDomainFilter = null;
+  }
+  renderCookies();
+}
+
+function refreshCookiesIfVisible() {
+  if (drawer.open && drawerPane === "cookies") void loadCookies();
+}
+
+async function deleteCookieFilter(filter, label) {
+  const id = state.activeWorkspaceId;
+  if (!id) return;
+  try {
+    const removed = await invoke("cookie_delete", { workspaceId: id, filter });
+    notify(removed ? `${label}: ${removed} cookie${removed === 1 ? "" : "s"} deleted.` : `${label}: nothing to delete.`);
+  } catch (err) {
+    notify(String(err));
+  }
+  await loadCookies();
+}
+
+$("#cookie-list").addEventListener("click", (event) => {
+  const head = event.target.closest(".cookie-group-head");
+  if (head) {
+    const domain = head.dataset.domain;
+    cookieDomainFilter = cookieDomainFilter === domain ? null : domain;
+    renderCookies();
+    return;
+  }
+  const row = event.target.closest(".cookie-row");
+  if (!row) return;
+  const { domain, path, name } = row.dataset;
+  if (event.target.closest(".cookie-eye")) {
+    const input = row.querySelector(".cookie-value");
+    const reveal = input.type === "password";
+    input.type = reveal ? "text" : "password";
+    const eye = row.querySelector(".cookie-eye");
+    eye.setAttribute("aria-pressed", String(reveal));
+    eye.title = reveal ? "Hide value" : "Reveal value";
+    eye.querySelector("use").setAttribute("href", reveal ? "#i-eye-off" : "#i-eye");
+    return;
+  }
+  if (event.target.closest(".cookie-copy")) {
+    const value = row.querySelector(".cookie-value").value;
+    void copyText(value).then((ok) => notify(ok ? `Cookie "${name}" copied (real value).` : "The clipboard is not available."));
+    return;
+  }
+  if (event.target.closest(".cookie-del")) {
+    void deleteCookieFilter({ domain, path, name }, name);
+  }
+});
+
+$("#cookie-filter-clear").addEventListener("click", () => { cookieDomainFilter = null; renderCookies(); });
+$("#cookie-show-all").addEventListener("click", () => { cookieDomainFilter = null; renderCookies(); });
+$("#cookie-delete-domain").addEventListener("click", async () => {
+  const domain = cookieDomainFilter;
+  if (!domain) return;
+  const count = cookieSnapshot.rows.filter((r) => r.domain === domain).length;
+  const ok = await confirmDialogShow({
+    title: "Delete domain cookies",
+    message: `Delete ${count} cookie${count === 1 ? "" : "s"} for ${domain} in this workspace? Sites will see you as signed out.`,
+    action: "Delete domain",
+  });
+  if (ok) await deleteCookieFilter({ domain }, domain);
+});
 
 /* ------------------------------------------------------------- full data backup */
 const backupStamp = () => new Date().toISOString().slice(0, 10);
@@ -1259,7 +1499,7 @@ async function confirmRestore() {
   persist();
   await flushWorkspace();
   notify(mode === "merge"
-    ? "Backup merged. The restored workspaces were added beside yours."
+    ? "Backup merged. The restored workspaces were added beside yours. Cookies are not part of a backup, so they start with an empty jar."
     : "Backup restored. Everything stored in the app was replaced.");
 }
 
@@ -1274,6 +1514,7 @@ function render() {
   renderRequest();
   renderSettings();
   renderResponse();
+  if (drawer.open && drawerPane === "code") renderCodeOutput();
   $("#stat-workspaces").textContent = state.workspaces.length;
   $("#stat-collections").textContent = state.collections.length;
   $("#stat-tabs").textContent = state.tabs.length;
@@ -1520,7 +1761,7 @@ function renderRequest() {
   $("#method").dataset.method = req.method;
   $("#url").value = req.url;
   renderRows($("#params-table").tBodies[0], req.params);
-  renderRows($("#headers-table").tBodies[0], req.headers);
+  renderRows($("#headers-table").tBodies[0], req.headers, { mask: headerMasked });
   $("#params-count").textContent = req.params.filter((p) => p.enabled && p.key).length || "";
   $("#headers-count").textContent = req.headers.filter((h) => h.enabled && h.key).length || "";
   renderBody(req);
@@ -1542,18 +1783,25 @@ function renderBody(req) {
 }
 
 function renderRows(tbody, rows, options = {}) {
-  const { check = true, secret = false } = options;
+  const { check = true, secret = false, mask = null } = options;
   tbody.innerHTML = rows
-    .map(
-      (row, index) => `
+    .map((row, index) => {
+      const masked = (secret && row.secret && state.settings.privacy.maskSecretVariables) || Boolean(mask && mask(row));
+      const rowMasked = Boolean(mask && mask(row));
+      const valueInput = `<input type="${masked ? "password" : "text"}" data-field="value" value="${esc(row.value)}" spellcheck="false" />`;
+      // Only the header grid (mask) gets a reveal eye; the variables grid keeps its secret checkbox.
+      const valueCell = mask
+        ? `<td><div class="value-wrap">${valueInput}<button class="icon-btn row-eye" type="button" data-act="reveal-row" aria-pressed="false" title="Reveal value" aria-label="Toggle value visibility" ${rowMasked ? "" : "hidden"}>${icon("eye")}</button></div></td>`
+        : `<td>${valueInput}</td>`;
+      return `
       <tr data-index="${index}">
         ${check ? `<td class="c-check"><input type="checkbox" data-field="enabled" ${row.enabled ? "checked" : ""} /></td>` : ""}
         <td><input type="text" data-field="key" value="${esc(row.key)}" spellcheck="false" /></td>
-        <td><input type="${secret && row.secret && state.settings.privacy.maskSecretVariables ? "password" : "text"}" data-field="value" value="${esc(row.value)}" spellcheck="false" /></td>
+        ${valueCell}
         ${secret ? `<td class="c-secret"><input type="checkbox" data-field="secret" ${row.secret ? "checked" : ""} aria-label="Secret" title="Mask this value in the UI" /></td>` : ""}
         <td class="c-del"><button class="del" data-act="drop-row" title="Remove" aria-label="Remove row">${icon("x")}</button></td>
-      </tr>`
-    )
+      </tr>`;
+    })
     .join("");
 }
 
@@ -1562,17 +1810,24 @@ const authOptions = (includeInherit) =>
     .map((type) => `<option value="${type}">${AUTH_LABELS[type]}</option>`)
     .join("");
 
+// Auth secrets are masked like the header grid; the identifier fields (API-key Key, basic
+// Username) stay visible because they are names, not secrets.
+const authSecretField = (label, a, k, value) => {
+  const masked = state.settings.privacy.maskSensitiveHeaders;
+  return `<label class="field"><span>${label}</span><div class="auth-value"><input type="${masked ? "password" : "text"}" data-a="${a}" data-k="${k}" value="${esc(value)}" spellcheck="false" /><button class="icon-btn auth-eye" type="button" data-act="reveal-auth" aria-pressed="false" title="Reveal value" aria-label="Toggle ${label} visibility" ${masked ? "" : "hidden"}>${icon("eye")}</button></div></label>`;
+};
+
 function authFieldsMarkup(auth) {
   if (auth.type === "bearer")
-    return `<label class="field"><span>Token</span><input type="text" data-a="bearer" data-k="token" value="${esc(auth.bearer.token)}" spellcheck="false" /></label>`;
+    return authSecretField("Token", "bearer", "token", auth.bearer.token);
   if (auth.type === "basic")
     return `
       <label class="field"><span>Username</span><input type="text" data-a="basic" data-k="username" value="${esc(auth.basic.username)}" spellcheck="false" /></label>
-      <label class="field"><span>Password</span><input type="text" data-a="basic" data-k="password" value="${esc(auth.basic.password)}" spellcheck="false" /></label>`;
+      ${authSecretField("Password", "basic", "password", auth.basic.password)}`;
   if (auth.type === "apikey")
     return `
       <label class="field"><span>Key</span><input type="text" data-a="apikey" data-k="key" value="${esc(auth.apikey.key)}" spellcheck="false" /></label>
-      <label class="field"><span>Value</span><input type="text" data-a="apikey" data-k="value" value="${esc(auth.apikey.value)}" spellcheck="false" /></label>
+      ${authSecretField("Value", "apikey", "value", auth.apikey.value)}
       <label class="field"><span>Add to</span>
         <select data-a="apikey" data-k="addTo">
           <option value="header"${auth.apikey.addTo === "header" ? " selected" : ""}>header</option>
@@ -1644,6 +1899,7 @@ function highlightJson(text) {
 }
 
 const sensitiveName = (name) => /^(authorization|proxy-authorization|cookie|set-cookie)$|token|secret|key/i.test(name);
+const headerMasked = (row) => state.settings.privacy.maskSensitiveHeaders && sensitiveName(row.key);
 const maskVariable = (name, secret) => (state.settings.privacy.maskSecretVariables && secret)
   || (state.settings.privacy.maskSensitiveHeaders && sensitiveName(name));
 const shownHeader = (header) => state.settings.privacy.maskSensitiveHeaders && sensitiveName(header.key) ? SECRET_MASK : header.value;
@@ -1652,7 +1908,8 @@ function responseCopyText() {
   const response = activeTab()?.response;
   if (!response) return "";
   const view = $("#res-tabs .tab.is-active")?.dataset.tab;
-  if (view === "res-headers") return response.headers.map((header) => `${header.key}: ${shownHeader(header)}`).join("\n");
+  // Copy is a path out of the app, so it carries real values even though the table shows masks.
+  if (view === "res-headers") return response.headers.map((header) => `${header.key}: ${header.value}`).join("\n");
   if (view === "tests") return $("#tests").textContent;
   return response.body;
 }
@@ -1848,6 +2105,9 @@ async function send() {
           request_timeout_ms: settings.request.requestTimeoutMs, follow_redirects: settings.request.followRedirects,
           max_redirects: settings.request.maxRedirects, ssl_verify: settings.request.sslVerify,
           disable_cache: settings.request.disableCache, max_response_size_kb: limitKB,
+          workspace_id: state.activeWorkspaceId ?? "",
+          proxy: settings.request.proxy.mode === "direct" ? null
+            : { mode: settings.request.proxy.mode, url: settings.request.proxy.url, bypass: settings.request.proxy.bypass },
         },
       },
     });
@@ -1865,6 +2125,7 @@ async function send() {
 
   tab.response = { ...response, results, limitKB };
   renderResponse();
+  refreshCookiesIfVisible();
 }
 
 /* --------------------------------------------------------------------- dialogs */
@@ -2203,44 +2464,21 @@ $("#tab-menu").addEventListener("click", (event) => {
   closeTabMenu();
 });
 
-/* code menu: the three ways to turn the current request into text, and back */
-function closeCodeMenu() {
-  $("#code-menu").hidden = true;
-  $("#code-btn").setAttribute("aria-expanded", "false");
+/* drawer entry links: clicking the open content closes it, the other swaps in place */
+for (const link of $$(".drawer-link")) {
+  link.addEventListener("click", () => {
+    if (drawer.open && drawerPane === link.dataset.drawer) closeDrawer();
+    else openDrawer(link.dataset.drawer, link);
+  });
 }
-
-function openCodeMenu() {
-  const menu = $("#code-menu");
-  const box = $("#code-btn").getBoundingClientRect();
-  const pad = 6;
-  menu.hidden = false;
-  menu.style.left = `${Math.max(pad, Math.min(box.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - pad))}px`;
-  menu.style.top = `${Math.min(box.bottom + 4, window.innerHeight - menu.offsetHeight - pad)}px`;
-  $("#code-btn").setAttribute("aria-expanded", "true");
-}
-
-$("#code-btn").addEventListener("click", () => {
-  if ($("#code-menu").hidden) openCodeMenu();
-  else closeCodeMenu();
-});
-
-$("#code-menu").addEventListener("click", (event) => {
-  const action = event.target.closest("[data-code]")?.dataset.code;
-  closeCodeMenu();
-  if (!action) return;
-  if (action === "copy-curl") void copyAsCurl();
-  else if (action === "generate") openCodeDialog();
-  else openCurlDialog();
-});
+$("#drawer-close").addEventListener("click", closeDrawer);
 
 document.addEventListener("click", (event) => {
   if (!$("#tab-menu").hidden && !event.target.closest("#tab-menu")) closeTabMenu();
-  if (!$("#code-menu").hidden && !event.target.closest("#code-menu") && !event.target.closest("#code-btn")) closeCodeMenu();
   if (!$("#ws-pop").hidden && !event.target.closest("#ws-bar")) closeWsPop();
   if (!$("#env-pop").hidden && !event.target.closest("#env-bar")) closeEnvPop();
 });
 window.addEventListener("blur", closeTabMenu);
-window.addEventListener("blur", closeCodeMenu);
 window.addEventListener("blur", closeWsPop);
 window.addEventListener("blur", closeEnvPop);
 
@@ -2281,6 +2519,20 @@ for (const [sel, key] of [
       event.target.type === "checkbox" ? event.target.checked : event.target.value;
     const counter = { params: "#params-count", headers: "#headers-count" }[key];
     if (counter) $(counter).textContent = rows.filter((row) => row.enabled !== false && row.key).length || "";
+    // Renaming a header into/out of a sensitive name re-masks that row in place, without a
+    // full re-render that would steal focus from the key being typed.
+    if (key === "headers" && field === "key") {
+      const tr = event.target.closest("tr");
+      const masked = headerMasked(rows[Number(tr.dataset.index)]);
+      tr.querySelector('[data-field="value"]').type = masked ? "password" : "text";
+      const eye = tr.querySelector('[data-act="reveal-row"]');
+      if (eye) {
+        eye.hidden = !masked;
+        eye.setAttribute("aria-pressed", "false");
+        eye.title = "Reveal value";
+        eye.querySelector("use").setAttribute("href", "#i-eye");
+      }
+    }
     persist(event.target.type === "checkbox");
   });
   $(sel).addEventListener("click", (event) => {
@@ -2288,7 +2540,7 @@ for (const [sel, key] of [
     const rows = rowTarget(key);
     if (!rows) return;
     rows.splice(Number(event.target.closest("tr").dataset.index), 1);
-    renderRows($(sel).tBodies[0], rows, { check: key !== "form" });
+    renderRows($(sel).tBodies[0], rows, { check: key !== "form", mask: key === "headers" ? headerMasked : null });
     persist();
   });
 }
@@ -2298,7 +2550,7 @@ $$("[data-add]").forEach((button) =>
     const rows = rowTarget(button.dataset.add);
     if (!rows) return;
     rows.push({ key: "", value: "", enabled: true });
-    renderRows($(`#${button.dataset.add}-table`).tBodies[0], rows, { check: button.dataset.add !== "form" });
+    renderRows($(`#${button.dataset.add}-table`).tBodies[0], rows, { check: button.dataset.add !== "form", mask: button.dataset.add === "headers" ? headerMasked : null });
     persist();
   })
 );
@@ -2404,6 +2656,20 @@ function wireAuthControls(selectSel, fieldsSel, readAuth) {
 
 wireAuthControls("#req-auth-type", "#req-auth-fields", () => activeReq()?.auth);
 wireAuthControls("#node-auth-type", "#node-auth-fields", () => settingsNode()?.auth);
+
+// One reveal affordance for every masked editable surface (header grid rows, Auth fields).
+// Reveal is per-row and not sticky: the next renderRows/renderAuth rebuilds it masked.
+document.addEventListener("click", (event) => {
+  const eye = event.target.closest('[data-act="reveal-row"], [data-act="reveal-auth"]');
+  if (!eye) return;
+  const input = eye.closest(".value-wrap, .auth-value")?.querySelector("input");
+  if (!input) return;
+  const reveal = input.type === "password";
+  input.type = reveal ? "text" : "password";
+  eye.setAttribute("aria-pressed", String(reveal));
+  eye.title = reveal ? "Hide value" : "Reveal value";
+  eye.querySelector("use").setAttribute("href", reveal ? "#i-eye-off" : "#i-eye");
+});
 
 // Environments share the settings pane but have no scripts of their own.
 const nodeScript = (key) => (value) => {
@@ -2618,6 +2884,7 @@ $("#url").addEventListener("input", (event) => {
   activeReq().url = base;
   if (params.length) activeReq().params = params;
   renderVarPeek(event.target.value);
+  if (drawer.open && drawerPane === "code") renderCodeOutput();
   persist(false);
 });
 
@@ -2768,15 +3035,37 @@ function applyTheme() {
   document.documentElement.dataset.theme = theme === "system" ? (systemTheme.matches ? "dark" : "light") : theme;
 }
 
+const settingPath = (path) => path.split(".").reduce((node, key) => node?.[key], state.settings);
+
+const PROXY_HELP = {
+  direct: "No proxy. Requests connect directly to the target.",
+  manual: "Every request goes through this proxy. Bypass is a comma list of hosts that connect directly.",
+  environment: "Reads HTTP_PROXY / HTTPS_PROXY / ALL_PROXY (and lowercase), plus NO_PROXY for bypass. Nothing set means direct.",
+};
+
+function refreshProxyControls() {
+  const manual = state.settings.request.proxy.mode === "manual";
+  for (const id of ["#pref-proxy-url", "#pref-proxy-bypass", "#pref-proxy-user", "#pref-proxy-pass"]) $(id).disabled = !manual;
+  $("#pref-proxy-help").textContent = PROXY_HELP[state.settings.request.proxy.mode];
+}
+
+let lastCookiePersist = null;
+function syncCookiePersist() {
+  const on = state.settings.request.persistCookies;
+  if (on === lastCookiePersist) return;
+  lastCookiePersist = on;
+  invoke("cookie_set_persist", { on }).catch((err) => notify(`Cookie persistence: ${String(err)}`));
+}
+
 function refreshPreferenceControls() {
   for (const control of $$('[data-setting]', appSettingsDialog)) {
-    const [group, key] = control.dataset.setting.split(".");
-    const value = key ? state.settings[group][key] : state.settings[group];
+    const value = settingPath(control.dataset.setting);
     if (control.type === "checkbox") control.checked = value;
     else control.value = String(value);
   }
   $("#pref-autoSaveIntervalMs").disabled = !state.settings.general.autoSave;
   $("#pref-maxRedirects").disabled = !state.settings.request.followRedirects;
+  refreshProxyControls();
 }
 
 function applyAppSettings() {
@@ -2786,6 +3075,7 @@ function applyAppSettings() {
   $('#res-tabs [data-tab="res-headers"]').hidden = !state.settings.response.showHeaders;
   activateTab("#res-tabs .tab", "#pretty, #raw, #res-headers, .tests", $(`#res-tabs [data-tab="${state.settings.response.defaultView}"]`));
   refreshPreferenceControls();
+  syncCookiePersist();
   render();
 }
 
@@ -2806,6 +3096,7 @@ function openAppSettings() {
   closeVarOverlay();
   refreshPreferenceControls();
   refreshTransferOptions();
+  void loadProxyCredentials();
   $("#preferences-message").textContent = "Changes apply immediately across all workspaces.";
   appSettingsDialog.showModal();
 }
@@ -2821,15 +3112,54 @@ appSettingsDialog.addEventListener("change", (event) => {
   const control = event.target.closest("[data-setting]");
   if (!control) return;
   if (!control.checkValidity()) { control.reportValidity(); return; }
-  const [group, key] = control.dataset.setting.split(".");
+  const path = control.dataset.setting.split(".");
+  const key = path.at(-1);
   let value = control.type === "checkbox" ? control.checked : control.value;
   if (control.type === "number" || (key === "jsonIndent" && value !== "tab")) value = Number(value);
-  if (key) state.settings[group][key] = value;
-  else state.settings[group] = value;
+  let node = state.settings;
+  for (const part of path.slice(0, -1)) node = node[part];
+  node[key] = value;
   state.settings = normalizeSettings(state.settings);
   applyAppSettings();
   persist();
   $("#preferences-message").textContent = "Preference applied.";
+});
+
+// Proxy credentials are secrets: they live in the OS secret store, never in settings or a save.
+let proxyCredentials = { username: "", password: "" };
+async function loadProxyCredentials() {
+  try { proxyCredentials = (await invoke("proxy_credentials_get")) ?? { username: "", password: "" }; }
+  catch { proxyCredentials = { username: "", password: "" }; }
+  $("#pref-proxy-user").value = proxyCredentials.username;
+  $("#pref-proxy-pass").value = proxyCredentials.password;
+}
+for (const [id, field] of [["#pref-proxy-user", "username"], ["#pref-proxy-pass", "password"]]) {
+  $(id).addEventListener("change", async (event) => {
+    proxyCredentials[field] = event.target.value;
+    try {
+      await invoke("proxy_credentials_set", { username: proxyCredentials.username, password: proxyCredentials.password });
+      $("#preferences-message").textContent = "Proxy credentials saved to the OS secret store.";
+    } catch (err) {
+      $("#preferences-message").textContent = `Proxy credentials: ${String(err)}`;
+    }
+  });
+}
+
+$("#settings-clear-cookies").addEventListener("click", async () => {
+  const ws = activeWorkspace();
+  const ok = await confirmDialogShow({
+    title: "Clear all cookies",
+    message: `Delete every cookie stored for “${ws.name}”? This cannot be undone.`,
+    action: "Clear cookies",
+  });
+  if (!ok) return;
+  try {
+    await invoke("cookie_purge", { workspaceId: ws.id });
+    refreshCookiesIfVisible();
+    $("#preferences-message").textContent = `Cookies cleared for “${ws.name}”.`;
+  } catch (err) {
+    $("#preferences-message").textContent = `Clear cookies: ${String(err)}`;
+  }
 });
 
 async function saveWorkspaceNow() {
@@ -2883,7 +3213,7 @@ $("#settings-export-environment").addEventListener("click", () => {
   if (env) exportEnvironment(env);
 });
 
-/* code snippet + cURL import dialogs */
+/* Code drawer footer + cURL import dialog */
 $("#code-target").addEventListener("change", renderCodeOutput);
 $("#code-copy").addEventListener("click", async () => {
   const code = $("#code-output").textContent;
@@ -2891,7 +3221,8 @@ $("#code-copy").addEventListener("click", async () => {
     ? `Snippet copied (${code.length} characters, variables resolved)`
     : "The clipboard is not available.");
 });
-$("#code-close").addEventListener("click", () => codeDialog.close());
+$("#code-import").addEventListener("click", openCurlDialog);
+$("#code-export").addEventListener("click", exportSnippet);
 $("#curl-import").addEventListener("click", () => void importCurlCommand());
 $("#curl-cancel").addEventListener("click", () => curlDialog.close());
 
@@ -2919,16 +3250,19 @@ document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") event.preventDefault();
     return;
   }
+  // A real modal (showModal) owns its keyboard: typing, Tab, and native Escape
+  // must stay untouched; only the app shortcuts below are suppressed. The
+  // non-modal drawer is deliberately excluded so it never blocks this path.
+  if ($("dialog[open]:not(#drawer)")) return;
   if (event.key === "Escape" && !$("#var-overlay").hidden) closeVarOverlay();
   if (event.key === "Escape" && !$("#tab-menu").hidden) closeTabMenu();
-  if (event.key === "Escape" && !$("#code-menu").hidden) { closeCodeMenu(); $("#code-btn").focus(); }
+  if (event.key === "Escape" && drawer.open) { event.preventDefault(); closeDrawer(); }
   if (event.key === "Escape" && !$("#ws-pop").hidden) closeWsPop();
   if (event.key === "Escape" && !$("#env-pop").hidden) closeEnvPop();
   if (!(event.ctrlKey || event.metaKey) || event.altKey || event.repeat) return;
   const key = event.key.toLowerCase();
   if (!["enter", "s", "n", "k", ","].includes(key)) return;
   event.preventDefault();
-  if ($("dialog[open]")) return;
   if (key === "enter") void send();
   else if (key === "s") openSaveDialog();
   else if (key === "n" && event.shiftKey) openCreateDialog("collection");
