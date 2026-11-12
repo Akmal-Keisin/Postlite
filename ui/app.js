@@ -147,7 +147,7 @@ function newEnvironment(fields = {}) {
 
 // A workspace groups collections and environments; openTabs/openTabId are the
 // runtime tab strip that belongs to it (never serialized directly — persist
-// writes their requests back into `tabs`).
+// writes requests and environment references back into `tabs`).
 function newWorkspace(fields = {}) {
   return {
     id: fields.id ?? uid(),
@@ -476,7 +476,7 @@ function workspacePayload() {
       name: ws.name,
       collections: ws.collections,
       environments: ws.environments,
-      tabs: (ws.openTabs ?? []).map((t) => t.req),
+      tabs: (ws.openTabs ?? []).map((t) => (t.kind === "environment" ? { kind: "environment", envId: t.envId } : t.req)),
       activeTabIndex: (ws.openTabs ?? []).findIndex((t) => t.id === ws.openTabId),
       activeTabId: ws.openTabId ?? null,
     })),
@@ -534,7 +534,12 @@ function hydrateWorkspace(saved) {
   ws.collections = (saved.collections ?? []).map(migrateCollection);
   ws.environments = (saved.environments ?? []).map(newEnvironment);
   ws.openTabs = state.settings.general.restoreLastSession
-    ? (saved.tabs ?? []).map((req) => ({ id: uid(), req: newRequest(req), response: null })) : [];
+    ? (saved.tabs ?? [])
+        .filter((t) => t?.kind !== "environment" || ws.environments.some((env) => env.id === t.envId))
+        .map((t) => (t?.kind === "environment"
+          ? { id: uid(), kind: "environment", envId: t.envId }
+          : { id: uid(), req: newRequest(t), response: null }))
+    : [];
   ws.openTabId = ws.openTabs[saved.activeTabIndex]?.id ?? ws.openTabs[0]?.id ?? null;
   return ws;
 }
@@ -571,7 +576,8 @@ function enterWorkspace(ws) {
   state.environments = ws.environments;
   state.tabs = ws.openTabs ?? [];
   state.activeTabId = ws.openTabId ?? null;
-  state.selected = null;
+  const tab = state.tabs.find((t) => t.id === state.activeTabId);
+  state.selected = tab?.kind === "environment" ? { id: tab.envId, kind: "environment" } : null;
   state.expanded = new Set();
   state.filter = "";
   $("#tree-search").value = "";
@@ -605,17 +611,24 @@ function confirmDialogShow({ title, message, action = "Delete" }) {
   });
 }
 
-// Removing an environment also clears any binding to it, in every workspace.
+// Removing an environment also closes its tab(s) in every workspace and clears
+// any binding to it.
 async function deleteEnvironment(id) {
   const env = locateEnvironment(id);
   if (!env || !await confirmDeletion("environment", env.name)) return;
   state.environments = state.environments.filter((e) => e.id !== id);
+  state.tabs = state.tabs.filter((t) => t.kind !== "environment" || t.envId !== id);
   for (const ws of state.workspaces) {
     for (const collection of ws.collections) {
       if (collection.environmentId === id) collection.environmentId = null;
     }
+    if (ws !== activeWorkspace()) {
+      ws.openTabs = (ws.openTabs ?? []).filter((t) => t.kind !== "environment" || t.envId !== id);
+      if (ws.openTabId && !ws.openTabs.some((t) => t.id === ws.openTabId)) ws.openTabId = ws.openTabs.at(-1)?.id ?? null;
+    }
   }
   if (state.selected?.kind === "environment" && state.selected.id === id) state.selected = null;
+  if (!state.tabs.some((t) => t.id === state.activeTabId)) return selectTab(state.tabs.at(-1)?.id ?? null);
   persist();
   render();
 }
@@ -653,21 +666,66 @@ function addTab(req = newRequest()) {
   return tab;
 }
 
-async function confirmCloseTabs(count) {
-  if (!count || !state.settings.general.confirmBeforeDelete) return true;
-  return confirmDialogShow({ title: "Close tabs", message: `Close ${count} tab${count === 1 ? "" : "s"}? Changes not saved to a collection will be discarded.`, action: "Close tabs" });
+// Activates a tab and syncs the sidebar selection with it: an environment tab
+// selects its environment, a request tab clears any stale selection.
+function selectTab(id) {
+  state.activeTabId = id;
+  const tab = state.tabs.find((t) => t.id === id);
+  state.selected = tab?.kind === "environment" ? { id: tab.envId, kind: "environment" } : null;
+  render();
+  persist();
+}
+
+// Environments live in the tab strip next to requests, so editing variables
+// never pulls the user away from an open request tab.
+function openEnvTab(envId) {
+  let tab = state.tabs.find((t) => t.kind === "environment" && t.envId === envId);
+  if (!tab) {
+    tab = { id: uid(), kind: "environment", envId };
+    state.tabs.push(tab);
+  }
+  selectTab(tab.id);
+  return tab;
+}
+
+/* Ctrl+PgUp / Ctrl+PgDown: move to the previous/next open request tab (wraps around) */
+function cycleTab(offset) {
+  if (state.tabs.length < 2) return;
+  const index = state.tabs.findIndex((t) => t.id === state.activeTabId);
+  const next = state.tabs[(index + offset + state.tabs.length) % state.tabs.length];
+  selectTab(next.id);
+}
+
+// A tab is dirty when its request was never saved to a collection, or when it
+// differs from the stored copy. Environment tabs save in place, so never dirty.
+function tabDirty(tab) {
+  if (tab.kind === "environment") return false;
+  const stored = locate(tab.req.id);
+  return !stored || JSON.stringify(stored) !== JSON.stringify(tab.req);
+}
+
+// Only tabs with unsaved changes ask for confirmation; closing a saved request
+// or an environment tab is instant.
+async function confirmCloseTabs(tabs) {
+  const dirty = tabs.filter((tab) => tabDirty(tab));
+  if (!dirty.length || !state.settings.general.confirmBeforeDelete) return true;
+  const message = dirty.length === 1
+    ? `“${dirty[0].req.name}” has changes not saved to a collection. Close it? This cannot be undone.`
+    : `${dirty.length} of these tabs have changes not saved to a collection. Close them? This cannot be undone.`;
+  return confirmDialogShow({ title: "Close tabs", message, action: "Close tabs" });
 }
 
 async function closeTab(id) {
-  if (!state.tabs.some((t) => t.id === id) || !await confirmCloseTabs(1)) return;
+  const tab = state.tabs.find((t) => t.id === id);
+  if (!tab || !await confirmCloseTabs([tab])) return;
   state.tabs = state.tabs.filter((t) => t.id !== id);
-  if (state.activeTabId === id) state.activeTabId = state.tabs.at(-1)?.id ?? null;
+  if (state.activeTabId === id) return selectTab(state.tabs.at(-1)?.id ?? null);
   render();
   persist();
 }
 
 async function closeOtherTabs(id) {
-  if (!await confirmCloseTabs(state.tabs.filter((t) => t.id !== id).length)) return;
+  if (!await confirmCloseTabs(state.tabs.filter((t) => t.id !== id))) return;
   state.tabs = state.tabs.filter((t) => t.id === id);
   state.activeTabId = id;
   state.selected = null;
@@ -676,7 +734,7 @@ async function closeOtherTabs(id) {
 }
 
 async function closeAllTabs() {
-  if (!await confirmCloseTabs(state.tabs.length)) return;
+  if (!await confirmCloseTabs(state.tabs)) return;
   state.tabs = [];
   state.activeTabId = null;
   render();
@@ -1550,10 +1608,11 @@ function renderWorkspaceBar() {
     `<div class="ws-empty">No workspaces yet</div>`;
 }
 
-// The collection that owns the active tab's request; null for an unsaved tab.
+// The collection that owns the active tab's request; null for an unsaved tab
+// or an environment tab.
 function activeCollection() {
   const tab = activeTab();
-  return tab ? parentChain(tab.req.id)[0] ?? null : null;
+  return tab && tab.kind !== "environment" ? parentChain(tab.req.id)[0] ?? null : null;
 }
 
 // The topbar picker binds the active collection, so it only appears when the
@@ -1733,13 +1792,20 @@ function nodeMarkup(node, depth, cid, kind = node.kind, override = null) {
 function renderTabbar() {
   $("#tabbar").innerHTML = state.tabs
     .map((tab) => {
-      const stored = locate(tab.req.id);
-      const dirty = stored && JSON.stringify(stored) !== JSON.stringify(tab.req);
+      if (tab.kind === "environment") {
+        const env = locateEnvironment(tab.envId);
+        return `
+      <div class="tab-item ${tab.id === state.activeTabId ? "is-active" : ""}" data-id="${tab.id}" title="${esc(env?.name ?? "Environment")}">
+        <svg class="ic folder-ic" aria-hidden="true"><use href="#i-globe" /></svg>
+        <span class="tab-name">${esc(env?.name ?? "Environment")}</span>
+        <button class="close" data-act="close-tab" title="Close" aria-label="Close tab">${icon("x")}</button>
+      </div>`;
+      }
       return `
       <div class="tab-item ${tab.id === state.activeTabId ? "is-active" : ""}" data-id="${tab.id}" title="${esc(tab.req.name)}">
         <span class="method ${esc(tab.req.method)}">${esc(tab.req.method)}</span>
         <span class="tab-name">${esc(tab.req.name)}</span>
-        ${dirty ? `<span class="tab-dirty" title="Unsaved changes"></span>` : ""}
+        ${tabDirty(tab) ? `<span class="tab-dirty" title="Unsaved changes"></span>` : ""}
         <button class="close" data-act="close-tab" title="Close" aria-label="Close tab">${icon("x")}</button>
       </div>`;
     })
@@ -1845,17 +1911,21 @@ function renderAuth(select, host, auth, includeInherit) {
   host.innerHTML = authFieldsMarkup(auth);
 }
 
+// A collection/folder shows its settings when selected in the sidebar; an
+// environment shows its variables whenever its tab is the active one.
 function settingsNode() {
-  if (!state.selected) return null;
-  if (state.selected.kind === "environment") return locateEnvironment(state.selected.id);
-  const node = nodeFor(state.selected);
-  return node && node.kind !== "request" ? node : null;
+  if (state.selected && state.selected.kind !== "environment") {
+    const node = nodeFor(state.selected);
+    if (node && node.kind !== "request") return node;
+  }
+  const tab = activeTab();
+  return tab?.kind === "environment" ? (locateEnvironment(tab.envId) ?? null) : null;
 }
 
 function renderSettings() {
   const node = settingsNode();
-  const kind = state.selected?.kind;
-  const isEnv = kind === "environment";
+  const isEnv = state.environments.includes(node);
+  const kind = isEnv ? "environment" : state.selected?.kind;
   $("#settings-pane").hidden = !node;
   $(".main").classList.toggle("settings-open", Boolean(node));
   if (!node) return;
@@ -2194,7 +2264,8 @@ collectionDialog.addEventListener("close", () => {
   } else if (renameTarget.kind === "environment") {
     const env = newEnvironment({ name });
     state.environments.push(env);
-    state.selected = { id: env.id, kind: "environment" };
+    openEnvTab(env.id);
+    return;
   }
   persist();
   render();
@@ -2263,6 +2334,9 @@ $("#collections").addEventListener("click", async (event) => {
     return;
   }
   state.selected = { id, kind };
+  // Clicking a collection or folder toggles it: one click opens it, clicking
+  // again folds it. The caret does the same for targeted folding.
+  state.expanded.has(id) ? state.expanded.delete(id) : state.expanded.add(id);
   render();
 });
 
@@ -2270,7 +2344,8 @@ $("#collections").addEventListener("dblclick", (event) => {
   const head = event.target.closest(".node-head");
   if (!head) return;
   const id = head.closest(".node").dataset.id;
-  state.expanded.has(id) ? state.expanded.delete(id) : state.expanded.add(id);
+  // The two clicks already toggled expansion once each, leaving it unchanged;
+  // double-click's remaining job is to deselect and close the settings pane.
   if (state.selected?.id === id) state.selected = null;
   render();
 });
@@ -2295,8 +2370,7 @@ $("#environments").addEventListener("click", (event) => {
     exportEnvironment(env);
     return;
   }
-  state.selected = { id, kind: "environment" };
-  render();
+  openEnvTab(id);
 });
 
 /* ----------------------------------------------------------- workspace switcher */
@@ -2431,12 +2505,7 @@ $("#tabbar").addEventListener("click", (event) => {
   const item = event.target.closest(".tab-item");
   if (!item) return;
   if (event.target.closest('[data-act="close-tab"]')) closeTab(item.dataset.id);
-  else {
-    state.activeTabId = item.dataset.id;
-    state.selected = null;
-    render();
-    persist();
-  }
+  else selectTab(item.dataset.id);
 });
 
 /* tab right-click menu: close the other tabs, or all of them */
@@ -3261,7 +3330,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !$("#env-pop").hidden) closeEnvPop();
   if (!(event.ctrlKey || event.metaKey) || event.altKey || event.repeat) return;
   const key = event.key.toLowerCase();
-  if (!["enter", "s", "n", "k", ","].includes(key)) return;
+  if (!["enter", "s", "n", "k", ",", "w", "pageup", "pagedown"].includes(key)) return;
   event.preventDefault();
   if (key === "enter") void send();
   else if (key === "s") openSaveDialog();
@@ -3269,6 +3338,9 @@ document.addEventListener("keydown", (event) => {
   else if (key === "n") addTab();
   else if (key === "k") { $("#tree-search").focus(); $("#tree-search").select(); }
   else if (key === ",") openAppSettings();
+  else if (key === "pageup") cycleTab(-1);
+  else if (key === "pagedown") cycleTab(1);
+  else if (key === "w" && state.activeTabId) closeTab(state.activeTabId);
 });
 
 await loadWorkspace();
