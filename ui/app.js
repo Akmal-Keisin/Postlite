@@ -27,7 +27,7 @@ const DEFAULT_SETTINGS = {
 const SETTING_OPTIONS = {
   theme: ["light", "dark", "system"],
   defaultMethod: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "QUERY"],
-  defaultView: ["pretty", "raw"],
+  defaultView: ["pretty", "raw", "preview"],
   jsonIndent: [2, 4, "tab"],
   mode: ["direct", "manual", "environment"],
 };
@@ -1986,6 +1986,26 @@ function responseCopyText() {
 
 let lastRenderedResponse;
 
+/* Preview tab: renders an HTML body in a fully sandboxed iframe — no scripts,
+   forms, or same-origin access, so untrusted markup stays inert. Rendering is
+   lazy (only while the tab is visible) and the iframe only reloads when a
+   different response object arrives. */
+const previewEmptyDoc = '<!doctype html><body style="font:12px system-ui,sans-serif;color:#888;margin:14px">Preview is available for HTML responses.</body>';
+
+const previewable = (response) =>
+  response.headers.some((h) => /(?:^|[\s:;])(?:text\/html|application\/xhtml\+xml)\b/i.test(`${h.key}: ${h.value}`));
+
+let lastPreviewResponse; // response object currently loaded into the preview iframe
+
+function renderPreview() {
+  const frame = $("#preview");
+  const response = activeTab()?.response;
+  if (response === lastPreviewResponse) return;
+  lastPreviewResponse = response;
+  if (!response || response.error) frame.srcdoc = "";
+  else frame.srcdoc = previewable(response) ? response.body : previewEmptyDoc;
+}
+
 function renderResponse() {
   const response = activeTab()?.response;
   const pill = $("#status");
@@ -1995,7 +2015,7 @@ function renderResponse() {
   $("#response-limit").hidden = !response?.truncated;
   $("#response-limit").textContent = response?.truncated ? `Response truncated, shown up to ${response.limitKB ?? state.settings.response.maxResponseSizeKB} KB.` : "";
   if (response !== lastRenderedResponse) {
-    activateTab("#res-tabs .tab", "#pretty, #raw, #res-headers, .tests", $(`#res-tabs [data-tab="${state.settings.response.defaultView}"]`));
+    activateTab("#res-tabs .tab", "#pretty, #raw, #preview, #res-headers, .tests", $(`#res-tabs [data-tab="${state.settings.response.defaultView}"]`));
     lastRenderedResponse = response;
     const res = $("#res-pane");
     res.classList.remove("flash");
@@ -2013,6 +2033,7 @@ function renderResponse() {
     $("#res-headers-count").textContent = "";
     $("#copy-res").hidden = true;
     renderTests([]);
+    renderPreview();
     return;
   }
   renderTests(response.results ?? []);
@@ -2027,6 +2048,7 @@ function renderResponse() {
     $("#res-headers").tBodies[0].innerHTML = "";
     $("#res-headers-count").textContent = "";
     showError(response.error);
+    renderPreview();
     return;
   }
   $("#copy-res").hidden = false;
@@ -2050,6 +2072,7 @@ function renderResponse() {
   $("#res-headers").tBodies[0].innerHTML = response.headers
     .map((h) => `<tr><td>${esc(h.key)}</td><td>${esc(shownHeader(h))}</td></tr>`)
     .join("");
+  if ($("#res-tabs .tab.is-active")?.dataset.tab === "preview") renderPreview();
 }
 
 function renderTests(results) {
@@ -2323,7 +2346,10 @@ $("#collections").addEventListener("click", async (event) => {
 
   if (kind === "request") {
     const stored = locate(id);
-    if (stored) addTab(structuredClone(stored));
+    if (!stored) return;
+    // Reuse the tab already open for this request instead of spawning a duplicate.
+    const existing = state.tabs.find((t) => t.req?.id === stored.id);
+    existing ? selectTab(existing.id) : addTab(structuredClone(stored));
     return;
   }
 
@@ -2334,9 +2360,9 @@ $("#collections").addEventListener("click", async (event) => {
     return;
   }
   state.selected = { id, kind };
-  // Clicking a collection or folder toggles it: one click opens it, clicking
-  // again folds it. The caret does the same for targeted folding.
-  state.expanded.has(id) ? state.expanded.delete(id) : state.expanded.add(id);
+  // Clicking a collection or folder opens it; folding is the caret's job only,
+  // so an open node never snaps shut when its name is clicked again.
+  state.expanded.add(id);
   render();
 });
 
@@ -2570,7 +2596,9 @@ $("#settings-tabs").addEventListener("click", (event) => {
 
 $("#res-tabs").addEventListener("click", (event) => {
   const tab = event.target.closest(".tab");
-  if (tab) activateTab("#res-tabs .tab", "#pretty, #raw, #res-headers, .tests", tab);
+  if (!tab) return;
+  activateTab("#res-tabs .tab", "#pretty, #raw, #preview, #res-headers, .tests", tab);
+  if (tab.dataset.tab === "preview") renderPreview();
 });
 
 const rowTarget = (key) => (key === "form" ? activeReq()?.body.form : activeReq()?.[key]);
@@ -3142,7 +3170,7 @@ function applyAppSettings() {
   applySidebarWidth(state.settings.sidebarWidth);
   for (const pane of $$("#pretty, #raw")) pane.classList.toggle("word-wrap", state.settings.response.wordWrap);
   $('#res-tabs [data-tab="res-headers"]').hidden = !state.settings.response.showHeaders;
-  activateTab("#res-tabs .tab", "#pretty, #raw, #res-headers, .tests", $(`#res-tabs [data-tab="${state.settings.response.defaultView}"]`));
+  activateTab("#res-tabs .tab", "#pretty, #raw, #preview, #res-headers, .tests", $(`#res-tabs [data-tab="${state.settings.response.defaultView}"]`));
   refreshPreferenceControls();
   syncCookiePersist();
   render();

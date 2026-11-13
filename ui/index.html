@@ -294,11 +294,13 @@
           <nav class="tabs" id="res-tabs" aria-label="Response views">
             <button class="tab is-active" data-tab="pretty">Pretty</button>
             <button class="tab" data-tab="raw">Raw</button>
+            <button class="tab" data-tab="preview">Preview</button>
             <button class="tab" data-tab="res-headers">Headers <span class="count" id="res-headers-count"></span></button>
             <button class="tab" data-tab="tests">Tests <span class="count" id="tests-count"></span></button>
           </nav>
           <pre id="pretty" class="is-active" data-tab="pretty"></pre>
           <pre id="raw" data-tab="raw"></pre>
+          <iframe id="preview" data-tab="preview" sandbox="" title="HTML response preview"></iframe>
           <table id="res-headers" class="kv" data-tab="res-headers"><tbody></tbody></table>
           <ul id="tests" class="tests" data-tab="tests"></ul>
           <p id="response-limit" class="response-limit" role="status" hidden></p>
@@ -536,7 +538,7 @@
             <h3 id="pref-response-title">Response</h3>
             <div class="preferences-row">
               <label for="pref-defaultView">Default view</label>
-              <select id="pref-defaultView" data-setting="response.defaultView"><option value="pretty">Pretty</option><option value="raw">Raw</option></select>
+              <select id="pref-defaultView" data-setting="response.defaultView"><option value="pretty">Pretty</option><option value="raw">Raw</option><option value="preview">Preview</option></select>
             </div>
             <div class="preferences-row">
               <label for="pref-syntaxHighlight">Highlight JSON syntax</label>
@@ -675,6 +677,8 @@
 
     <dialog id="save-dialog">
       <form method="dialog">
+        <!-- First submit button = Enter's implicit submitter; keep it the primary action. -->
+        <button type="submit" value="save" hidden></button>
         <h3>Save request</h3>
         <p class="dialog-sub">Store the current tab in a collection or folder.</p>
         <label>Name <input id="save-name" type="text" autocomplete="off" /></label>
@@ -688,6 +692,8 @@
 
     <dialog id="collection-dialog">
       <form method="dialog">
+        <!-- First submit button = Enter's implicit submitter; keep it the primary action. -->
+        <button type="submit" value="create" hidden></button>
         <h3>Name</h3>
         <p class="dialog-sub">Collections and folders can hold requests and subfolders.</p>
         <label>Name <input id="collection-name" type="text" autocomplete="off" /></label>
