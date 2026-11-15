@@ -18,7 +18,7 @@ const AUTH_LABELS = {
 const SECRET_MASK = "••••••••";
 
 const DEFAULT_SETTINGS = {
-  general: { theme: "dark", autoSave: true, autoSaveIntervalMs: 350, confirmBeforeDelete: true, restoreLastSession: true },
+  general: { theme: "dark", accent: "ember", autoSave: true, autoSaveIntervalMs: 350, confirmBeforeDelete: true, restoreLastSession: true },
   request: { defaultMethod: "GET", requestTimeoutMs: 60000, followRedirects: true, maxRedirects: 10, sslVerify: true, disableCache: false, decodeResponse: true, persistCookies: true, proxy: { mode: "direct", url: "", bypass: "" } },
   response: { defaultView: "pretty", syntaxHighlight: true, jsonIndent: 2, wordWrap: true, showHeaders: true, showTime: true, showSize: true, maxResponseSizeKB: 2000 },
   privacy: { maskSensitiveHeaders: true, maskSecretVariables: true },
@@ -26,6 +26,7 @@ const DEFAULT_SETTINGS = {
 };
 const SETTING_OPTIONS = {
   theme: ["light", "dark", "system"],
+  accent: ["ember", "ocean", "mint", "violet", "rose", "amber", "teal", "magenta"],
   defaultMethod: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "QUERY"],
   defaultView: ["pretty", "raw", "preview"],
   jsonIndent: [2, 4, "tab"],
@@ -3804,6 +3805,12 @@ function applyTheme() {
   try { localStorage.setItem("postlite.theme", theme); } catch {}
 }
 
+function applyAccent() {
+  const accent = state.settings.general.accent;
+  document.documentElement.dataset.accent = accent;
+  try { localStorage.setItem("postlite.accent", accent); } catch {}
+}
+
 const settingPath = (path) => path.split(".").reduce((node, key) => node?.[key], state.settings);
 
 const PROXY_HELP = {
@@ -3830,6 +3837,7 @@ function refreshPreferenceControls() {
   for (const control of $$('[data-setting]', appSettingsDialog)) {
     const value = settingPath(control.dataset.setting);
     if (control.type === "checkbox") control.checked = value;
+    else if (control.type === "radio") control.checked = control.value === String(value);
     else control.value = String(value);
   }
   $("#pref-autoSaveIntervalMs").disabled = !state.settings.general.autoSave;
@@ -3839,6 +3847,7 @@ function refreshPreferenceControls() {
 
 function applyAppSettings() {
   applyTheme();
+  applyAccent();
   applySidebarWidth(state.settings.sidebarWidth);
   for (const pane of $$("#pretty, #raw")) pane.classList.toggle("word-wrap", state.settings.response.wordWrap);
   $('#res-tabs [data-tab="res-headers"]').hidden = !state.settings.response.showHeaders;

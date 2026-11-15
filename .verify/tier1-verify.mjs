@@ -42,7 +42,7 @@ try {
   await check('invalid preference types and ranges use defaults', `(() => {const s=__verify.normalizeSettings({general:{autoSave:'false',autoSaveIntervalMs:0},request:{maxRedirects:101,requestTimeoutMs:Infinity},response:{maxResponseSizeKB:-1,jsonIndent:3}});return JSON.stringify(s)===JSON.stringify(__verify.DEFAULT_SETTINGS);})()`);
   await click('#open-app-settings');
   await check('gear opens native settings dialog', `document.querySelector('#app-settings-dialog').open`);
-  for (const category of ['general','request','response','privacy','shortcuts','transfer','about']) {
+  for (const category of ['general','appearance','request','response','privacy','shortcuts','transfer','about']) {
     await click(`#app-settings-tabs [data-tab="pref-${category}"]`);
     await check(`category ${category} opens corresponding pane`, `document.querySelector('#app-settings-dialog .pane.is-active').dataset.pane==='pref-${category}'`);
   }
@@ -84,6 +84,21 @@ try {
   await cmd('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:'light'}]});
   await check('system theme follows light', `new Promise(r=>{const start=Date.now();const timer=setInterval(()=>{if(document.documentElement.dataset.theme==='light'||Date.now()-start>2000){clearInterval(timer);r(document.documentElement.dataset.theme==='light');}},30);})`);
   await set('general.theme','dark');
+  await click('#app-settings-tabs [data-tab="pref-appearance"]');
+  await click('#pref-accent-ocean');
+  await check('accent preset applies and persists', `document.documentElement.dataset.accent==='ocean' && __verify.state.settings.general.accent==='ocean' && localStorage.getItem('postlite.accent')==='ocean' && getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()==='#38bdf8'`);
+  await check('primary button outline follows accent', `(() => { const cs=getComputedStyle(document.querySelector('#send')); return cs.color==='rgb(56, 189, 248)' && cs.borderTopColor==='rgb(56, 189, 248)' && cs.backgroundColor==='rgba(0, 0, 0, 0)'; })()`);
+  await check('swatches preview their own preset hue', `getComputedStyle(document.querySelector('#pref-accent-rose + .accent-dot')).backgroundColor==='rgb(251, 113, 133)' && getComputedStyle(document.querySelector('#pref-accent-ember + .accent-dot')).backgroundColor==='rgb(255, 107, 53)'`);
+  await set('general.theme','light');
+  await check('light theme retunes accent and swatches', `getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()==='#0369a1' && getComputedStyle(document.querySelector('#pref-accent-rose + .accent-dot')).backgroundColor==='rgb(190, 18, 60)'`);
+  await screenshot('tier1-accent-ocean-light.png');
+  await set('general.theme','dark');
+  await typeSearch('accent');
+  await check('search finds the accent presets row', `document.querySelector('#app-settings-dialog .pane.is-active').dataset.pane==='pref-appearance' && !document.querySelector('#pref-accent-label').closest('.preferences-row').hidden`);
+  await click('#pref-search-clear');
+  await check('invalid accent falls back to ember', `__verify.normalizeSettings({general:{accent:'hotpink'}}).general.accent==='ember'`);
+  await check('accent survives settings roundtrip', `__verify.normalizeSettings(JSON.parse(JSON.stringify(__verify.state.settings))).general.accent==='ocean'`);
+  await click('#pref-accent-ember');
   await set('request.defaultMethod','PATCH');
   await click('#app-settings-close');
   await cmd('Input.dispatchKeyEvent',{type:'keyDown',key:'n',code:'KeyN',modifiers:2});

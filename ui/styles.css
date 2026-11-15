@@ -47,9 +47,7 @@
   --cyan-hi: #6fdcec;
   --selection-fg: #fff;
   --backdrop: rgba(5, 7, 10, 0.62);
-  --primary-bg: linear-gradient(180deg, #ff8352, #f4571f);
-  --primary-line: #ff8b5e;
-  --primary-fg: #1a0d06;
+  --primary-fg: color-mix(in srgb, var(--accent) 12%, #000);
   --danger-bg: linear-gradient(180deg, #ff6d80, #e6415a);
   --danger-line: #ff8091;
   --danger-fg: #2a060b;
@@ -98,14 +96,33 @@
   --cyan-hi: #075462;
   --selection-fg: #202a35;
   --backdrop: rgba(32, 42, 53, 0.45);
-  --primary-bg: linear-gradient(180deg, #bd4a18, #a03508);
-  --primary-line: #cf5f2a;
-  --primary-fg: #fff4ec;
+  --primary-fg: color-mix(in srgb, var(--accent) 6%, #fff);
   --danger-bg: linear-gradient(180deg, #e5484d, #c2333a);
   --danger-line: #f0616a;
   --danger-fg: #fff0f2;
   --dot: rgba(32, 42, 53, 0.065);
 }
+
+/* Accent presets. The attribute lives on <html> and on each settings swatch,
+   so a swatch previews its own hue; light variants run darker to keep text
+   contrast on white. Semantic method/status hues are deliberately untouched. */
+[data-accent="ember"] { --accent: #ff6b35; --accent-hi: #ff8352; }
+[data-accent="ocean"] { --accent: #38bdf8; --accent-hi: #6ed3fb; }
+[data-accent="mint"] { --accent: #34d399; --accent-hi: #6ee7b7; }
+[data-accent="violet"] { --accent: #a78bfa; --accent-hi: #c2aefc; }
+[data-accent="rose"] { --accent: #fb7185; --accent-hi: #fda4af; }
+[data-accent="amber"] { --accent: #fbbf24; --accent-hi: #fcd34d; }
+[data-accent="teal"] { --accent: #2dd4bf; --accent-hi: #7ee8dc; }
+[data-accent="magenta"] { --accent: #e879f9; --accent-hi: #f0abfc; }
+
+:root[data-theme="light"][data-accent="ember"], :root[data-theme="light"] [data-accent="ember"] { --accent: #b83e0c; --accent-hi: #a9380a; }
+:root[data-theme="light"][data-accent="ocean"], :root[data-theme="light"] [data-accent="ocean"] { --accent: #0369a1; --accent-hi: #075985; }
+:root[data-theme="light"][data-accent="mint"], :root[data-theme="light"] [data-accent="mint"] { --accent: #047857; --accent-hi: #065f46; }
+:root[data-theme="light"][data-accent="violet"], :root[data-theme="light"] [data-accent="violet"] { --accent: #6d28d9; --accent-hi: #5b21b6; }
+:root[data-theme="light"][data-accent="rose"], :root[data-theme="light"] [data-accent="rose"] { --accent: #be123c; --accent-hi: #9f1239; }
+:root[data-theme="light"][data-accent="amber"], :root[data-theme="light"] [data-accent="amber"] { --accent: #b45309; --accent-hi: #92400e; }
+:root[data-theme="light"][data-accent="teal"], :root[data-theme="light"] [data-accent="teal"] { --accent: #0f766e; --accent-hi: #115e59; }
+:root[data-theme="light"][data-accent="magenta"], :root[data-theme="light"] [data-accent="magenta"] { --accent: #a21caf; --accent-hi: #86198f; }
 
 * {
   box-sizing: border-box;
@@ -663,21 +680,21 @@ button.primary {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: var(--primary-bg);
-  border: 1px solid var(--primary-line);
+  background: transparent;
+  border: 1px solid var(--accent);
   border-radius: var(--r-m);
-  color: var(--primary-fg);
+  color: var(--accent);
   font-weight: 700;
   letter-spacing: 0.2px;
   cursor: pointer;
-  box-shadow: 0 2px 14px color-mix(in srgb, var(--accent) 32%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.25);
-  transition: filter var(--t-fast) var(--ease), transform var(--t-fast) var(--ease),
-    box-shadow var(--t-fast) var(--ease);
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
 }
 
 button.primary:hover {
-  filter: brightness(1.07);
-  box-shadow: 0 4px 18px color-mix(in srgb, var(--accent) 42%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: var(--accent-hi);
+  color: var(--accent-hi);
 }
 
 button.primary:active {
@@ -686,16 +703,15 @@ button.primary:active {
 
 button.primary:disabled {
   cursor: not-allowed;
-  filter: saturate(0.7) brightness(0.9);
-  box-shadow: none;
+  opacity: 0.5;
 }
 
 #send:disabled::before {
   content: "";
   width: 12px;
   height: 12px;
-  border: 2px solid color-mix(in srgb, var(--primary-fg) 30%, transparent);
-  border-top-color: var(--primary-fg);
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
@@ -3585,7 +3601,8 @@ dialog.preferences {
   border-bottom: 0;
 }
 
-.preferences label {
+.preferences label,
+.preferences .preferences-label {
   display: block;
   margin: 0;
   color: var(--fg);
@@ -3641,6 +3658,82 @@ dialog.preferences {
   height: 16px;
   padding: 0;
   margin: 0;
+}
+
+/* Accent swatches: radios styled as color dots. Each label carries its own
+   data-accent, so the dot shows that preset's hue in the current theme. */
+.accent-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  padding-top: 4px;
+}
+
+.preferences .accent-choice {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.accent-choice input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.accent-dot {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  color: color-mix(in srgb, var(--accent) 12%, #000);
+  transition: box-shadow var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+
+:root[data-theme="light"] .accent-dot {
+  color: color-mix(in srgb, var(--accent) 10%, #fff);
+}
+
+.accent-dot .ic {
+  width: 13px;
+  height: 13px;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+
+.accent-choice:hover .accent-dot {
+  transform: translateY(-1px);
+}
+
+.accent-choice input:checked + .accent-dot {
+  box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 4px var(--accent);
+}
+
+.accent-choice input:checked + .accent-dot .ic {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.accent-choice input:focus-visible + .accent-dot {
+  box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 4px var(--accent), var(--ring);
+}
+
+.accent-name {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.accent-choice input:checked ~ .accent-name {
+  color: var(--fg);
+  font-weight: 600;
 }
 
 .preferences input:user-invalid {

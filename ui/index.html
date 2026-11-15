@@ -1,17 +1,21 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="dark" data-accent="ember">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Postlite</title>
     <script>
-      // Apply the saved theme before first paint, so a light-theme user never sees a dark flash.
+      // Apply the saved theme and accent before first paint, so a customized
+      // appearance never flashes the defaults.
       try {
         var savedTheme = localStorage.getItem("postlite.theme");
         document.documentElement.dataset.theme =
           savedTheme === "light" || savedTheme === "dark"
             ? savedTheme
             : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        var savedAccent = localStorage.getItem("postlite.accent");
+        if (["ember", "ocean", "mint", "violet", "rose", "amber", "teal", "magenta"].indexOf(savedAccent) !== -1)
+          document.documentElement.dataset.accent = savedAccent;
       } catch (e) {}
     </script>
     <link rel="stylesheet" href="./styles.css" />
@@ -49,15 +53,8 @@
     <header class="topbar">
       <div class="brand">
         <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-          <defs>
-            <linearGradient id="lg-brand" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#ff8352" />
-              <stop offset=".55" stop-color="#ff6b35" />
-              <stop offset="1" stop-color="#f4571f" />
-            </linearGradient>
-          </defs>
-          <rect x="1.5" y="1.5" width="21" height="21" rx="6.5" fill="url(#lg-brand)" />
-          <path d="M5.4 12h3l1.7-4 2.6 8 1.7-4h4.2" fill="none" stroke="#16090b" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+          <rect x="1.5" y="1.5" width="21" height="21" rx="6.5" style="fill: var(--accent)" />
+          <path d="M5.4 12h3l1.7-4 2.6 8 1.7-4h4.2" fill="none" style="stroke: var(--primary-fg)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
         <h1 class="brand-name">Postlite</h1>
       </div>
@@ -444,6 +441,7 @@
       <div class="preferences-body">
         <nav id="app-settings-tabs" class="preferences-nav" aria-label="Application settings categories">
           <button type="button" class="tab is-active" aria-current="true" data-tab="pref-general" aria-controls="pref-general" autofocus>General</button>
+          <button type="button" class="tab" data-tab="pref-appearance" aria-controls="pref-appearance">Appearance</button>
           <button type="button" class="tab" data-tab="pref-request" aria-controls="pref-request">Request</button>
           <button type="button" class="tab" data-tab="pref-response" aria-controls="pref-response">Response</button>
           <button type="button" class="tab" data-tab="pref-privacy" aria-controls="pref-privacy">Privacy</button>
@@ -455,15 +453,6 @@
           <p id="pref-search-empty" class="preferences-search-empty" hidden>No settings match “<span id="pref-search-empty-query"></span>”. Try another word, or clear the search to see everything.</p>
           <section id="pref-general" role="tabpanel" class="pane is-active" data-pane="pref-general" aria-labelledby="pref-general-title">
             <h3 id="pref-general-title">General</h3>
-            <div class="preferences-row">
-              <div class="preferences-copy">
-                <label for="pref-theme">Theme</label>
-                <p id="pref-theme-help">System follows your operating system's appearance.</p>
-              </div>
-              <select id="pref-theme" data-setting="general.theme" aria-describedby="pref-theme-help">
-                <option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option>
-              </select>
-            </div>
             <div class="preferences-row">
               <div class="preferences-copy">
                 <label for="pref-autoSave">Auto-save workspace</label>
@@ -498,6 +487,67 @@
                 <p id="pref-sidebarWidth-help">180 to 480 px. You can also drag the sidebar edge.</p>
               </div>
               <input id="pref-sidebarWidth" data-setting="sidebarWidth" type="number" min="180" max="480" step="1" value="276" required aria-describedby="pref-sidebarWidth-help" />
+            </div>
+          </section>
+
+          <section id="pref-appearance" role="tabpanel" class="pane" data-pane="pref-appearance" aria-labelledby="pref-appearance-title">
+            <h3 id="pref-appearance-title">Appearance</h3>
+            <div class="preferences-row">
+              <div class="preferences-copy">
+                <label for="pref-theme">Theme</label>
+                <p id="pref-theme-help">System follows your operating system's appearance.</p>
+              </div>
+              <select id="pref-theme" data-setting="general.theme" aria-describedby="pref-theme-help">
+                <option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option>
+              </select>
+            </div>
+            <div class="preferences-row stacked">
+              <div class="preferences-copy">
+                <span class="preferences-label" id="pref-accent-label">Accent color</span>
+                <p id="pref-accent-help">Recolors buttons, highlights, and the brand mark. Every preset has a tuned dark and light variant; method and status colors stay fixed.</p>
+              </div>
+              <div class="accent-choices" role="radiogroup" aria-labelledby="pref-accent-label" aria-describedby="pref-accent-help">
+                <label class="accent-choice" for="pref-accent-ember" data-accent="ember">
+                  <input id="pref-accent-ember" type="radio" name="pref-accent" value="ember" data-setting="general.accent" checked />
+                  <span class="accent-dot" aria-hidden="true"><svg class="ic"><use href="#i-check" /></svg></span>
+                  <span class="accent-name">Ember</span>
+                </label>
+                <label class="accent-choice" for="pref-accent-ocean" data-accent="ocean">
+                  <input id="pref-accent-ocean" type="radio" name="pref-accent" value="ocean" data-setting="general.accent" />
+                  <span class="accent-dot" aria-hidden="true"><svg class="ic"><use href="#i-check" /></svg></span>
+                  <span class="accent-name">Ocean</span>
+                </label>
+                <label class="accent-choice" for="pref-accent-mint" data-accent="mint">
+                  <input id="pref-accent-mint" type="radio" name="pref-accent" value="mint" data-setting="general.accent" />
+                  <span class="accent-dot" aria-hidden="true"><svg class="ic"><use href="#i-check" /></svg></span>
+                  <span class="accent-name">Mint</span>
+                </label>
+                <label class="accent-choice" for="pref-accent-violet" data-accent="violet">
+                  <input id="pref-accent-violet" type="radio" name="pref-accent" value="violet" data-setting="general.accent" />
+                  <span class="accent-dot" aria-hidden="true"><svg class="ic"><use href="#i-check" /></svg></span>
+                  <span class="accent-name">Violet</span>
+                </label>
+                <label class="accent-choice" for="pref-accent-rose" data-accent="rose">
+                  <input id="pref-accent-rose" type="radio" name="pref-accent" value="rose" data-setting="general.accent" />
+                  <span class="accent-dot" aria-hidden="true"><svg class="ic"><use href="#i-check" /></svg></span>
+                  <span class="accent-name">Rose</span>
+                </label>
+                <label class="accent-choice" for="pref-accent-amber" data-accent="amber">
+                  <input id="pref-accent-amber" type="radio" name="pref-accent" value="amber" data-setting="general.accent" />
+                  <span class="accent-dot" aria-hidden="true"><svg class="ic"><use href="#i-check" /></svg></span>
+                  <span class="accent-name">Amber</span>
+                </label>
+                <label class="accent-choice" for="pref-accent-teal" data-accent="teal">
+                  <input id="pref-accent-teal" type="radio" name="pref-accent" value="teal" data-setting="general.accent" />
+                  <span class="accent-dot" aria-hidden="true"><svg class="ic"><use href="#i-check" /></svg></span>
+                  <span class="accent-name">Teal</span>
+                </label>
+                <label class="accent-choice" for="pref-accent-magenta" data-accent="magenta">
+                  <input id="pref-accent-magenta" type="radio" name="pref-accent" value="magenta" data-setting="general.accent" />
+                  <span class="accent-dot" aria-hidden="true"><svg class="ic"><use href="#i-check" /></svg></span>
+                  <span class="accent-name">Magenta</span>
+                </label>
+              </div>
             </div>
           </section>
 
