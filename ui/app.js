@@ -1010,9 +1010,13 @@ function fromPostman(doc) {
 
 function normPostmanExample(raw) {
   const headers = (Array.isArray(raw?.header) ? raw.header : [])
-    .map((h) => typeof h === "string"
-      ? { key: h.split(":")[0].trim(), value: h.slice(h.indexOf(":") + 1).trim() }
-      : { key: String(h?.key ?? ""), value: String(h?.value ?? "") })
+    .map((h) => {
+      if (typeof h !== "string") return { key: String(h?.key ?? ""), value: String(h?.value ?? "") };
+      const colon = h.indexOf(":");
+      return colon === -1
+        ? { key: h.trim(), value: "" }
+        : { key: h.slice(0, colon).trim(), value: h.slice(colon + 1).trim() };
+    })
     .filter((h) => h.key);
   const body = typeof raw?.body === "string" ? raw.body : "";
   const savedAt = typeof raw?.time === "string" && !Number.isNaN(Date.parse(raw.time))
@@ -1080,7 +1084,9 @@ function mapPostmanItem(item) {
     body: { ...body, contentType },
     auth: fromPostmanAuth(req.auth),
     scripts: fromPostmanEvents(item.event),
-    examples: (Array.isArray(item.response) ? item.response : []).map(normPostmanExample),
+    examples: (Array.isArray(item.response)
+      ? item.response.filter((r) => r && typeof r === "object" && !Array.isArray(r))
+      : []).map(normPostmanExample),
   });
 }
 
@@ -1132,8 +1138,13 @@ function toPostmanVariables(rows) {
 }
 
 function examplePreviewLanguage(example) {
-  const contentType = example.headers.find((h) => h.key.toLowerCase() === "content-type")?.value ?? "";
-  if (/json/i.test(contentType)) return "json";
+  const contentType = (example.headers.find((h) => h.key.toLowerCase() === "content-type")?.value ?? "").toLowerCase();
+  if (contentType) {
+    if (contentType.includes("json")) return "json";
+    if (contentType.includes("xml")) return "xml";
+    if (contentType.includes("javascript")) return "javascript";
+    return "text";
+  }
   try { JSON.parse(example.body); return "json"; } catch { return "text"; }
 }
 
