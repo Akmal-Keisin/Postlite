@@ -97,6 +97,37 @@ function normBody(raw) {
   };
 }
 
+const MAX_EXAMPLE_NAME = 80;
+const cleanExampleName = (name) => String(name ?? "").trim().slice(0, MAX_EXAMPLE_NAME) || "Example";
+
+function normExamples(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => ({
+      id: typeof item.id === "string" && item.id ? item.id : uid(),
+      name: cleanExampleName(item.name),
+      savedAt: typeof item.savedAt === "string" ? item.savedAt : new Date().toISOString(),
+      status: Number.isFinite(Number(item.status)) ? Number(item.status) : 0,
+      statusText: typeof item.statusText === "string" ? item.statusText : "",
+      headers: (Array.isArray(item.headers) ? item.headers : [])
+        .filter((h) => h && typeof h.key === "string")
+        .map((h) => ({ key: h.key, value: String(h.value ?? "") })),
+      body: typeof item.body === "string" ? item.body : "",
+      elapsedMs: Number.isFinite(Number(item.elapsedMs)) ? Number(item.elapsedMs) : 0,
+      sizeBytes: Number.isFinite(Number(item.sizeBytes)) ? Number(item.sizeBytes) : 0,
+      truncated: item.truncated === true,
+      note: typeof item.note === "string" ? item.note : null,
+    }));
+}
+
+// Verification-harness hook targets. The harness exposes these names up front;
+// real implementations arrive with the saved-example / JSON-viewer tasks.
+Object.assign(window, Object.fromEntries(
+  ["normPostmanExample", "saveExample", "commitExample", "openExampleDialog",
+   "viewExample", "exitExampleView", "deleteExample", "renderExamples",
+   "renderJsonTreeInto"].map((name) => [name, () => null])
+));
+
 function newRequest(fields = {}) {
   return {
     kind: "request",
@@ -109,6 +140,7 @@ function newRequest(fields = {}) {
     body: normBody(fields.body),
     auth: normAuth(fields.auth, "inherit"),
     scripts: normScripts(fields.scripts),
+    examples: normExamples(fields.examples),
   };
 }
 
@@ -895,7 +927,9 @@ function saveInPlace(req) {
   const replace = (items) => {
     const node = items.find((i) => i.id === req.id);
     if (node) {
-      Object.assign(node, structuredClone(req));
+      // Old tabs have no `examples`; never let a save wipe a stored example.
+      const examples = req.examples?.length ? req.examples : (node.examples ?? []);
+      Object.assign(node, structuredClone(req), { examples: structuredClone(examples) });
       return true;
     }
     return items.some((i) => i.kind === "folder" && replace(i.items));
