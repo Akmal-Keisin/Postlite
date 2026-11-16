@@ -132,7 +132,15 @@ try {
     `(() => {const lang=(ct)=>{const r=__verify.newRequest({name:'r',examples:[{name:'e',status:200,body:'{"a":1}',headers:[{key:'Content-Type',value:ct}]}]});const c=__verify.newCollection('c',{items:[r]});return __verify.toPostmanCollection(c).item[0].response[0]._postman_previewlanguage;};return lang('text/html')==='text' && lang('application/xml')==='xml' && lang('application/javascript')==='javascript';})()`);
 
   await check('example buttons, popover, banner and dialog exist',
-    `['#save-example','#examples-btn','#examples-pop','#examples-list','#example-banner','#example-banner-name','#example-exit','#example-dialog','#example-name','#json-tools','#json-collapse-all','#json-expand-all'].every(s=>!!document.querySelector(s))`);
+    `['#save-example','#examples-btn','#examples-pop','#examples-list','#example-banner','#example-banner-name','#example-exit','#example-dialog','#example-name','#json-tools','#json-collapse-all','#json-expand-all'].every(s=>!!document.querySelector(s))
+      && document.querySelector('#examples-btn').getAttribute('aria-controls')==='examples-pop'
+      && !document.querySelector('#examples-btn').hasAttribute('aria-haspopup')
+      && document.querySelector('#examples-pop').getAttribute('role')==='group'
+      && document.querySelector('#examples-pop').getAttribute('aria-label')==='Saved examples'
+      && !document.querySelector('#example-banner').hasAttribute('role')
+      && document.querySelector('#example-banner [role="status"][aria-live="polite"]')?.textContent.includes('Viewing example:')
+      && !document.querySelector('#example-banner [role="status"]').contains(document.querySelector('#example-exit'))
+      && document.querySelector('#json-tools').getAttribute('aria-controls')==='pretty'`);
   await check('example controls start hidden/disabled appropriately',
     `document.querySelector('#examples-btn').hidden && document.querySelector('#examples-pop').hidden && document.querySelector('#example-banner').hidden && document.querySelector('#json-tools').hidden && document.querySelector('#save-example').disabled`);
 

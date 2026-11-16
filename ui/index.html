@@ -332,19 +332,19 @@
               <svg class="ic" aria-hidden="true"><use href="#i-bookmark" /></svg>
             </button>
             <span id="examples-bar" class="examples-bar">
-              <button id="examples-btn" class="tool outlined" hidden aria-expanded="false" aria-haspopup="true" title="Saved examples">
+              <button id="examples-btn" class="tool outlined" hidden aria-expanded="false" aria-controls="examples-pop" title="Saved examples">
                 <svg class="ic" aria-hidden="true"><use href="#i-stack" /></svg>
                 Examples <span id="examples-count" class="count"></span>
               </button>
-              <div id="examples-pop" class="examples-pop" hidden>
+              <div id="examples-pop" class="examples-pop" role="group" aria-label="Saved examples" hidden>
                 <div class="examples-pop-head">Saved examples</div>
                 <div id="examples-list"></div>
               </div>
             </span>
           </div>
-          <div id="example-banner" class="example-banner" role="status" hidden>
+          <div id="example-banner" class="example-banner" hidden>
             <svg class="ic" aria-hidden="true"><use href="#i-bookmark" /></svg>
-            <span>Viewing example: <b id="example-banner-name"></b></span>
+            <span role="status" aria-live="polite">Viewing example: <b id="example-banner-name"></b></span>
             <button id="example-exit" class="tool outlined" type="button">Back to live response</button>
           </div>
           <nav class="tabs" id="res-tabs" aria-label="Response views">
@@ -378,7 +378,7 @@
               <span>Check the URL, connection, and TLS settings, then send again.</span>
             </div>
           </div>
-          <div id="json-tools" class="json-tools" hidden>
+          <div id="json-tools" class="json-tools" aria-controls="pretty" hidden>
             <button id="json-collapse-all" class="tool" type="button"><svg class="ic" aria-hidden="true"><use href="#i-fold" /></svg> Collapse all</button>
             <button id="json-expand-all" class="tool" type="button"><svg class="ic" aria-hidden="true"><use href="#i-unfold" /></svg> Expand all</button>
           </div>
