@@ -129,7 +129,7 @@ try {
   await check('malformed Postman response entries are dropped on import',
     `(() => {const c=__verify.fromPostman({item:[{name:'r',request:'http://x',response:[null,7,{name:'Real'}]}]});const ex=c.items[0].examples;return ex.length===1 && ex[0].name==='Real';})()`);
   await check('preview language respects non-JSON content types',
-    `(() => {const lang=(ct)=>{const r=__verify.newRequest({name:'r',examples:[{name:'e',status:200,body:'{"a":1}',headers:[{key:'Content-Type',value:ct}]}]});const c=__verify.newCollection('c',{items:[r]});return __verify.toPostmanCollection(c).item[0].response[0]._postman_previewlanguage;};return lang('text/html')==='text' && lang('application/xml')==='xml';})()`);
+    `(() => {const lang=(ct)=>{const r=__verify.newRequest({name:'r',examples:[{name:'e',status:200,body:'{"a":1}',headers:[{key:'Content-Type',value:ct}]}]});const c=__verify.newCollection('c',{items:[r]});return __verify.toPostmanCollection(c).item[0].response[0]._postman_previewlanguage;};return lang('text/html')==='text' && lang('application/xml')==='xml' && lang('application/javascript')==='javascript';})()`);
 
   console.log(`\n${results.length} checks passed`);
 } finally {
