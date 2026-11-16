@@ -2180,14 +2180,219 @@ function highlightJson(text) {
   return out + esc(text.slice(last));
 }
 
+/* Collapsible JSON tree: every object/array folds on click, children are built
+   lazily so a huge payload stays cheap until opened, and fold choices survive
+   re-renders per response object. */
+const jtFolds = new WeakMap();
+const JT_DEPTH = 3;
+const JT_SIZE = 100;
+const JT_BUDGET = 20000;
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+const jtIsContainer = (v) => v !== null && typeof v === "object";
+const jtCount = (v) => (Array.isArray(v) ? v.length : Object.keys(v).length);
+
+function jtSpan(cls, text) {
+  const span = document.createElement("span");
+  if (cls) span.className = cls;
+  span.textContent = text;
+  return span;
+}
+
+function jtKeySpans(line, key, highlight) {
+  if (key === null) return;
+  line.appendChild(jtSpan(highlight ? "j-key" : null, JSON.stringify(key)));
+  line.appendChild(jtSpan("jt-punc", ": "));
+}
+
+function jtLeaf(value, key, comma, highlight) {
+  const line = document.createElement("div");
+  line.className = "jt-line";
+  jtKeySpans(line, key, highlight);
+  const type = value === null ? "j-null" : typeof value === "string" ? "j-str" : typeof value === "number" ? "j-num" : "j-bool";
+  line.appendChild(jtSpan(highlight ? type : null, JSON.stringify(value)));
+  if (comma) line.appendChild(jtSpan("jt-punc", ","));
+  return line;
+}
+
+function jtEmpty(value, key, comma, highlight) {
+  const line = document.createElement("div");
+  line.className = "jt-line";
+  jtKeySpans(line, key, highlight);
+  line.appendChild(jtSpan("jt-punc", (Array.isArray(value) ? "[]" : "{}") + (comma ? "," : "")));
+  return line;
+}
+
+function jtApply(node, expanded, ctx) {
+  const st = node._jt;
+  st.expanded = expanded;
+  ctx.folds.set(st.path, expanded);
+  node.classList.toggle("is-collapsed", !expanded);
+  node.firstElementChild.setAttribute("aria-expanded", String(expanded));
+  if (!expanded || st.built) return;
+  st.built = true;
+  const kids = node.children[1];
+  const arr = Array.isArray(st.value);
+  const entries = arr ? st.value.map((v, i) => [i, v]) : Object.entries(st.value);
+  entries.forEach(([k, v], i) => {
+    const key = arr ? null : k;
+    const comma = i < entries.length - 1;
+    const path = st.path ? `${st.path}.${k}` : String(k);
+    kids.appendChild(
+      jtIsContainer(v) && jtCount(v) > 0
+        ? jtNode(v, key, path, st.depth + 1, comma, ctx)
+        : jtIsContainer(v)
+          ? jtEmpty(v, key, comma, ctx.highlight)
+          : jtLeaf(v, key, comma, ctx.highlight)
+    );
+  });
+}
+
+function jtNode(value, key, path, depth, comma, ctx) {
+  const arr = Array.isArray(value);
+  const open = arr ? "[" : "{";
+  const close = arr ? "]" : "}";
+  const node = document.createElement("div");
+  node.className = "jt-node";
+  const line = document.createElement("div");
+  line.className = "jt-line jt-toggle";
+  line.tabIndex = 0;
+  line.setAttribute("role", "button");
+  const caret = document.createElementNS(SVG_NS, "svg");
+  caret.setAttribute("class", "ic jt-caret");
+  caret.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS(SVG_NS, "use");
+  use.setAttribute("href", "#i-caret");
+  caret.appendChild(use);
+  line.appendChild(caret);
+  jtKeySpans(line, key, ctx.highlight);
+  line.appendChild(jtSpan("jt-punc", open));
+  const fold = jtSpan("jt-fold", null);
+  fold.appendChild(jtSpan("jt-punc", " … "));
+  fold.appendChild(jtSpan("jt-count", `${jtCount(value)} ${arr ? (jtCount(value) === 1 ? "item" : "items") : jtCount(value) === 1 ? "key" : "keys"}`));
+  fold.appendChild(jtSpan("jt-punc", ` ${close}${comma ? "," : ""}`));
+  line.appendChild(fold);
+  node.appendChild(line);
+  const kids = document.createElement("div");
+  kids.className = "jt-kids";
+  node.appendChild(kids);
+  const closeLine = document.createElement("div");
+  closeLine.className = "jt-line jt-close";
+  closeLine.appendChild(jtSpan("jt-punc", close + (comma ? "," : "")));
+  node.appendChild(closeLine);
+  node._jt = { value, path, depth, built: false, expanded: false };
+  line.addEventListener("click", () => jtApply(node, !node._jt.expanded, ctx));
+  line.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      jtApply(node, !node._jt.expanded, ctx);
+    }
+  });
+  const expanded = ctx.folds.has(path)
+    ? ctx.folds.get(path)
+    : depth === 0 || (depth < JT_DEPTH && jtCount(value) <= JT_SIZE);
+  jtApply(node, expanded, ctx);
+  return node;
+}
+
+function jtBulk(expand) {
+  const host = $("#pretty");
+  const ctx = host._jtCtx;
+  const root = host.querySelector(":scope > .jt-node");
+  if (!ctx || !root) return;
+  if (!expand) {
+    for (const node of host.querySelectorAll(".jt-node")) if (node !== root) jtApply(node, false, ctx);
+    jtApply(root, true, ctx);
+    return;
+  }
+  let budget = JT_BUDGET;
+  const walk = (node) => {
+    if (budget <= 0) {
+      jtApply(node, false, ctx);
+      return;
+    }
+    jtApply(node, true, ctx);
+    for (const child of node.children[1].children) {
+      budget -= 1;
+      if (child.classList.contains("jt-node")) walk(child);
+    }
+  };
+  walk(root);
+  if (budget <= 0) notify("Large response: expanded the first levels only.");
+}
+
+function renderPretty(response) {
+  const host = $("#pretty");
+  host.textContent = "";
+  host.classList.remove("jt-host");
+  host._jtCtx = null;
+  if (!response) return syncJsonTools();
+  let parsed;
+  if (state.settings.request.decodeResponse) {
+    try { parsed = JSON.parse(response.body); } catch {}
+  }
+  if (parsed === undefined) {
+    host.textContent = response.body;
+    return syncJsonTools();
+  }
+  const indent = state.settings.response.jsonIndent;
+  if (!jtIsContainer(parsed) || jtCount(parsed) === 0) {
+    const text = JSON.stringify(parsed, null, indent === "tab" ? "\t" : indent);
+    if (state.settings.response.syntaxHighlight) host.innerHTML = highlightJson(text);
+    else host.textContent = text;
+    return syncJsonTools();
+  }
+  const folds = jtFolds.get(response) ?? new Map();
+  jtFolds.set(response, folds);
+  const ctx = { folds, highlight: state.settings.response.syntaxHighlight };
+  host._jtCtx = ctx;
+  host.classList.add("jt-host");
+  host.style.setProperty("--jt-indent", `${indent === "tab" ? 18 : Number(indent) * 8}px`);
+  host.appendChild(jtNode(parsed, null, "", 0, false, ctx));
+  syncJsonTools();
+}
+
+function syncJsonTools() {
+  const tree = $("#pretty").classList.contains("jt-host");
+  const view = $("#res-tabs .tab.is-active")?.dataset.tab;
+  $("#json-tools").hidden = !tree || view !== "pretty";
+}
+
 const sensitiveName = (name) => /^(authorization|proxy-authorization|cookie|set-cookie)$|token|secret|key/i.test(name);
 const headerMasked = (row) => state.settings.privacy.maskSensitiveHeaders && sensitiveName(row.key);
 const maskVariable = (name, secret) => (state.settings.privacy.maskSecretVariables && secret)
   || (state.settings.privacy.maskSensitiveHeaders && sensitiveName(name));
 const shownHeader = (header) => state.settings.privacy.maskSensitiveHeaders && sensitiveName(header.key) ? SECRET_MASK : header.value;
 
+const exampleResponseCache = new WeakMap();
+
+// While an example is open the response stage reads from the saved snapshot,
+// so every body view, header table, and copy action shows the example.
+function effectiveResponse() {
+  const tab = activeTab();
+  if (!tab) return null;
+  const example = tab.exampleView ? (tab.req.examples ?? []).find((e) => e.id === tab.exampleView) : null;
+  if (!example) {
+    tab.exampleView = null;
+    return tab.response;
+  }
+  if (!exampleResponseCache.has(example)) {
+    exampleResponseCache.set(example, {
+      status: example.status,
+      status_text: example.statusText,
+      headers: example.headers,
+      body: example.body,
+      elapsed_ms: example.elapsedMs,
+      size_bytes: example.sizeBytes,
+      truncated: example.truncated,
+      results: [],
+    });
+  }
+  return exampleResponseCache.get(example);
+}
+
 function responseCopyText() {
-  const response = activeTab()?.response;
+  const response = effectiveResponse();
   if (!response) return "";
   const view = $("#res-tabs .tab.is-active")?.dataset.tab;
   // Copy is a path out of the app, so it carries real values even though the table shows masks.
@@ -2202,7 +2407,7 @@ let lastRenderedResponse;
    Headers and Tests stay reachable on a failed request; the card only stands in
    for the body views. */
 function syncResStage() {
-  const response = activeTab()?.response;
+  const response = effectiveResponse();
   const view = $("#res-tabs .tab.is-active")?.dataset.tab;
   const res = $("#res-pane");
   res.classList.toggle("is-empty", !response);
@@ -2223,7 +2428,7 @@ let lastPreviewResponse; // response object currently loaded into the preview if
 
 function renderPreview() {
   const frame = $("#preview");
-  const response = activeTab()?.response;
+  const response = effectiveResponse();
   if (response === lastPreviewResponse) return;
   lastPreviewResponse = response;
   if (!response || response.error) frame.srcdoc = "";
@@ -2232,7 +2437,7 @@ function renderPreview() {
 
 function renderResponse() {
   renderExamples();
-  const response = activeTab()?.response;
+  const response = effectiveResponse();
   const pill = $("#status");
   $("#error").textContent = "";
   $("#time").hidden = !state.settings.response.showTime;
@@ -2252,9 +2457,9 @@ function renderResponse() {
     pill.textContent = "No response";
     $("#time").textContent = "";
     $("#size").textContent = "";
-    $("#pretty").textContent = "";
+    renderPretty(null);
     $("#raw").textContent = "";
-    $("#res-headers").tBodies[0].innerHTML = "";
+    $("#res-headers table").tBodies[0].innerHTML = "";
     $("#res-headers-count").textContent = "";
     $("#copy-res").hidden = true;
     renderTests([]);
@@ -2269,9 +2474,9 @@ function renderResponse() {
     $("#time").textContent = `${response.elapsed_ms} ms`;
     $("#size").textContent = "";
     $("#copy-res").hidden = true;
-    $("#pretty").textContent = "";
+    renderPretty(null);
     $("#raw").textContent = "";
-    $("#res-headers").tBodies[0].innerHTML = "";
+    $("#res-headers table").tBodies[0].innerHTML = "";
     $("#res-headers-count").textContent = "";
     renderPreview();
     syncResStage();
@@ -2285,21 +2490,14 @@ function renderResponse() {
   $("#time").textContent = `${response.elapsed_ms} ms`;
   $("#size").textContent = formatSize(response.size_bytes);
   $("#raw").textContent = response.body;
-  $("#pretty").textContent = response.body;
-  if (state.settings.request.decodeResponse) {
-    try {
-      const indent = state.settings.response.jsonIndent;
-      const text = JSON.stringify(JSON.parse(response.body), null, indent === "tab" ? "\t" : indent);
-      if (state.settings.response.syntaxHighlight) $("#pretty").innerHTML = highlightJson(text);
-      else $("#pretty").textContent = text;
-    } catch {}
-  }
+  renderPretty(response);
   $("#res-headers-count").textContent = response.headers.length;
-  $("#res-headers").tBodies[0].innerHTML = response.headers
+  $("#res-headers table").tBodies[0].innerHTML = response.headers
     .map((h) => `<tr><td>${esc(h.key)}</td><td>${esc(shownHeader(h))}</td></tr>`)
     .join("");
   if ($("#res-tabs .tab.is-active")?.dataset.tab === "preview") renderPreview();
   syncResStage();
+  syncJsonTools();
 }
 
 function renderTests(results) {
@@ -2354,6 +2552,15 @@ function prepareRequest(req) {
   };
 }
 
+// A variable ending in "/" plus a URL starting with "/" must not double the
+// separator. Only the path folds; scheme://authority and query/hash stay intact.
+function normalizeUrlPath(url) {
+  const m = /^([a-z][a-z0-9+.-]*:\/\/)?([^/?#]*)([^?#]*)([?#].*)?$/i.exec(url);
+  if (!m) return url;
+  const [, scheme = "", authority = "", path = "", tail = ""] = m;
+  return scheme + authority + path.replace(/\/{2,}/g, "/") + tail;
+}
+
 // Auth headers land after the pre-request scripts so a Content-Type set by a
 // script still wins, and every field is interpolated last.
 function finalizePrepared(prepared, auth, vars) {
@@ -2363,7 +2570,7 @@ function finalizePrepared(prepared, auth, vars) {
     prepared.headers.push(header);
   }
 
-  prepared.url = interpolate(prepared.url, vars);
+  prepared.url = normalizeUrlPath(interpolate(prepared.url, vars));
   prepared.body = interpolate(prepared.body, vars);
   prepared.params = prepared.params.map((p) => ({ key: interpolate(p.key, vars), value: interpolate(p.value, vars) }));
   prepared.headers = prepared.headers.map((h) => ({ key: interpolate(h.key, vars), value: interpolate(h.value, vars) }));
@@ -2446,6 +2653,7 @@ async function send() {
   }
 
   tab.response = { ...response, results, limitKB };
+  tab.exampleView = null;
   renderResponse();
   refreshCookiesIfVisible();
 }
@@ -2521,9 +2729,10 @@ function renderExamples() {
     .map((ex) => {
       const date = new Date(ex.savedAt);
       const when = Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString();
+      const active = tab?.exampleView === ex.id;
       return `
-        <div class="example-row">
-          <button type="button" class="example-view" data-example-id="${esc(ex.id)}">
+        <div class="example-row${active ? " is-active" : ""}">
+          <button type="button" class="example-view" data-example-id="${esc(ex.id)}" aria-current="${active}">
             <span class="example-name">${esc(ex.name)}</span>
             <span class="example-meta">${esc(String(ex.status))}${when ? ` · ${esc(when)}` : ""}</span>
           </button>
@@ -2533,7 +2742,9 @@ function renderExamples() {
         </div>`;
     })
     .join("");
-  $("#example-banner").hidden = true;
+  const viewing = tab?.exampleView ? examples.find((ex) => ex.id === tab.exampleView) : null;
+  $("#example-banner").hidden = !viewing;
+  if (viewing) $("#example-banner-name").textContent = viewing.name;
 }
 
 function openSaveDialog() {
@@ -2559,6 +2770,7 @@ function openSaveDialog() {
 const DIALOG_SUB = {
   environment: "Environments hold a set of variables a collection can bind to.",
   workspace: "Workspaces group collections and environments.",
+  request: "The name shown in the sidebar and the tab strip.",
   default: "Collections and folders can hold requests and subfolders.",
 };
 
@@ -2568,6 +2780,7 @@ function openRenameDialog(target) {
   const title = target.kind === "workspace" ? "Rename workspace"
     : target.kind === "environment" ? "Rename environment"
     : target.kind === "folder" ? "Rename folder"
+    : target.kind === "request" ? "Rename request"
     : "Rename collection";
   $("#collection-dialog-title").textContent = title;
   $("#collection-dialog .dialog-sub").textContent = DIALOG_SUB[target.kind] ?? DIALOG_SUB.default;
@@ -2613,6 +2826,9 @@ collectionDialog.addEventListener("close", () => {
   if (renameTarget.id) {
     const target = renameTarget.kind === "workspace" ? locateWorkspace(renameTarget.id) : nodeFor(renameTarget);
     if (target) target.name = name;
+    // Open tabs hold clones of the stored request; keep their strip label in sync.
+    if (renameTarget.kind === "request")
+      for (const tab of state.tabs) if (tab.req?.id === renameTarget.id) tab.req.name = name;
   } else if (renameTarget.kind === "workspace") {
     const ws = newWorkspace({ name });
     state.workspaces.push(ws);
@@ -3002,6 +3218,53 @@ $("#tabbar").addEventListener("auxclick", (event) => {
 
 $("#save-example").addEventListener("click", saveExample);
 
+const examplesPop = $("#examples-pop");
+const setExamplesPop = (open) => {
+  examplesPop.hidden = !open;
+  $("#examples-btn").setAttribute("aria-expanded", String(open));
+};
+$("#examples-btn").addEventListener("click", () => setExamplesPop(examplesPop.hidden));
+document.addEventListener("click", (event) => {
+  if (!examplesPop.hidden && !event.target.closest("#examples-bar")) setExamplesPop(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !examplesPop.hidden) setExamplesPop(false);
+});
+
+$("#examples-list").addEventListener("click", async (event) => {
+  const tab = activeTab();
+  if (!tab) return;
+  const deleteBtn = event.target.closest('[data-act="delete"]');
+  if (deleteBtn) {
+    const id = deleteBtn.dataset.exampleId;
+    const example = (tab.req.examples ?? []).find((ex) => ex.id === id);
+    if (!example || !await confirmDeletion("example", example.name)) return;
+    tab.req.examples = (tab.req.examples ?? []).filter((ex) => ex.id !== id);
+    const stored = locate(tab.req.id);
+    if (stored) stored.examples = structuredClone(tab.req.examples);
+    if (tab.exampleView === id) tab.exampleView = null;
+    persist();
+    renderResponse();
+    return;
+  }
+  const viewBtn = event.target.closest(".example-view");
+  if (viewBtn) {
+    tab.exampleView = viewBtn.dataset.exampleId;
+    setExamplesPop(false);
+    renderResponse();
+  }
+});
+
+$("#example-exit").addEventListener("click", () => {
+  const tab = activeTab();
+  if (!tab) return;
+  tab.exampleView = null;
+  renderResponse();
+});
+
+$("#json-collapse-all").addEventListener("click", () => jtBulk(false));
+$("#json-expand-all").addEventListener("click", () => jtBulk(true));
+
 let copyTimer;
 $("#copy-res").addEventListener("click", async () => {
   const button = $("#copy-res");
@@ -3049,6 +3312,10 @@ $("#tabbar").addEventListener("click", (event) => {
 /* tab right-click menu: close the other tabs, or all of them */
 let menuTabId = null;
 let menuOpener = null;
+function syncTabMenuLabel() {
+  const tab = state.tabs.find((t) => t.id === menuTabId);
+  $("#tab-menu [data-menu='rename']").textContent = tab?.kind === "environment" ? "Rename environment" : "Rename request";
+}
 function closeTabMenu() {
   $("#tab-menu").hidden = true;
   menuTabId = null;
@@ -3062,6 +3329,7 @@ $("#tabbar").addEventListener("contextmenu", (event) => {
   menuOpener = item.querySelector(".tab-item");
   const menu = $("#tab-menu");
   menu.hidden = false;
+  syncTabMenuLabel();
   const pad = 6;
   menu.style.left = `${Math.max(pad, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - pad))}px`;
   menu.style.top = `${Math.max(pad, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - pad))}px`;
@@ -3078,6 +3346,7 @@ $("#tabbar").addEventListener("keydown", (event) => {
     const rect = item.getBoundingClientRect();
     const menu = $("#tab-menu");
     menu.hidden = false;
+    syncTabMenuLabel();
     const pad = 6;
     menu.style.left = `${Math.max(pad, Math.min(rect.left, window.innerWidth - menu.offsetWidth - pad))}px`;
     menu.style.top = `${Math.max(pad, Math.min(rect.bottom, window.innerHeight - menu.offsetHeight - pad))}px`;
@@ -3098,6 +3367,13 @@ $("#tab-menu").addEventListener("keydown", (event) => {
 $("#tab-menu").addEventListener("click", (event) => {
   const action = event.target.closest("[data-menu]")?.dataset.menu;
   if (!action || !menuTabId) return;
+  if (action === "rename") {
+    const tab = state.tabs.find((t) => t.id === menuTabId);
+    closeTabMenu();
+    if (tab?.kind === "environment") openRenameDialog({ kind: "environment", id: tab.envId });
+    else if (tab?.req) openRenameDialog({ kind: "request", id: tab.req.id });
+    return;
+  }
   if (action === "close-others") closeOtherTabs(menuTabId);
   else if (action === "close-all") closeAllTabs();
   closeTabMenu();
@@ -3195,6 +3471,12 @@ async function moveCollection(id, workspaceId) {
 }
 
 $("#collections").addEventListener("contextmenu", (event) => {
+  const request = event.target.closest('.node[data-kind="request"]');
+  if (request) {
+    event.preventDefault();
+    openReqMenu(request.dataset.id, event.clientX, event.clientY, request);
+    return;
+  }
   const node = event.target.closest('.node[data-kind="collection"]');
   if (!node) return;
   event.preventDefault();
@@ -3203,11 +3485,49 @@ $("#collections").addEventListener("contextmenu", (event) => {
 
 $("#collections").addEventListener("keydown", (event) => {
   if (!(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) return;
+  const request = event.target.closest?.('.node[data-kind="request"]');
+  if (request) {
+    event.preventDefault();
+    const rect = request.getBoundingClientRect();
+    openReqMenu(request.dataset.id, rect.left, rect.bottom, request);
+    return;
+  }
   const node = event.target.closest?.('.node[data-kind="collection"]');
   if (!node) return;
   event.preventDefault();
   const rect = node.querySelector(".node-head").getBoundingClientRect();
   openCollMenu(node.dataset.id, rect.left, rect.bottom, event.target);
+});
+
+/* Right-click (or Shift+F10) on a request row offers rename; the dialog writes
+   through to the stored node and every open tab holding that request. */
+let reqMenuId = null;
+let reqMenuOpener = null;
+
+function closeReqMenu() {
+  $("#req-menu").hidden = true;
+  reqMenuId = null;
+  if (reqMenuOpener) { reqMenuOpener.focus(); reqMenuOpener = null; }
+}
+
+function openReqMenu(id, x, y, opener) {
+  reqMenuId = id;
+  reqMenuOpener = opener;
+  const menu = $("#req-menu");
+  menu.hidden = false;
+  placeMenu(menu, x, y);
+  menu.querySelector(".ctx-item")?.focus();
+}
+
+$("#req-menu").addEventListener("click", (event) => {
+  if (!event.target.closest('[data-menu="rename"]') || !reqMenuId) return;
+  const id = reqMenuId;
+  closeReqMenu();
+  openRenameDialog({ kind: "request", id });
+});
+
+$("#req-menu").addEventListener("keydown", (event) => {
+  if (event.key === "Escape" || event.key === "Tab") closeReqMenu();
 });
 
 $("#coll-menu").addEventListener("keydown", (event) => {
@@ -3250,12 +3570,24 @@ document.addEventListener("click", (event) => {
   if (!$("#tab-menu").hidden && !event.target.closest("#tab-menu")) closeTabMenu();
   // composedPath, not closest: a menu click can re-render the menu, which detaches the target.
   if (!$("#coll-menu").hidden && !event.composedPath().includes($("#coll-menu"))) closeCollMenu();
+  if (!$("#req-menu").hidden && !event.composedPath().includes($("#req-menu"))) closeReqMenu();
   if (!$("#ws-pop").hidden && !event.target.closest("#ws-bar")) closeWsPop();
   if (!$("#env-pop").hidden && !event.target.closest("#env-bar")) closeEnvPop();
 });
 window.addEventListener("blur", closeTabMenu);
+window.addEventListener("blur", closeReqMenu);
 window.addEventListener("blur", closeWsPop);
 window.addEventListener("blur", closeEnvPop);
+
+// Vertical wheel scrolls the tab strip once tabs overflow; shift+wheel and
+// trackpad horizontal gestures keep their native behavior.
+$("#tabbar").addEventListener("wheel", (event) => {
+  if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  const bar = $("#tabbar");
+  if (bar.scrollWidth <= bar.clientWidth) return;
+  event.preventDefault();
+  bar.scrollLeft += event.deltaY;
+}, { passive: false });
 
 function activateTab(navSel, panelSel, tab) {
   for (const button of $$(navSel)) {
@@ -3284,6 +3616,7 @@ $("#res-tabs").addEventListener("click", (event) => {
   activateTab("#res-tabs .tab", "#pretty, #raw, #preview, #res-headers, .tests", tab);
   if (tab.dataset.tab === "preview") renderPreview();
   syncResStage();
+  syncJsonTools();
 });
 
 const rowTarget = (key) => (key === "form" ? activeReq()?.body.form : activeReq()?.[key]);

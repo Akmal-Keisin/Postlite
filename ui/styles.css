@@ -1217,11 +1217,25 @@ button.link:hover {
   border-bottom: 1px solid var(--line);
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-hover) transparent;
 }
 
 .tabbar::-webkit-scrollbar {
-  height: 0;
+  height: 6px;
+}
+
+.tabbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tabbar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--line-hover);
+}
+
+.tabbar::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
 }
 
 /* The tabbar stretches children, but icon-btn keeps its 26px height, so pin it to the centre line. */
@@ -1255,6 +1269,7 @@ button.link:hover {
 
 .tab-wrap {
   position: relative;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1969,12 +1984,13 @@ textarea#body {
 
 .res {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
   min-height: 0;
   background: var(--bg-0);
 }
 
 .res-head {
+  grid-row: 1;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2090,7 +2106,7 @@ textarea#body {
 }
 
 .response-limit {
-  grid-row: 4;
+  grid-row: 6;
   margin: 0;
   padding: 8px 14px;
   border-top: 1px solid var(--line);
@@ -2101,7 +2117,7 @@ textarea#body {
 
 #preview {
   display: none;
-  grid-row: 3;
+  grid-row: 5;
   min-width: 0;
   min-height: 0;
   border: 0;
@@ -2124,7 +2140,7 @@ textarea#body {
 
 .res-empty {
   display: none;
-  grid-row: 3;
+  grid-row: 5;
   min-height: 0;
   overflow: auto;
   place-items: center;
@@ -2270,31 +2286,120 @@ textarea#body {
 .example-view { flex: 1; display: flex; align-items: center; gap: 8px; padding: 8px; text-align: left; color: var(--fg); background: none; border: 0; cursor: pointer; }
 .example-view .example-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .example-view .example-meta { color: var(--faint); font-size: 11px; }
-.example-banner { display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: color-mix(in srgb, var(--accent) 12%, var(--bg-2)); border-bottom: 1px solid var(--line); color: var(--fg); font-size: 12px; }
+.example-banner { grid-row: 2; display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: color-mix(in srgb, var(--accent) 12%, var(--bg-2)); border-bottom: 1px solid var(--line); color: var(--fg); font-size: 12px; }
 .example-banner .ic { color: var(--accent); }
 .example-banner button { margin-left: auto; }
-.json-tools { display: flex; justify-content: flex-end; gap: 6px; padding: 4px 10px 0; }
+.res > .tabs { grid-row: 3; }
+#pretty, #raw, #res-headers, .tests { grid-row: 5; }
+.json-tools { grid-row: 4; display: flex; justify-content: flex-end; gap: 6px; padding: 4px 10px 0; }
 .json-tools button { font-size: 11px; padding: 3px 8px; }
-.json-toggle, .json-key { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; border-radius: 3px; }
-.json-toggle:hover, .json-key:hover { text-decoration: underline; color: var(--accent); }
-.json-toggle:focus-visible, .json-key:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
-.json-summary { color: var(--faint); }
+.example-row.is-active { background: color-mix(in srgb, var(--accent) 14%, var(--bg-2)); }
+.example-row.is-active .example-name { color: var(--accent-hi); }
+
+/* Collapsible JSON tree in the Pretty view. Folded containers keep a one-line
+   summary with a count chip; guide lines mark depth while scanning. */
+#pretty.jt-host {
+  white-space: normal;
+  padding: 6px 16px 18px;
+}
+
+.jt-line {
+  display: block;
+  border-radius: 4px;
+}
+
+#pretty.jt-host:not(.word-wrap) .jt-line {
+  white-space: pre;
+}
+
+#pretty.jt-host.word-wrap .jt-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.jt-toggle {
+  cursor: pointer;
+}
+
+.jt-toggle:hover {
+  background: var(--bg-2);
+}
+
+.jt-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+.jt-caret {
+  width: 12px;
+  height: 12px;
+  margin-right: 2px;
+  color: var(--faint);
+  vertical-align: -1px;
+  transition: transform var(--t-fast) var(--ease);
+}
+
+.jt-node.is-collapsed > .jt-toggle .jt-caret {
+  transform: rotate(-90deg);
+}
+
+.jt-kids {
+  margin-left: 5px;
+  padding-left: var(--jt-indent, 16px);
+  border-left: 1px solid var(--line-soft);
+}
+
+.jt-node.is-collapsed > .jt-kids,
+.jt-node.is-collapsed > .jt-close {
+  display: none;
+}
+
+.jt-fold {
+  display: none;
+}
+
+.jt-node.is-collapsed > .jt-toggle .jt-fold {
+  display: inline;
+}
+
+.jt-count {
+  margin: 0 2px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-3);
+  color: var(--dim);
+  font-size: 10.5px;
+}
+
+.jt-punc {
+  color: var(--dim);
+}
 
 #res-headers {
   display: none;
-  padding: 10px 16px;
+  /* Block scroll container: a display:table box ignores overflow/max-height and
+     stretches its rows across the whole pane when stretched as a grid item. */
   overflow: auto;
+  padding: 0;
 }
 
 #res-headers.is-active {
-  display: table;
+  display: block;
+}
+
+#res-headers table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
 }
 
 #res-headers td {
   font-family: var(--mono);
   font-size: 12px;
+  line-height: 1.6;
   vertical-align: top;
-  padding: 4px 14px 4px 0;
+  padding: 8px 20px 8px 0;
   border-bottom: 1px solid var(--line-soft);
   word-break: break-all;
 }
@@ -2302,6 +2407,28 @@ textarea#body {
 #res-headers td:first-child {
   color: var(--fg-key);
   width: 240px;
+  padding-left: 16px;
+  padding-right: 24px;
+}
+
+#res-headers td:last-child {
+  padding-right: 16px;
+}
+
+#res-headers tr:first-child td {
+  padding-top: 12px;
+}
+
+#res-headers tr:last-child td {
+  padding-bottom: 12px;
+  border-bottom: none;
+}
+
+@media (max-width: 760px) {
+  #res-headers td:first-child {
+    width: 150px;
+    padding-right: 16px;
+  }
 }
 
 /* ------------------------------------------------------------------- tests */
