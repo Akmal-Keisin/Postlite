@@ -18,9 +18,25 @@ const resetState = () => evaluate(`(() => {
 })()`);
 const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
 const settle = () => evaluate('__verify.flushWorkspace().then(()=>true)');
+// Dialog close handlers run asynchronously and cascade through saveToCollection /
+// persist / openExampleDialog, so a zero-delay timer is not a sufficient sync.
+const waitFor = (expression, timeout = 2000) => evaluate(`new Promise((resolve, reject) => {
+  const deadline = Date.now() + ${timeout};
+  const tick = () => {
+    let ok = false;
+    try { ok = !!(${expression}); } catch {}
+    if (ok) { resolve(true); return; }
+    if (Date.now() >= deadline) { reject(new Error('waitFor timed out')); return; }
+    setTimeout(tick, 25);
+  };
+  tick();
+})`);
 
 try {
   await reload();
+  // Fail fast if this harness is ever pointed at a stubbed/shimmed environment.
+  await check('running against the real isolated Tauri app',
+    `(await __TAURI__.path.appDataDir()).includes('app.postlite.tier3verify20261116')`);
   await installErrorTrap();
   await resetState();
 
@@ -154,9 +170,11 @@ try {
   await check('save example enables after a successful response', `!document.querySelector('#save-example').disabled`);
   await click('#save-example');
   await check('unsaved request opens save dialog first', `document.querySelector('#save-dialog').open`);
-  await evaluate(`(() => {const d=document.querySelector('#save-dialog'); d.querySelector('#save-name').value='Example target'; d.close('save'); return new Promise(r=>setTimeout(r,0));})()`);
+  await evaluate(`(() => {const d=document.querySelector('#save-dialog'); d.querySelector('#save-name').value='Example target'; d.close('save'); return true;})()`);
+  await waitFor(`document.querySelector('#example-dialog').open`);
   await check('saving the request chains into the example dialog', `document.querySelector('#example-dialog').open && __verify.state.collections.length===1`);
-  await evaluate(`(() => {document.querySelector('#example-name').value='Happy path'; document.querySelector('#example-dialog').close('save'); return new Promise(r=>setTimeout(r,0));})()`);
+  await evaluate(`(() => {document.querySelector('#example-name').value='Happy path'; document.querySelector('#example-dialog').close('save'); return true;})()`);
+  await waitFor(`__verify.state.collections[0]?.items[0]?.examples?.length===1`);
   await check('example is saved on both tab request and stored node',
     `(() => {const t=__verify.state.tabs[0]; const stored=__verify.state.collections[0].items[0]; return t.req.examples.length===1 && stored.examples.length===1 && stored.examples[0].name==='Happy path' && stored.examples[0].body==='{"ok":true}' && stored.examples[0].status===200;})()`);
   await settle();
