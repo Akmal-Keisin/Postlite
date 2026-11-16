@@ -16,6 +16,8 @@ const resetState = () => evaluate(`(() => {
   v.state.collections=[]; v.state.environments=[]; v.state.tabs=[]; v.state.activeTabId=null;
   v.state.settings=v.normalizeSettings(); v.applyAppSettings(); v.persist();
 })()`);
+const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+const settle = () => evaluate('__verify.flushWorkspace().then(()=>true)');
 
 try {
   await reload();
@@ -110,13 +112,14 @@ try {
   // not implemented yet resolve to undefined instead of aborting the object.
   await check('all exposed hooks resolve (implemented defined, future ones undefined)', `(() => {
     const v=__verify;
-    const future=['saveExample','commitExample','openExampleDialog','viewExample','exitExampleView','deleteExample','renderExamples','renderJsonTreeInto'];
+    const future=['viewExample','exitExampleView','deleteExample','renderJsonTreeInto'];
     return Object.keys(v).length>0
       && Object.keys(v).every(n=>future.includes(n) ? v[n]===undefined : typeof v[n]!=='undefined')
       && ['state','persist','flushWorkspace','workspacePayload','normExamples','saveInPlace','applySavedPayload','render'].every(n=>typeof v[n]!=='undefined')
       && typeof __verify.normPostmanExample==='function';
   })()`);
-  await check('production code has no no-op example globals', `['saveExample','commitExample','openExampleDialog','viewExample','exitExampleView','deleteExample','renderExamples','renderJsonTreeInto'].every(n=>typeof window[n]==='undefined')`);
+  await check('production code has no no-op example globals', `['viewExample','exitExampleView','deleteExample','renderJsonTreeInto'].every(n=>typeof window[n]==='undefined')`);
+  await check('save-example hooks are implemented as real functions', `['saveExample','commitExample','openExampleDialog','renderExamples'].every(n=>typeof __verify[n]==='function')`);
 
   await check('Postman response examples import into request.examples',
     `(() => {const c=__verify.fromPostman({info:{name:'x'},item:[{name:'r',request:'http://x',response:[{name:'OK',code:200,status:'OK',body:'{"a":1}',header:[{key:'Content-Type',value:'application/json'}],responseTime:9,size:7,time:'2026-01-01T00:00:00.000Z'}]}]});const ex=c.items[0].examples;return ex.length===1 && ex[0].name==='OK' && ex[0].status===200 && ex[0].statusText==='OK' && ex[0].body==='{"a":1}' && ex[0].elapsedMs===9 && ex[0].headers[0].key==='Content-Type';})()`);
@@ -143,6 +146,21 @@ try {
       && document.querySelector('#json-tools').getAttribute('aria-controls')==='pretty'`);
   await check('example controls start hidden/disabled appropriately',
     `document.querySelector('#examples-btn').hidden && document.querySelector('#examples-pop').hidden && document.querySelector('#example-banner').hidden && document.querySelector('#json-tools').hidden && document.querySelector('#save-example').disabled`);
+
+  // Task 4: saving a response as a named example, including the chain into the
+  // save-request dialog when the tab is not yet stored in a collection.
+  await check('save example is disabled before a response', `document.querySelector('#save-example').disabled`);
+  await evaluate(`(() => {const v=__verify; const t=v.addTab(v.newRequest({name:'Save me',url:'http://127.0.0.1:8100/api/echo'})); t.response={status:200,status_text:'OK',headers:[{key:'Content-Type',value:'application/json'}],body:'{"ok":true}',elapsed_ms:7,size_bytes:9,truncated:false,note:null,results:[],limitKB:2000}; v.renderResponse(); return true;})()`);
+  await check('save example enables after a successful response', `!document.querySelector('#save-example').disabled`);
+  await click('#save-example');
+  await check('unsaved request opens save dialog first', `document.querySelector('#save-dialog').open`);
+  await evaluate(`(() => {const d=document.querySelector('#save-dialog'); d.querySelector('#save-name').value='Example target'; d.close('save'); return new Promise(r=>setTimeout(r,0));})()`);
+  await check('saving the request chains into the example dialog', `document.querySelector('#example-dialog').open && __verify.state.collections.length===1`);
+  await evaluate(`(() => {document.querySelector('#example-name').value='Happy path'; document.querySelector('#example-dialog').close('save'); return new Promise(r=>setTimeout(r,0));})()`);
+  await check('example is saved on both tab request and stored node',
+    `(() => {const t=__verify.state.tabs[0]; const stored=__verify.state.collections[0].items[0]; return t.req.examples.length===1 && stored.examples.length===1 && stored.examples[0].name==='Happy path' && stored.examples[0].body==='{"ok":true}' && stored.examples[0].status===200;})()`);
+  await settle();
+  await check('examples button shows a count', `document.querySelector('#examples-btn').hidden===false && document.querySelector('#examples-count').textContent==='1'`);
 
   console.log(`\n${results.length} checks passed`);
 } finally {

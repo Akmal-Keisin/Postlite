@@ -2231,6 +2231,7 @@ function renderPreview() {
 }
 
 function renderResponse() {
+  renderExamples();
   const response = activeTab()?.response;
   const pill = $("#status");
   $("#error").textContent = "";
@@ -2453,7 +2454,87 @@ async function send() {
 
 const saveDialog = $("#save-dialog");
 const collectionDialog = $("#collection-dialog");
+const exampleDialog = $("#example-dialog");
 let renameTarget = null;
+let pendingExampleAfterSave = false;
+
+function canSaveExample() {
+  const tab = activeTab();
+  return !!tab?.response && !tab.response.error && !tab.exampleView;
+}
+
+function openExampleDialog() {
+  const tab = activeTab();
+  if (!tab || !canSaveExample()) return;
+  $("#example-name").value = `Example ${(tab.req.examples ?? []).length + 1}`;
+  $("#example-sub").textContent = `${tab.req.method} ${tab.req.url || "(no URL)"} · ${tab.response.status} ${tab.response.status_text}`;
+  exampleDialog.returnValue = "cancel";
+  exampleDialog.showModal();
+}
+
+function saveExample() {
+  if (!canSaveExample()) {
+    notify("Send a successful request before saving an example.");
+    return;
+  }
+  if (!homeOf(activeReq().id)) {
+    pendingExampleAfterSave = true;
+    notify("Save the request to a collection first.");
+    openSaveDialog();
+    return;
+  }
+  openExampleDialog();
+}
+
+function commitExample(name) {
+  const tab = activeTab();
+  if (!tab || !canSaveExample()) return;
+  const r = tab.response;
+  const example = normExamples([{
+    name,
+    savedAt: new Date().toISOString(),
+    status: r.status,
+    statusText: r.status_text,
+    headers: r.headers,
+    body: r.body,
+    elapsedMs: r.elapsed_ms,
+    sizeBytes: r.size_bytes,
+    truncated: r.truncated,
+    note: r.note,
+  }])[0];
+  tab.req.examples = [...(tab.req.examples ?? []), example];
+  const stored = locate(tab.req.id);
+  if (stored) stored.examples = structuredClone(tab.req.examples);
+  persist();
+  renderExamples();
+  notify("Example saved.");
+}
+
+function renderExamples() {
+  const tab = activeTab();
+  const examples = tab?.req?.examples ?? [];
+  $("#save-example").disabled = !canSaveExample();
+  const button = $("#examples-btn");
+  button.hidden = examples.length === 0;
+  $("#examples-count").textContent = String(examples.length);
+  $("#examples-list").innerHTML = examples
+    .map((ex) => {
+      const date = new Date(ex.savedAt);
+      const when = Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString();
+      return `
+        <div class="example-row">
+          <button type="button" class="example-view" data-example-id="${esc(ex.id)}">
+            <span class="example-name">${esc(ex.name)}</span>
+            <span class="example-meta">${esc(String(ex.status))}${when ? ` · ${esc(when)}` : ""}</span>
+          </button>
+          <button type="button" class="node-act" data-act="delete" data-example-id="${esc(ex.id)}" aria-label="Delete example ${esc(ex.name)}" title="Delete example">
+            <svg class="ic" aria-hidden="true"><use href="#i-trash" /></svg>
+          </button>
+        </div>`;
+    })
+    .join("");
+  $("#example-banner").hidden = true;
+}
 
 function openSaveDialog() {
   const req = activeReq();
@@ -2508,8 +2589,21 @@ function openCreateDialog(kind) {
 }
 
 saveDialog.addEventListener("close", () => {
-  if (saveDialog.returnValue !== "save") return;
+  if (saveDialog.returnValue !== "save") {
+    pendingExampleAfterSave = false;
+    return;
+  }
   saveToCollection($("#save-name").value.trim() || "Untitled Request", $("#save-collection").value);
+  if (pendingExampleAfterSave) {
+    pendingExampleAfterSave = false;
+    openExampleDialog();
+  }
+});
+
+exampleDialog.addEventListener("close", () => {
+  if (exampleDialog.returnValue !== "save") return;
+  const name = $("#example-name").value.trim();
+  if (name) commitExample(name);
 });
 
 collectionDialog.addEventListener("close", () => {
@@ -2905,6 +2999,8 @@ $("#tabbar").addEventListener("auxclick", (event) => {
   event.preventDefault();
   closeTab(item.dataset.id);
 });
+
+$("#save-example").addEventListener("click", saveExample);
 
 let copyTimer;
 $("#copy-res").addEventListener("click", async () => {
