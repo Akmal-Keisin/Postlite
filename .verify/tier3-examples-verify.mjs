@@ -131,6 +131,11 @@ try {
   await check('preview language respects non-JSON content types',
     `(() => {const lang=(ct)=>{const r=__verify.newRequest({name:'r',examples:[{name:'e',status:200,body:'{"a":1}',headers:[{key:'Content-Type',value:ct}]}]});const c=__verify.newCollection('c',{items:[r]});return __verify.toPostmanCollection(c).item[0].response[0]._postman_previewlanguage;};return lang('text/html')==='text' && lang('application/xml')==='xml' && lang('application/javascript')==='javascript';})()`);
 
+  await check('example buttons, popover, banner and dialog exist',
+    `['#save-example','#examples-btn','#examples-pop','#examples-list','#example-banner','#example-banner-name','#example-exit','#example-dialog','#example-name','#json-tools','#json-collapse-all','#json-expand-all'].every(s=>!!document.querySelector(s))`);
+  await check('example controls start hidden/disabled appropriately',
+    `document.querySelector('#examples-btn').hidden && document.querySelector('#examples-pop').hidden && document.querySelector('#example-banner').hidden && document.querySelector('#json-tools').hidden && document.querySelector('#save-example').disabled`);
+
   console.log(`\n${results.length} checks passed`);
 } finally {
   await close();
