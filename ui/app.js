@@ -418,7 +418,45 @@ function responseApi(response) {
   };
 }
 
-function buildPm({ vars, request, response, results }) {
+// pm.environment writes through to the environment bound to the request's
+// collection, so a login test script can persist a token for later requests.
+function buildEnvironmentApi(collection, vars) {
+  const env = envForCollection(collection);
+  const find = (name) => env?.variables.find((row) => row.key.trim() === String(name).trim());
+  const touch = () => {
+    persist(false);
+    renderEnvironments();
+    renderEnvBar();
+  };
+  return {
+    get name() {
+      return env?.name ?? null;
+    },
+    get: (name) => (env ? find(name)?.value : vars.get(String(name))),
+    has: (name) => Boolean(env && find(name)),
+    set: (name, value) => {
+      if (!env) throw new Error(`"${collection?.name ?? "This request"}" has no environment bound; pick one in the top bar first.`);
+      const key = String(name).trim();
+      if (!key) throw new Error("Environment variable name is required.");
+      const text = String(value);
+      const row = find(key);
+      if (row) row.value = text;
+      else env.variables.push({ key, value: text, enabled: true, secret: false });
+      vars.set(key, text);
+      touch();
+    },
+    unset: (name) => {
+      if (!env) return;
+      const index = env.variables.findIndex((row) => row.key.trim() === String(name).trim());
+      if (index >= 0) {
+        env.variables.splice(index, 1);
+        touch();
+      }
+    },
+  };
+}
+
+function buildPm({ vars, request, response, results, environment }) {
   const pm = {
     test(name, fn) {
       try {
@@ -437,6 +475,7 @@ function buildPm({ vars, request, response, results }) {
   };
   if (request) pm.request = requestApi(request);
   if (response) pm.response = responseApi(response);
+  if (environment) pm.environment = environment;
   return pm;
 }
 
@@ -848,6 +887,24 @@ function saveToCollection(name, containerId) {
   expandPathTo(containerItems(containerId) ? containerId : state.collections[0].id);
   persist();
   render();
+}
+
+// A request already living in the tree saves in place: editing body, auth, or
+// name in the tab and pressing Save updates the same node without a dialog.
+function saveInPlace(req) {
+  const replace = (items) => {
+    const node = items.find((i) => i.id === req.id);
+    if (node) {
+      Object.assign(node, structuredClone(req));
+      return true;
+    }
+    return items.some((i) => i.kind === "folder" && replace(i.items));
+  };
+  if (!state.collections.some((c) => replace(c.items))) return false;
+  persist();
+  render();
+  notify("Request saved.");
+  return true;
 }
 
 /* ---------------------------------------------------------------------- import */
@@ -2252,7 +2309,8 @@ async function send() {
   const results = [];
 
   // ancestors run first so a folder can prepare what its requests consume
-  const prePm = () => buildPm({ vars, request: prepared, results });
+  const environment = buildEnvironmentApi(parents[0], vars);
+  const prePm = () => buildPm({ vars, request: prepared, results, environment });
   for (const node of parents) runScript(node.scripts?.pre, prePm(), node.name, results);
   runScript(req.scripts.pre, prePm(), req.name, results);
   finalizePrepared(prepared, auth, vars);
@@ -2290,7 +2348,7 @@ async function send() {
 
   if (!response.error) {
     for (const node of [req, ...[...parents].reverse()])
-      runScript(node.scripts?.test, buildPm({ vars, response, results }), node.name, results);
+      runScript(node.scripts?.test, buildPm({ vars, response, results, environment }), node.name, results);
   }
 
   tab.response = { ...response, results, limitKB };
@@ -2307,6 +2365,10 @@ let renameTarget = null;
 function openSaveDialog() {
   const req = activeReq();
   if (!req) return;
+  if (homeOf(req.id)) {
+    saveInPlace(req);
+    return;
+  }
   if (!state.collections.length) {
     state.collections.push(newCollection("My Collection"));
     persist();

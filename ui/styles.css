@@ -1726,6 +1726,32 @@ select option {
   display: block;
 }
 
+/* The request pane owns the full column above the response, so its active
+   tab fills the leftover height instead of floating at a fixed cap. */
+#req-pane {
+  display: flex;
+  flex-direction: column;
+}
+
+#req-pane .pane.is-active {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+#req-pane textarea#body {
+  flex: 1;
+  height: auto;
+  min-height: 132px;
+}
+
+#req-pane .pane[data-pane="scripts"] textarea.script {
+  flex: 1;
+  min-height: 72px;
+}
+
 .pane[data-pane="scripts"],
 .pane[data-pane="node-scripts"] {
   max-height: 320px;
@@ -3995,8 +4021,16 @@ label:has(input:disabled),
     height: 96px;
   }
 
+  #req-pane textarea#body {
+    min-height: 96px;
+  }
+
   textarea.script {
     height: 72px;
+  }
+
+  #req-pane .pane[data-pane="scripts"] textarea.script {
+    min-height: 56px;
   }
 }
 
