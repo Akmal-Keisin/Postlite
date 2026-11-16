@@ -6,7 +6,14 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "../ui");
-const exposed = "state,DEFAULT_SETTINGS,normalizeSettings,newRequest,newFolder,newCollection,newEnvironment,newWorkspace,toPostmanCollection,fromPostman,toPostmanEnvironment,fromPostmanEnvironment,exportSettings,importSettings,applyAppSettings,flushWorkspace,persist,workspacePayload,addTab,enterWorkspace,switchWorkspace,deleteEnvironment,deleteWorkspace,responseCopyText,render,renderResponse,renderVarOverlay,send,openAppSettings,exportTarget,openDrawer,closeDrawer,openCurlDialog,renderCodeOutput,importCurlCommand,curlToTab,looksLikeCurl,importDroppedFiles,moveItem,siblingArray,treeDropTarget,endTreeDrag,exportBackup,openRestoreDialog,confirmRestore,applySavedPayload,validateBackup,describePayload,notify,loadCookies,renderCookies,refreshCookiesIfVisible,deleteCookieFilter,refreshProxyControls,loadProxyCredentials,syncCookiePersist,normExamples,normPostmanExample,saveExample,commitExample,openExampleDialog,viewExample,exitExampleView,deleteExample,renderExamples,renderJsonTreeInto";
+const exposed = "state,DEFAULT_SETTINGS,normalizeSettings,newRequest,newFolder,newCollection,newEnvironment,newWorkspace,toPostmanCollection,fromPostman,toPostmanEnvironment,fromPostmanEnvironment,exportSettings,importSettings,applyAppSettings,flushWorkspace,persist,workspacePayload,addTab,enterWorkspace,switchWorkspace,deleteEnvironment,deleteWorkspace,responseCopyText,render,renderResponse,renderVarOverlay,send,openAppSettings,exportTarget,openDrawer,closeDrawer,openCurlDialog,renderCodeOutput,importCurlCommand,curlToTab,looksLikeCurl,importDroppedFiles,moveItem,siblingArray,treeDropTarget,endTreeDrag,exportBackup,openRestoreDialog,confirmRestore,applySavedPayload,validateBackup,describePayload,notify,loadCookies,renderCookies,refreshCookiesIfVisible,deleteCookieFilter,refreshProxyControls,loadProxyCredentials,syncCookiePersist,normExamples,normPostmanExample,saveExample,commitExample,openExampleDialog,viewExample,exitExampleView,deleteExample,renderExamples,renderJsonTreeInto,saveInPlace";
+// Names that are not implemented yet must not break the whole hook object: a
+// bare shorthand reference would throw a ReferenceError. Resolve each name
+// defensively so unimplemented hooks are simply `undefined` in `__verify`.
+const hookProperties = exposed
+  .split(",")
+  .map((name) => `${name}: typeof ${name} === "undefined" ? undefined : ${name}`)
+  .join(",");
 const handler = (req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
   if (url.pathname === "/api/redirect") { res.writeHead(302, { location: "/api/echo" }); res.end(); return; }
@@ -60,7 +67,7 @@ const handler = (req, res) => {
   const file = { "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/codegen.js": "codegen.js", "/styles.css": "styles.css" }[url.pathname];
   if (!file) { res.writeHead(404); res.end(); return; }
   let source = readFileSync(resolve(root, file), "utf8");
-  if (file === "app.js") source += `\nwindow.__verify = {${exposed}};\n`;
+  if (file === "app.js") source += `\nwindow.__verify = {${hookProperties}};\n`;
   res.writeHead(200, { "content-type": file.endsWith("js") ? "text/javascript" : file.endsWith("css") ? "text/css" : "text/html", "cache-control": "no-store" });
   res.end(source);
 };

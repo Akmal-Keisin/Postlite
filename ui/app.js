@@ -120,14 +120,6 @@ function normExamples(raw) {
     }));
 }
 
-// Verification-harness hook targets. The harness exposes these names up front;
-// real implementations arrive with the saved-example / JSON-viewer tasks.
-Object.assign(window, Object.fromEntries(
-  ["normPostmanExample", "saveExample", "commitExample", "openExampleDialog",
-   "viewExample", "exitExampleView", "deleteExample", "renderExamples",
-   "renderJsonTreeInto"].map((name) => [name, () => null])
-));
-
 function newRequest(fields = {}) {
   return {
     kind: "request",
@@ -606,12 +598,21 @@ function hydrateWorkspace(saved) {
   const ws = newWorkspace({ id: saved.id, name: saved.name ?? "My Workspace" });
   ws.collections = (saved.collections ?? []).map(migrateCollection);
   ws.environments = (saved.environments ?? []).map(newEnvironment);
+  // An old tab may predate `examples`; inherit the stored node's examples so a
+  // later save cannot silently wipe them (an explicit [] is still respected).
+  const storedFor = (id) => {
+    for (const collection of ws.collections) {
+      const found = findItem(collection.items, id);
+      if (found) return found;
+    }
+    return null;
+  };
   ws.openTabs = state.settings.general.restoreLastSession
     ? (saved.tabs ?? [])
         .filter((t) => t?.kind !== "environment" || ws.environments.some((env) => env.id === t.envId))
         .map((t) => (t?.kind === "environment"
           ? { id: uid(), kind: "environment", envId: t.envId }
-          : { id: uid(), req: newRequest(t), response: null }))
+          : { id: uid(), req: newRequest({ ...t, examples: t.examples ?? storedFor(t.id)?.examples ?? [] }), response: null }))
     : [];
   ws.openTabId = ws.openTabs[saved.activeTabIndex]?.id ?? ws.openTabs[0]?.id ?? null;
   return ws;
@@ -927,8 +928,9 @@ function saveInPlace(req) {
   const replace = (items) => {
     const node = items.find((i) => i.id === req.id);
     if (node) {
-      // Old tabs have no `examples`; never let a save wipe a stored example.
-      const examples = req.examples?.length ? req.examples : (node.examples ?? []);
+      // Only a genuinely missing field falls back to stored examples; an
+      // explicit [] is an intentional deletion and must clear them.
+      const examples = req.examples ?? node.examples ?? [];
       Object.assign(node, structuredClone(req), { examples: structuredClone(examples) });
       return true;
     }
