@@ -2262,7 +2262,7 @@ textarea#body {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 40;
   min-width: 280px; max-width: 360px; max-height: 320px; overflow: auto;
   background: var(--bg-3); border: 1px solid var(--line); border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0,0,0,.35); padding: 6px;
+  box-shadow: var(--shadow-pop); padding: 6px;
 }
 .examples-pop-head { padding: 6px 8px; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
 .example-row { display: flex; align-items: center; gap: 4px; border-radius: 8px; }
