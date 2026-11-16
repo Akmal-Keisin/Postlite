@@ -110,12 +110,22 @@ try {
   // not implemented yet resolve to undefined instead of aborting the object.
   await check('all exposed hooks resolve (implemented defined, future ones undefined)', `(() => {
     const v=__verify;
-    const future=['normPostmanExample','saveExample','commitExample','openExampleDialog','viewExample','exitExampleView','deleteExample','renderExamples','renderJsonTreeInto'];
+    const future=['saveExample','commitExample','openExampleDialog','viewExample','exitExampleView','deleteExample','renderExamples','renderJsonTreeInto'];
     return Object.keys(v).length>0
       && Object.keys(v).every(n=>future.includes(n) ? v[n]===undefined : typeof v[n]!=='undefined')
-      && ['state','persist','flushWorkspace','workspacePayload','normExamples','saveInPlace','applySavedPayload','render'].every(n=>typeof v[n]!=='undefined');
+      && ['state','persist','flushWorkspace','workspacePayload','normExamples','saveInPlace','applySavedPayload','render'].every(n=>typeof v[n]!=='undefined')
+      && typeof __verify.normPostmanExample==='function';
   })()`);
-  await check('production code has no no-op example globals', `['normPostmanExample','saveExample','commitExample','openExampleDialog','viewExample','exitExampleView','deleteExample','renderExamples','renderJsonTreeInto'].every(n=>typeof window[n]==='undefined')`);
+  await check('production code has no no-op example globals', `['saveExample','commitExample','openExampleDialog','viewExample','exitExampleView','deleteExample','renderExamples','renderJsonTreeInto'].every(n=>typeof window[n]==='undefined')`);
+
+  await check('Postman response examples import into request.examples',
+    `(() => {const c=__verify.fromPostman({info:{name:'x'},item:[{name:'r',request:'http://x',response:[{name:'OK',code:200,status:'OK',body:'{"a":1}',header:[{key:'Content-Type',value:'application/json'}],responseTime:9,size:7,time:'2026-01-01T00:00:00.000Z'}]}]});const ex=c.items[0].examples;return ex.length===1 && ex[0].name==='OK' && ex[0].status===200 && ex[0].statusText==='OK' && ex[0].body==='{"a":1}' && ex[0].elapsedMs===9 && ex[0].headers[0].key==='Content-Type';})()`);
+  await check('string headers and missing fields import safely',
+    `(() => {const c=__verify.fromPostman({item:[{name:'r',request:'http://x',response:[{header:['A: b','c'],body:null}]}]});const ex=c.items[0].examples[0];return ex.headers.length===2 && ex.headers[0].key==='A' && ex.headers[0].value==='b' && ex.headers[1].key==='c' && ex.body==='' && ex.name==='Example';})()`);
+  await check('examples export to item.response with Postman fields',
+    `(() => {const r=__verify.newRequest({name:'r',examples:[{name:'OK',status:200,statusText:'OK',body:'{"a":1}',headers:[{key:'Content-Type',value:'application/json'}],elapsedMs:9,savedAt:'2026-01-01T00:00:00.000Z',sizeBytes:7}]});const c=__verify.newCollection('c',{items:[r]});const ex=__verify.toPostmanCollection(c).item[0].response;return ex.length===1 && ex[0].name==='OK' && ex[0].code===200 && ex[0].status==='OK' && ex[0].body==='{"a":1}' && ex[0].responseTime===9 && ex[0].size===7 && ex[0]._postman_previewlanguage==='json' && ex[0].originalRequest.method===r.method && ex[0].header[0].key==='Content-Type';})()`);
+  await check('export round-trip preserves example name, body and status',
+    `(() => {const r=__verify.newRequest({name:'r',examples:[{name:'Created',status:201,statusText:'Created',body:'{"id":1}'}]});const c=__verify.newCollection('c',{items:[r]});const back=__verify.fromPostman(JSON.parse(JSON.stringify(__verify.toPostmanCollection(c))));const ex=back.items[0].examples[0];return ex.name==='Created' && ex.status===201 && ex.statusText==='Created' && ex.body==='{"id":1}';})()`);
 
   console.log(`\n${results.length} checks passed`);
 } finally {

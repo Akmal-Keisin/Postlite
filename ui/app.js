@@ -1008,6 +1008,28 @@ function fromPostman(doc) {
   });
 }
 
+function normPostmanExample(raw) {
+  const headers = (Array.isArray(raw?.header) ? raw.header : [])
+    .map((h) => typeof h === "string"
+      ? { key: h.split(":")[0].trim(), value: h.slice(h.indexOf(":") + 1).trim() }
+      : { key: String(h?.key ?? ""), value: String(h?.value ?? "") })
+    .filter((h) => h.key);
+  const body = typeof raw?.body === "string" ? raw.body : "";
+  const savedAt = typeof raw?.time === "string" && !Number.isNaN(Date.parse(raw.time))
+    ? new Date(raw.time).toISOString() : new Date().toISOString();
+  return normExamples([{
+    id: raw?.id,
+    name: raw?.name ?? "Example",
+    savedAt,
+    status: Number(raw?.code) || 0,
+    statusText: typeof raw?.status === "string" ? raw.status : "",
+    headers,
+    body,
+    elapsedMs: Number(raw?.responseTime) || 0,
+    sizeBytes: Number(raw?.size) || new TextEncoder().encode(body).length,
+  }])[0];
+}
+
 // Postman keeps events on the item while the payload itself sits under item.request.
 function mapPostmanItem(item) {
   const raw = item.request;
@@ -1058,6 +1080,7 @@ function mapPostmanItem(item) {
     body: { ...body, contentType },
     auth: fromPostmanAuth(req.auth),
     scripts: fromPostmanEvents(item.event),
+    examples: (Array.isArray(item.response) ? item.response : []).map(normPostmanExample),
   });
 }
 
@@ -1108,6 +1131,12 @@ function toPostmanVariables(rows) {
   return rows.map((row) => ({ key: row.key, value: row.value, type: "string", disabled: !row.enabled, secret: row.secret === true }));
 }
 
+function examplePreviewLanguage(example) {
+  const contentType = example.headers.find((h) => h.key.toLowerCase() === "content-type")?.value ?? "";
+  if (/json/i.test(contentType)) return "json";
+  try { JSON.parse(example.body); return "json"; } catch { return "text"; }
+}
+
 function toPostmanItem(node) {
   const common = { name: node.name, event: toPostmanEvents(node.scripts) };
   if (node.kind === "folder") return { ...common, auth: toPostmanAuth(node.auth), variable: toPostmanVariables(node.variables), item: node.items.map(toPostmanItem) };
@@ -1128,7 +1157,24 @@ function toPostmanItem(node) {
   } else if (node.body.mode === "form-data") {
     request.body = { mode: "formdata", formdata: node.body.form.map((row) => ({ key: row.key, value: row.value, type: "text", disabled: !row.enabled })) };
   }
-  return { ...common, request };
+  const item = { ...common, request };
+  if (node.examples?.length) {
+    item.response = node.examples.map((example) => ({
+      id: example.id,
+      name: example.name,
+      originalRequest: structuredClone(request),
+      status: example.statusText || String(example.status),
+      code: example.status,
+      _postman_previewlanguage: examplePreviewLanguage(example),
+      header: example.headers.map((h) => ({ key: h.key, value: h.value })),
+      cookie: [],
+      body: example.body,
+      responseTime: example.elapsedMs,
+      time: example.savedAt,
+      size: example.sizeBytes,
+    }));
+  }
+  return item;
 }
 
 function toPostmanCollection(collection) {
