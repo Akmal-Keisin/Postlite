@@ -121,19 +121,24 @@ function normExamples(raw) {
 }
 
 function newRequest(fields = {}) {
-  return {
+  const req = {
     kind: "request",
     id: fields.id ?? uid(),
     name: fields.name ?? "Untitled Request",
     method: fields.method ?? state.settings.request.defaultMethod,
     url: fields.url ?? "",
     params: normRows(fields.params),
+    pathVars: (Array.isArray(fields.pathVars) ? fields.pathVars : [])
+      .filter((v) => v && typeof v.key === "string")
+      .map((v) => ({ key: v.key, value: String(v.value ?? "") })),
     headers: fields.headers === undefined ? [{ key: "Accept", value: "*/*", enabled: true }] : normRows(fields.headers),
     body: normBody(fields.body),
     auth: normAuth(fields.auth, "inherit"),
     scripts: normScripts(fields.scripts),
     examples: normExamples(fields.examples),
   };
+  syncPathVars(req);
+  return req;
 }
 
 function newFolder(fields = {}) {
@@ -223,6 +228,36 @@ function splitUrl(raw) {
       return { key: decode(key), value: decode(rest.join("=")), enabled: true };
     });
   return { base, params };
+}
+
+// Postman-style path variables: ":slug" segments in the path (never the scheme,
+// authority port, or query). Values live on the request, not in the URL text.
+function pathVarKeys(url) {
+  const m = /^([a-z][a-z0-9+.-]*:\/\/)?([^/?#]*)([^?#]*)/i.exec(String(url));
+  const keys = [];
+  for (const match of (m ? m[3] : "").matchAll(/:([A-Za-z0-9_]+)/g))
+    if (!keys.includes(match[1])) keys.push(match[1]);
+  return keys;
+}
+
+function syncPathVars(req) {
+  const prev = new Map((req.pathVars ?? []).map((v) => [v.key, v.value]));
+  req.pathVars = pathVarKeys(req.url).map((key) => ({ key, value: prev.get(key) ?? "" }));
+}
+
+function applyPathVars(url, pathVars, vars) {
+  const values = new Map(
+    (pathVars ?? [])
+      .filter((v) => v.key && String(v.value).trim())
+      .map((v) => [v.key, interpolate(String(v.value), vars)]),
+  );
+  if (!values.size) return url;
+  const m = /^([a-z][a-z0-9+.-]*:\/\/)?([^/?#]*)([^?#]*)([?#].*)?$/i.exec(url);
+  if (!m) return url;
+  const [, scheme = "", authority = "", path = "", tail = ""] = m;
+  const replaced = path.replace(/:([A-Za-z0-9_]+)/g, (whole, key) =>
+    values.has(key) ? encodeURIComponent(values.get(key)) : whole);
+  return scheme + authority + replaced + tail;
 }
 
 function enabledHeaders(req) {
@@ -1080,6 +1115,9 @@ function mapPostmanItem(item) {
     method: (req.method ?? "GET").toUpperCase(),
     url: base,
     params: Array.isArray(url.query) ? params : fromRaw,
+    pathVars: (Array.isArray(url.variable) ? url.variable : [])
+      .filter((v) => v && typeof v.key === "string")
+      .map((v) => ({ key: v.key, value: String(v.value ?? "") })),
     headers: Array.isArray(req.header) ? headers : undefined,
     body: { ...body, contentType },
     auth: fromPostmanAuth(req.auth),
@@ -1153,7 +1191,11 @@ function toPostmanItem(node) {
   if (node.kind === "folder") return { ...common, auth: toPostmanAuth(node.auth), variable: toPostmanVariables(node.variables), item: node.items.map(toPostmanItem) };
   const request = {
     method: node.method,
-    url: { raw: joinQuery(node.url, node.params.filter((row) => row.enabled)), query: node.params.map((row) => ({ key: row.key, value: row.value, disabled: !row.enabled })) },
+    url: {
+      raw: joinQuery(node.url, node.params.filter((row) => row.enabled)),
+      query: node.params.map((row) => ({ key: row.key, value: row.value, disabled: !row.enabled })),
+      ...(node.pathVars?.length ? { variable: node.pathVars.map((row) => ({ key: row.key, value: row.value })) } : {}),
+    },
     header: node.headers.map((row) => ({ key: row.key, value: row.value, disabled: !row.enabled })),
     auth: toPostmanAuth(node.auth),
   };
@@ -2030,9 +2072,11 @@ function renderRequest() {
   $("#method").value = req.method;
   $("#method").dataset.method = req.method;
   $("#url").value = req.url;
+  syncPathVars(req);
   renderRows($("#params-table").tBodies[0], req.params);
+  renderPathVars(req);
   renderRows($("#headers-table").tBodies[0], req.headers, { mask: headerMasked });
-  $("#params-count").textContent = req.params.filter((p) => p.enabled && p.key).length || "";
+  $("#params-count").textContent = paramsBadge(req) || "";
   $("#headers-count").textContent = req.headers.filter((h) => h.enabled && h.key).length || "";
   renderBody(req);
   renderAuth($("#req-auth-type"), $("#req-auth-fields"), req.auth, true);
@@ -2072,6 +2116,21 @@ function renderRows(tbody, rows, options = {}) {
         <td class="c-del"><button class="del" data-act="drop-row" title="Remove" aria-label="Remove row">${icon("x")}</button></td>
       </tr>`;
     })
+    .join("");
+}
+
+const paramsBadge = (req) =>
+  req.params.filter((p) => p.enabled && p.key).length + (req.pathVars?.length ?? 0);
+
+function renderPathVars(req) {
+  const rows = req.pathVars ?? [];
+  $("#pathvars-wrap").hidden = rows.length === 0;
+  $("#pathvars-table").tBodies[0].innerHTML = rows
+    .map((row, index) => `
+      <tr data-index="${index}">
+        <td class="pv-key">:${esc(row.key)}</td>
+        <td><input type="text" data-field="value" value="${esc(row.value)}" spellcheck="false" placeholder="value" aria-label="Value for path variable ${esc(row.key)}" /></td>
+      </tr>`)
     .join("");
 }
 
@@ -2542,6 +2601,7 @@ function prepareRequest(req) {
       method: req.method,
       url: req.url,
       params: req.params.filter((p) => p.enabled && p.key.trim()).map((p) => ({ key: p.key, value: p.value })),
+      pathVars: (req.pathVars ?? []).map((v) => ({ key: v.key, value: v.value })),
       headers: enabledHeaders(req),
       body: req.body.mode === "raw" ? req.body.raw : "",
       form:
@@ -2570,7 +2630,7 @@ function finalizePrepared(prepared, auth, vars) {
     prepared.headers.push(header);
   }
 
-  prepared.url = normalizeUrlPath(interpolate(prepared.url, vars));
+  prepared.url = applyPathVars(normalizeUrlPath(interpolate(prepared.url, vars)), prepared.pathVars, vars);
   prepared.body = interpolate(prepared.body, vars);
   prepared.params = prepared.params.map((p) => ({ key: interpolate(p.key, vars), value: interpolate(p.value, vars) }));
   prepared.headers = prepared.headers.map((h) => ({ key: interpolate(h.key, vars), value: interpolate(h.value, vars) }));
@@ -3633,7 +3693,9 @@ for (const [sel, key] of [
     rows[Number(event.target.closest("tr").dataset.index)][field] =
       event.target.type === "checkbox" ? event.target.checked : event.target.value;
     const counter = { params: "#params-count", headers: "#headers-count" }[key];
-    if (counter) $(counter).textContent = rows.filter((row) => row.enabled !== false && row.key).length || "";
+    if (counter)
+      $(counter).textContent =
+        (key === "params" ? paramsBadge(activeReq()) : rows.filter((row) => row.enabled !== false && row.key).length) || "";
     // Renaming a header into/out of a sensitive name re-masks that row in place, without a
     // full re-render that would steal focus from the key being typed.
     if (key === "headers" && field === "key") {
@@ -3659,6 +3721,14 @@ for (const [sel, key] of [
     persist();
   });
 }
+
+$("#pathvars-table").addEventListener("input", (event) => {
+  const req = activeReq();
+  if (!req || event.target.dataset.field !== "value") return;
+  req.pathVars[Number(event.target.closest("tr").dataset.index)].value = event.target.value;
+  if (drawer.open && drawerPane === "code") renderCodeOutput();
+  persist(false);
+});
 
 $$("[data-add]").forEach((button) =>
   button.addEventListener("click", () => {
@@ -4005,6 +4075,9 @@ $("#url").addEventListener("input", (event) => {
   const { base, params } = splitUrl(event.target.value);
   activeReq().url = base;
   if (params.length) activeReq().params = params;
+  syncPathVars(activeReq());
+  renderPathVars(activeReq());
+  $("#params-count").textContent = paramsBadge(activeReq()) || "";
   renderVarPeek(event.target.value);
   if (drawer.open && drawerPane === "code") renderCodeOutput();
   persist(false);
