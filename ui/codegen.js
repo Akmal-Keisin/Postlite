@@ -14,7 +14,7 @@ const postliteText = (() => {
       flags.push(`--header ${shellQuote(`${header.key}: ${header.value}`)}`);
     if (request.form?.length) {
       for (const field of request.form)
-        flags.push(`--form ${shellQuote(`${field.key}=${field.value}`)}`);
+        flags.push(`--form ${shellQuote(`${field.key}=${field.type === "file" ? "@" : ""}${field.value}`)}`);
     } else if (request.body) {
       flags.push(`--data-raw ${shellQuote(request.body)}`);
     }
@@ -217,9 +217,6 @@ const postliteText = (() => {
     const hasContentType = headerValue("content-type") !== undefined;
     const [username, ...password] = found.user.split(":");
 
-    const fileFields = found.form.filter((field) => field.slice(field.indexOf("=") + 1).startsWith("@"));
-    if (fileFields.length) notes.push("file uploads are not imported");
-
     return {
       method: found.method ?? (body || found.form.length ? "POST" : "GET"),
       url,
@@ -230,14 +227,14 @@ const postliteText = (() => {
           : { key: line.slice(0, colon).trim(), value: line.slice(colon + 1).trim() };
       }),
       body: found.get ? "" : body,
-      form: found.form
-        .filter((field) => !field.slice(field.indexOf("=") + 1).startsWith("@"))
-        .map((field) => {
-          const equals = field.indexOf("=");
-          return equals === -1
-            ? { key: field, value: "" }
-            : { key: field.slice(0, equals), value: field.slice(equals + 1) };
-        }),
+      form: found.form.map((field) => {
+        const equals = field.indexOf("=");
+        const key = equals === -1 ? field : field.slice(0, equals);
+        const value = equals === -1 ? "" : field.slice(equals + 1);
+        return value.startsWith("@")
+          ? { key, value: value.slice(1), type: "file" }
+          : { key, value };
+      }),
       contentType: body && !found.get && !hasContentType ? "application/x-www-form-urlencoded" : "",
       auth: found.user
         ? { type: "basic", basic: { username, password: password.join(":") } }

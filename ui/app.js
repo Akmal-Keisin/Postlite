@@ -82,6 +82,8 @@ function normRows(rows) {
     value: row.value ?? "",
     enabled: row.enabled !== false,
     secret: row.secret === true,
+    description: typeof row.description === "string" ? row.description : "",
+    type: row.type === "file" ? "file" : "text",
   }));
 }
 
@@ -230,6 +232,11 @@ function splitUrl(raw) {
   return { base, params };
 }
 
+// URL-bar edits rebuild query rows from the raw text; keep each key's description.
+function withDescriptions(prev, next) {
+  const desc = new Map((prev ?? []).map((row) => [row.key, row.description ?? ""]));
+  return next.map((row) => ({ ...row, description: desc.get(row.key) ?? "" }));
+}
 // Postman-style path variables: ":slug" segments in the path (never the scheme,
 // authority port, or query). Values live on the request, not in the URL text.
 function pathVarKeys(url) {
@@ -1079,6 +1086,7 @@ function mapPostmanItem(item) {
     key: query.key ?? "",
     value: String(query.value ?? ""),
     enabled: !query.disabled,
+    description: String(query.description ?? ""),
   }));
   const headers = (req.header ?? [])
     .filter((h) => h.key)
@@ -1096,8 +1104,12 @@ function mapPostmanItem(item) {
     body.mode = "form-data";
     body.form = (req.body.formdata ?? []).map((field) => ({
       key: field.key ?? "",
-      value: String(field.value ?? ""),
+      value: field.type === "file"
+        ? String(Array.isArray(field.src) ? field.src[0] ?? "" : field.src ?? "")
+        : String(field.value ?? ""),
       enabled: !field.disabled,
+      description: String(field.description ?? ""),
+      type: field.type === "file" ? "file" : "text",
     }));
   } else if (req.body?.mode === "urlencoded") {
     body.mode = "raw";
@@ -1193,7 +1205,7 @@ function toPostmanItem(node) {
     method: node.method,
     url: {
       raw: joinQuery(node.url, node.params.filter((row) => row.enabled)),
-      query: node.params.map((row) => ({ key: row.key, value: row.value, disabled: !row.enabled })),
+      query: node.params.map((row) => ({ key: row.key, value: row.value, disabled: !row.enabled, ...(row.description ? { description: row.description } : {}) })),
       ...(node.pathVars?.length ? { variable: node.pathVars.map((row) => ({ key: row.key, value: row.value })) } : {}),
     },
     header: node.headers.map((row) => ({ key: row.key, value: row.value, disabled: !row.enabled })),
@@ -1208,7 +1220,7 @@ function toPostmanItem(node) {
       contentType: node.body.contentType,
     } } };
   } else if (node.body.mode === "form-data") {
-    request.body = { mode: "formdata", formdata: node.body.form.map((row) => ({ key: row.key, value: row.value, type: "text", disabled: !row.enabled })) };
+    request.body = { mode: "formdata", formdata: node.body.form.map((row) => ({ key: row.key, ...(row.type === "file" ? { src: row.value } : { value: row.value }), type: row.type === "file" ? "file" : "text", disabled: !row.enabled, ...(row.description ? { description: row.description } : {}) })) };
   }
   const item = { ...common, request };
   if (node.examples?.length) {
@@ -2073,7 +2085,7 @@ function renderRequest() {
   $("#method").dataset.method = req.method;
   $("#url").value = req.url;
   syncPathVars(req);
-  renderRows($("#params-table").tBodies[0], req.params);
+  renderRows($("#params-table").tBodies[0], req.params, { desc: true });
   renderPathVars(req);
   renderRows($("#headers-table").tBodies[0], req.headers, { mask: headerMasked });
   $("#params-count").textContent = paramsBadge(req) || "";
@@ -2093,25 +2105,31 @@ function renderBody(req) {
   $("#form-wrap").classList.toggle("is-visible", req.body.mode === "form-data");
   $("#body").hidden = req.body.mode !== "raw";
   $("#body-empty-hint").hidden = req.body.mode !== "none";
-  renderRows($("#form-table").tBodies[0], req.body.form, { check: false });
+  renderRows($("#form-table").tBodies[0], req.body.form, { check: false, desc: true, types: true });
 }
 
+const fileName = (path) => String(path).split(/[\\/]/).pop() || String(path);
+
 function renderRows(tbody, rows, options = {}) {
-  const { check = true, secret = false, mask = null } = options;
+  const { check = true, secret = false, mask = null, desc = false, types = false } = options;
   tbody.innerHTML = rows
     .map((row, index) => {
       const masked = (secret && row.secret && state.settings.privacy.maskSecretVariables) || Boolean(mask && mask(row));
       const rowMasked = Boolean(mask && mask(row));
       const valueInput = `<input type="${masked ? "password" : "text"}" data-field="value" value="${esc(row.value)}" spellcheck="false" />`;
       // Only the header grid (mask) gets a reveal eye; the variables grid keeps its secret checkbox.
-      const valueCell = mask
+      const valueCell = types && row.type === "file"
+        ? `<td><button type="button" class="file-pick" data-act="pick-file" title="${esc(row.value)}">${esc(row.value ? fileName(row.value) : "Select file…")}</button></td>`
+        : mask
         ? `<td><div class="value-wrap">${valueInput}<button class="icon-btn row-eye" type="button" data-act="reveal-row" aria-pressed="false" title="Reveal value" aria-label="Toggle value visibility" ${rowMasked ? "" : "hidden"}>${icon("eye")}</button></div></td>`
         : `<td>${valueInput}</td>`;
       return `
       <tr data-index="${index}">
         ${check ? `<td class="c-check"><input type="checkbox" data-field="enabled" aria-label="Include in request" ${row.enabled ? "checked" : ""} /></td>` : ""}
         <td><input type="text" data-field="key" value="${esc(row.key)}" spellcheck="false" /></td>
+        ${types ? `<td class="c-type"><select data-field="type" aria-label="Field type for ${esc(row.key || "row")}"><option value="text"${row.type === "file" ? "" : " selected"}>Text</option><option value="file"${row.type === "file" ? " selected" : ""}>File</option></select></td>` : ""}
         ${valueCell}
+        ${desc ? `<td class="c-desc"><input type="text" data-field="description" value="${esc(row.description ?? "")}" placeholder="Description" spellcheck="false" aria-label="Description for ${esc(row.key || "row")}" /></td>` : ""}
         ${secret ? `<td class="c-secret"><input type="checkbox" data-field="secret" ${row.secret ? "checked" : ""} aria-label="Secret" title="Mask this value in the UI" /></td>` : ""}
         <td class="c-del"><button class="del" data-act="drop-row" title="Remove" aria-label="Remove row">${icon("x")}</button></td>
       </tr>`;
@@ -2606,7 +2624,9 @@ function prepareRequest(req) {
       body: req.body.mode === "raw" ? req.body.raw : "",
       form:
         req.body.mode === "form-data"
-          ? req.body.form.filter((f) => f.enabled !== false && f.key.trim()).map((f) => ({ key: f.key, value: f.value }))
+          ? req.body.form
+              .filter((f) => f.enabled !== false && f.key.trim() && (f.type !== "file" || f.value.trim()))
+              .map((f) => ({ key: f.key, value: f.value, type: f.type === "file" ? "file" : "text" }))
           : [],
     },
   };
@@ -2634,7 +2654,7 @@ function finalizePrepared(prepared, auth, vars) {
   prepared.body = interpolate(prepared.body, vars);
   prepared.params = prepared.params.map((p) => ({ key: interpolate(p.key, vars), value: interpolate(p.value, vars) }));
   prepared.headers = prepared.headers.map((h) => ({ key: interpolate(h.key, vars), value: interpolate(h.value, vars) }));
-  prepared.form = prepared.form.map((f) => ({ key: interpolate(f.key, vars), value: interpolate(f.value, vars) }));
+  prepared.form = prepared.form.map((f) => ({ key: interpolate(f.key, vars), value: interpolate(f.value, vars), type: f.type }));
   return prepared;
 }
 
@@ -3710,16 +3730,35 @@ for (const [sel, key] of [
         eye.querySelector("use").setAttribute("href", "#i-eye");
       }
     }
+    // Switching Text/File swaps the value cell between an input and the file picker.
+    if (key === "form" && field === "type")
+      renderRows($(sel).tBodies[0], rows, { check: false, desc: true, types: true });
     persist(event.target.type === "checkbox");
   });
   $(sel).addEventListener("click", (event) => {
-    if (event.target.closest("[data-act]")?.dataset.act !== "drop-row") return;
+    const act = event.target.closest("[data-act]")?.dataset.act;
+    if (act !== "drop-row" && act !== "pick-file") return;
     const rows = rowTarget(key);
     if (!rows) return;
-    rows.splice(Number(event.target.closest("tr").dataset.index), 1);
-    renderRows($(sel).tBodies[0], rows, { check: key !== "form", mask: key === "headers" ? headerMasked : null });
+    const index = Number(event.target.closest("tr").dataset.index);
+    if (act === "pick-file") {
+      if (key === "form") void pickFormFile(index);
+      return;
+    }
+    rows.splice(index, 1);
+    renderRows($(sel).tBodies[0], rows, { check: key !== "form", mask: key === "headers" ? headerMasked : null, desc: key === "params" || key === "form", types: key === "form" });
     persist();
   });
+}
+
+async function pickFormFile(index) {
+  const rows = rowTarget("form");
+  if (!rows?.[index]) return;
+  const path = await invoke("pick_file");
+  if (!path) return;
+  rows[index].value = path;
+  renderRows($("#form-table").tBodies[0], rows, { check: false, desc: true, types: true });
+  persist();
 }
 
 $("#pathvars-table").addEventListener("input", (event) => {
@@ -3735,7 +3774,7 @@ $$("[data-add]").forEach((button) =>
     const rows = rowTarget(button.dataset.add);
     if (!rows) return;
     rows.push({ key: "", value: "", enabled: true });
-    renderRows($(`#${button.dataset.add}-table`).tBodies[0], rows, { check: button.dataset.add !== "form", mask: button.dataset.add === "headers" ? headerMasked : null });
+    renderRows($(`#${button.dataset.add}-table`).tBodies[0], rows, { check: button.dataset.add !== "form", mask: button.dataset.add === "headers" ? headerMasked : null, desc: button.dataset.add === "params" || button.dataset.add === "form", types: button.dataset.add === "form" });
     persist();
   })
 );
@@ -3889,7 +3928,7 @@ $("#url").addEventListener("change", (event) => {
   const req = activeReq();
   const { base, params } = splitUrl(event.target.value.trim());
   req.url = base;
-  if (params.length) req.params = params;
+  if (params.length) req.params = withDescriptions(req.params, params);
   renderRequest();
   persist(false);
 });
@@ -3910,6 +3949,18 @@ $("#content-type").addEventListener("change", (event) => {
 $("#body").addEventListener("input", (event) => {
   activeReq().body.raw = event.target.value;
   persist(false);
+});
+
+// Tab indents the payload instead of walking focus; Shift+Tab stays the way out of the editor.
+$("#body").addEventListener("keydown", (event) => {
+  if (event.key !== "Tab" || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+  event.preventDefault();
+  const el = event.target;
+  // insertText keeps the native undo stack; the fallback covers engines without it.
+  if (!document.execCommand("insertText", false, "\t")) {
+    el.setRangeText("\t", el.selectionStart, el.selectionEnd, "end");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
 });
 
 $("#send").addEventListener("click", send);
@@ -4074,7 +4125,7 @@ $("#url").addEventListener("input", (event) => {
   if (!activeReq()) return;
   const { base, params } = splitUrl(event.target.value);
   activeReq().url = base;
-  if (params.length) activeReq().params = params;
+  if (params.length) activeReq().params = withDescriptions(activeReq().params, params);
   syncPathVars(activeReq());
   renderPathVars(activeReq());
   $("#params-count").textContent = paramsBadge(activeReq()) || "";

@@ -1924,6 +1924,50 @@ textarea#body {
   text-align: center;
 }
 
+.kv td.c-type,
+.kv th.c-type {
+  width: 76px;
+}
+
+.kv td.c-type select {
+  width: 100%;
+  border-color: transparent;
+  background: transparent;
+  font-size: 12px;
+  padding: 6px 4px;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.kv td.c-type select:hover,
+.kv td.c-type select:focus {
+  background: var(--bg-input);
+  border-color: var(--line);
+}
+
+.kv .file-pick {
+  width: 100%;
+  border: 1px dashed var(--line);
+  background: transparent;
+  border-radius: var(--r-s);
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.kv .file-pick:hover,
+.kv .file-pick:focus-visible {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
 .kv td.c-del {
   width: 28px;
   text-align: center;

@@ -23,6 +23,9 @@ struct HeaderPair {
 struct FormPair {
     key: String,
     value: String,
+    /// "file" reads `value` as a disk path and uploads its bytes; anything else is a text part.
+    #[serde(default, rename = "type")]
+    kind: String,
 }
 
 #[derive(Deserialize)]
@@ -457,10 +460,37 @@ async fn run_request(request: RequestPayload, ctx: &Ctx) -> ResponsePayload {
         headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
     }
     let mut builder = client.request(method, &request.url).headers(headers);
-    if request.form.iter().any(|field| !field.key.trim().is_empty()) {
+    if request
+        .form
+        .iter()
+        .any(|field| !field.key.trim().is_empty() && (field.kind != "file" || !field.value.trim().is_empty()))
+    {
         let mut form = reqwest::multipart::Form::new();
         for field in request.form.iter().filter(|f| !f.key.trim().is_empty()) {
-            form = form.text(field.key.clone(), field.value.clone());
+            if field.kind == "file" {
+                if field.value.trim().is_empty() {
+                    continue;
+                }
+                let path = std::path::Path::new(&field.value);
+                let bytes = match tokio::fs::read(path).await {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        return with_error(empty, format!("could not read file for \"{}\": {e}", field.key));
+                    }
+                };
+                let (name, mime) = file_part_meta(path);
+                let part = reqwest::multipart::Part::bytes(bytes)
+                    .file_name(name)
+                    .mime_str(mime)
+                    .map_err(|e| e.to_string());
+                let part = match part {
+                    Ok(part) => part,
+                    Err(e) => return with_error(empty, e),
+                };
+                form = form.part(field.key.clone(), part);
+            } else {
+                form = form.text(field.key.clone(), field.value.clone());
+            }
         }
         builder = builder.multipart(form);
     } else if let Some(body) = request.body.filter(|b| !b.is_empty()) {
@@ -586,6 +616,49 @@ fn export_path(chosen: PathBuf, extensions: &[String]) -> PathBuf {
         }
     }
     path
+}
+
+/// Filename and part Content-Type for an uploaded file, guessed from the extension.
+fn file_part_meta(path: &std::path::Path) -> (String, &'static str) {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    let mime = match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
+        Some("zip") => "application/zip",
+        Some("json") => "application/json",
+        Some("csv") => "text/csv",
+        Some("txt") => "text/plain",
+        Some("html") | Some("htm") => "text/html",
+        Some("xml") => "application/xml",
+        Some("mp3") => "audio/mpeg",
+        Some("mp4") => "video/mp4",
+        _ => "application/octet-stream",
+    };
+    (name, mime)
+}
+
+#[tauri::command]
+async fn pick_file() -> Result<Option<String>, String> {
+    let Some(handle) = rfd::AsyncFileDialog::new()
+        .set_title("Select file to upload")
+        .pick_file()
+        .await
+    else {
+        return Ok(None);
+    };
+    Ok(Some(handle.path().to_string_lossy().into_owned()))
 }
 
 #[tauri::command]
@@ -1494,6 +1567,100 @@ mod tests {
         );
         assert_eq!(export_path(PathBuf::from("/tmp/noext"), &[]), PathBuf::from("/tmp/noext"));
     }
+
+    #[test]
+    fn file_part_meta_guesses_filename_and_mime_from_extension() {
+        let (name, mime) = file_part_meta(std::path::Path::new("/tmp/Avatar.PNG"));
+        assert_eq!(name, "Avatar.PNG");
+        assert_eq!(mime, "image/png");
+        assert_eq!(file_part_meta(std::path::Path::new("/tmp/data.json")).1, "application/json");
+        assert_eq!(file_part_meta(std::path::Path::new("/tmp/noext")).1, "application/octet-stream");
+        assert_eq!(file_part_meta(std::path::Path::new("/")).0, "file");
+    }
+
+    #[tokio::test]
+    async fn form_file_rows_upload_bytes_as_multipart_parts() {
+        let dir = TempDir::new("form-upload");
+        let file = dir.path().join("avatar.png");
+        std::fs::write(&file, b"\x89PNG\r\n\x1a\nfake-png-bytes").unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut received = Vec::new();
+            let mut buffer = [0; 4096];
+            while !received.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0, "connection closed before request headers");
+                received.extend_from_slice(&buffer[..count]);
+            }
+            let header_end = received.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
+            let head = String::from_utf8_lossy(&received[..header_end]).into_owned();
+            let length: usize = head
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    if name.trim().eq_ignore_ascii_case("content-length") {
+                        value.trim().parse().ok()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            while received.len() < header_end + length {
+                let count = stream.read(&mut buffer).unwrap();
+                assert_ne!(count, 0, "connection closed before request body");
+                received.extend_from_slice(&buffer[..count]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+            (head, received[header_end..header_end + length].to_vec())
+        });
+
+        let mut payload = request();
+        payload.method = "POST".into();
+        payload.url = url;
+        payload.form = vec![
+            FormPair { key: "note".into(), value: "hello".into(), kind: String::new() },
+            FormPair {
+                key: "upload".into(),
+                value: file.to_string_lossy().into_owned(),
+                kind: "file".into(),
+            },
+            FormPair { key: "skipped".into(), value: "  ".into(), kind: "file".into() },
+        ];
+        let response = run_request(payload, &Ctx::no_jar()).await;
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.status, 200);
+        let (head, body) = server.join().unwrap();
+        assert!(head.to_ascii_lowercase().contains("multipart/form-data; boundary="), "{head}");
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("name=\"note\"\r\n\r\nhello"), "{body}");
+        assert!(body.contains("name=\"upload\"; filename=\"avatar.png\""), "{body}");
+        assert!(body.to_ascii_lowercase().contains("content-type: image/png"), "{body}");
+        assert!(body.contains("fake-png-bytes"), "{body}");
+        assert!(!body.contains("name=\"skipped\""), "file rows without a path are not sent");
+    }
+
+    #[tokio::test]
+    async fn form_file_row_with_missing_path_reports_read_error() {
+        let mut payload = request();
+        payload.method = "POST".into();
+        payload.form = vec![FormPair {
+            key: "upload".into(),
+            value: "/nonexistent/postlite-missing.png".into(),
+            kind: "file".into(),
+        }];
+        let response = run_request(payload, &Ctx::no_jar()).await;
+        assert_eq!(response.status, 0);
+        let error = response.error.unwrap();
+        assert!(error.contains("could not read file"), "{error}");
+        assert!(error.contains("upload"), "{error}");
+    }
 }
 
 fn main() {
@@ -1515,7 +1682,8 @@ fn main() {
             cookie_set_persist,
             proxy_credentials_set,
             proxy_credentials_get,
-            save_export_file
+            save_export_file,
+            pick_file
         ])
         .run(tauri::generate_context!())
         .expect("failed to run postlite");
