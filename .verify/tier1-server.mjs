@@ -28,6 +28,16 @@ const handler = (req, res) => {
     res.end(JSON.stringify({ ok: true, count: items.length, items }));
     return;
   }
+  if (url.pathname === "/api/token") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ token: "runner-token-123" }));
+    return;
+  }
+  if (url.pathname === "/api/not-found") {
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "missing" }));
+    return;
+  }
   if (url.pathname === "/api/large") { res.end("x".repeat(4096)); return; }
   if (url.pathname === "/api/slow") { setTimeout(() => res.end("slow"), 250); return; }
   // Cookie jar fixtures (Tier 2B P7/P9). /set plants a basket exercising the session/persistent

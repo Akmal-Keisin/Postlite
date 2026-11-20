@@ -3612,10 +3612,85 @@ runnerDialog.addEventListener("close", () => {
   if (runnerOpener) { runnerOpener.focus(); runnerOpener = null; }
 });
 
-// Implemented in Task 4; no-ops keep the dialog loadable until then.
-async function startRunner() {}
-function stopRunner() {}
-function renderRunnerResults() {}
+const runnerFailed = (entry) => Boolean(entry.response?.error) || entry.results.some((r) => !r.passed);
+
+async function startRunner() {
+  if (runnerState.active || runnerState.phase !== "select") return;
+  const checked = runnerRequests.filter((req) => runnerChecked.has(req.id));
+  if (!checked.length) return;
+  runnerState.active = true;
+  runnerState.stopRequested = false;
+  runnerState.endReason = null;
+  runnerState.phase = "running";
+  runnerState.entries = checked.map((req) => ({ req, status: "pending", response: null, results: [] }));
+  $("#runner-tree").hidden = true;
+  $("#runner-results").hidden = false;
+  $("#runner-cancel").hidden = true;
+  $("#runner-run").hidden = true;
+  $("#runner-stop").hidden = false;
+  $("#runner-close").hidden = true;
+  $("#runner-sub").textContent = "Running…";
+  renderRunnerResults();
+
+  for (const entry of runnerState.entries) {
+    if (runnerState.stopRequested) { entry.status = "skipped"; continue; }
+    entry.status = "running";
+    renderRunnerResults();
+    // Same core as manual Send; a failing pre-script still completes the
+    // pipeline — the stop check lives here, never inside executeRequest.
+    const { response, results } = await executeRequest(entry.req);
+    entry.response = response;
+    entry.results = results;
+    entry.status = runnerFailed(entry) ? "failed" : "passed";
+    if (entry.status === "failed") { runnerState.stopRequested = true; runnerState.endReason = "failed"; }
+    renderRunnerResults();
+  }
+  for (const entry of runnerState.entries) if (entry.status === "pending") entry.status = "skipped";
+  runnerState.active = false;
+  runnerState.phase = "done";
+  runnerState.endReason = runnerState.endReason ?? (runnerState.stopRequested ? "stopped" : "done");
+  $("#runner-stop").hidden = true;
+  $("#runner-close").hidden = false;
+  renderRunnerResults();
+  $("#runner-close").focus();
+}
+
+function stopRunner() {
+  if (!runnerState.active) return;
+  runnerState.stopRequested = true;
+  runnerState.endReason = runnerState.endReason ?? "stopped";
+  $("#runner-stop").disabled = true;
+  renderRunnerResults();
+}
+
+function renderRunnerResults() {
+  const s = runnerState;
+  const done = s.entries.filter((e) => e.status === "passed" || e.status === "failed").length;
+  const final = s.phase === "done"
+    ? `<span class="runner-final ${s.endReason}">${s.endReason === "done" ? "Done" : s.endReason === "failed" ? "Failed" : "Stopped"}</span> · `
+    : "";
+  $("#runner-count").innerHTML = `${final}${done} of ${s.entries.length} run`;
+  $("#runner-results").innerHTML = s.entries.map((entry, i) => {
+    const req = entry.req;
+    const mark = entry.status === "passed" ? ["pass", "✓"] : entry.status === "failed" ? ["fail", "✕"]
+      : entry.status === "running" ? ["running", "…"] : ["skip", "–"];
+    const passed = entry.results.filter((r) => r.passed).length;
+    const meta = entry.status === "pending" ? "Not run"
+      : entry.status === "skipped" ? "Not run"
+      : entry.status === "running" ? "Running…"
+      : entry.response.error ? `Error · ${entry.response.elapsed_ms ?? 0} ms`
+      : `${entry.response.status} · ${entry.response.elapsed_ms} ms · ${passed}/${entry.results.length} tests`;
+    return `<div class="runner-row" data-index="${i}">
+      <div class="runner-row-head" role="button" tabindex="0" aria-expanded="false" aria-label="${esc(req.name)}: ${esc(meta)}">
+        <span class="runner-mark ${mark[0]}" aria-hidden="true">${mark[1]}</span>
+        <span class="method ${esc(req.method)}">${esc(req.method)}</span>
+        <span class="runner-name">${esc(req.name)}</span>
+        <span class="runner-meta">${esc(meta)}</span>
+      </div>
+      <div class="runner-detail" hidden></div>
+    </div>`;
+  }).join("");
+}
 
 function placeMenu(menu, x, y) {
   const pad = 6;

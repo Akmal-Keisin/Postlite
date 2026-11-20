@@ -176,6 +176,159 @@ try {
       return !document.querySelector('#runner-dialog').open && !__verify.runnerState.active;
     })()`);
 
+  // Task 4 — run loop. Helper: seed a fresh collection from request specs,
+  // optionally bind an environment, open the dialog.
+  const runSpecs = (specs, { bindEnv = false } = {}) => evaluate(`(() => {
+    const v = __verify;
+    v.state.collections = []; v.state.environments = []; v.state.tabs = []; v.state.activeTabId = null;
+    const specs = ${JSON.stringify(specs)};
+    const items = specs.map(s => v.newRequest({ name: s.name, url: s.url, method: s.method ?? 'GET',
+      headers: (s.headers ?? []).map(h => ({ key: h.key, value: h.value, enabled: true })),
+      scripts: { pre: s.pre ?? '', test: s.test ?? '' } }));
+    const c = v.newCollection('Run target', { items });
+    if (${bindEnv ? 'true' : 'false'}) {
+      const env = v.newEnvironment({ name: 'Run env' });
+      v.state.environments.push(env);
+      c.environmentId = env.id;
+    }
+    v.state.collections.push(c);
+    v.addTab(items[0]);
+    v.persist(); v.render();
+    v.openRunnerDialog(c.id);
+    return true;
+  })()`);
+  const startAndWait = async () => { await click('#runner-run'); await waitRunDone(); };
+  const E = 'http://127.0.0.1:8100/api/echo';
+
+  await runSpecs([
+    { name: 'Login', url: 'http://127.0.0.1:8100/api/token', method: 'POST', test: 'pm.environment.set("token", pm.response.json().token);' },
+    { name: 'Authorized', url: E, headers: [{ key: 'Authorization', value: 'Bearer {{token}}' }] },
+    { name: 'After', url: E + '?after=1' },
+  ], { bindEnv: true });
+  await startAndWait();
+  await check('environment chaining: login token reaches the next request and persists',
+    `(() => {
+      const s = __verify.runnerState;
+      const echo = JSON.parse(s.entries[1].response.body);
+      const env = __verify.state.environments[0];
+      return s.entries.every(e => e.status === 'passed') && echo.headers.authorization === 'Bearer runner-token-123' && env.variables.some(r => r.key === 'token' && r.value === 'runner-token-123');
+    })()`);
+  await check('run result equals manual send result for the same request',
+    `(async () => {
+      const v = __verify, s = v.runnerState;
+      const manual = await v.executeRequest(s.entries[2].req);
+      const ran = s.entries[2];
+      return manual.response.status === ran.response.status && manual.response.body === ran.response.body && JSON.stringify(manual.results.map(r => [r.name, r.passed])) === JSON.stringify(ran.results.map(r => [r.name, r.passed]));
+    })()`);
+  await check('requests run sequentially in tree order',
+    `(() => {
+      const s = __verify.runnerState;
+      const names = s.entries.map(e => e.req.name);
+      const u1 = JSON.parse(s.entries[1].response.body).url;
+      const u2 = JSON.parse(s.entries[2].response.body).url;
+      return names.join(',') === 'Login,Authorized,After' && u1 === '/api/echo' && u2 === '/api/echo?after=1';
+    })()`);
+  await check('no tab, active-tab or #send mutation during a run',
+    `(() => {
+      const v = __verify, b = document.querySelector('#send');
+      return v.state.tabs.length === 1 && v.state.tabs[0].response == null && !b.disabled && b.textContent === 'Send';
+    })()`);
+  await evaluate(`document.querySelector('#runner-close').click()`);
+
+  await runSpecs([
+    { name: 'Pass', url: E },
+    { name: 'Fail test', url: E, test: 'pm.test("must be 201", () => pm.expect(pm.response.code).to.equal(201));' },
+    { name: 'Never', url: E },
+  ]);
+  await startAndWait();
+  await check('a failed pm.test stops the run and marks the rest not run',
+    `(() => {
+      const s = __verify.runnerState;
+      return s.entries[0].status === 'passed' && s.entries[1].status === 'failed' && s.entries[2].status === 'skipped' && s.endReason === 'failed' && !s.active && document.querySelector('#runner-dialog').open;
+    })()`);
+  await evaluate(`document.querySelector('#runner-close').click()`);
+
+  await runSpecs([
+    { name: 'Pass', url: E },
+    { name: 'Transport', url: 'http://127.0.0.1:9/unreachable' },
+    { name: 'Never', url: E },
+  ]);
+  await startAndWait();
+  await check('a transport error stops the run',
+    `(() => {
+      const s = __verify.runnerState;
+      return s.entries[1].status === 'failed' && !!s.entries[1].response.error && s.entries[2].status === 'skipped' && s.endReason === 'failed';
+    })()`);
+  await evaluate(`document.querySelector('#runner-close').click()`);
+
+  await runSpecs([
+    { name: 'Negative', url: 'http://127.0.0.1:8100/api/not-found', test: 'pm.test("is 404", () => pm.expect(pm.response.code).to.equal(404));' },
+    { name: 'Continues', url: E },
+  ]);
+  await startAndWait();
+  await check('a passing 404 negative test does not stop the run',
+    `(() => {
+      const s = __verify.runnerState;
+      return s.entries[0].status === 'passed' && s.entries[0].response.status === 404 && s.entries[1].status === 'passed' && s.endReason === 'done';
+    })()`);
+  await evaluate(`document.querySelector('#runner-close').click()`);
+
+  await runSpecs([
+    { name: 'Empty', url: '   ' },
+    { name: 'Never', url: E },
+  ]);
+  await startAndWait();
+  await check('a checked request with empty URL fails with "URL is required" and stops',
+    `(() => {
+      const s = __verify.runnerState;
+      return s.entries[0].status === 'failed' && s.entries[0].response.error === 'URL is required' && s.entries[1].status === 'skipped';
+    })()`);
+  await evaluate(`document.querySelector('#runner-close').click()`);
+
+  await runSpecs([
+    { name: 'Bad pre', url: E, pre: 'throw new Error("pre boom")' },
+    { name: 'Never', url: E },
+  ]);
+  await startAndWait();
+  await check('pre-script failure completes the pipeline, then stops the run',
+    `(() => {
+      const s = __verify.runnerState;
+      return s.entries[0].response.status === 200 && s.entries[0].results.some(r => !r.passed && /pre boom/.test(r.message)) && s.entries[0].status === 'failed' && s.entries[1].status === 'skipped';
+    })()`);
+  await evaluate(`document.querySelector('#runner-close').click()`);
+
+  await runSpecs([
+    { name: 'Slow', url: 'http://127.0.0.1:8100/api/slow' },
+    { name: 'Never', url: E },
+  ]);
+  await click('#runner-run');
+  await evaluate(`new Promise(r => setTimeout(r, 60))`);
+  await click('#runner-stop');
+  await waitRunDone();
+  await check('Stop finishes the in-flight request, records it, marks the rest not run',
+    `(() => {
+      const s = __verify.runnerState;
+      return s.entries[0].status === 'passed' && s.entries[0].response.body === 'slow' && s.entries[1].status === 'skipped' && s.endReason === 'stopped' && document.querySelector('#runner-dialog').open;
+    })()`);
+  await evaluate(`document.querySelector('#runner-close').click()`);
+
+  await runSpecs([
+    { name: 'Slow', url: 'http://127.0.0.1:8100/api/slow' },
+    { name: 'Never', url: E },
+  ]);
+  await click('#runner-run');
+  await evaluate(`new Promise(r => setTimeout(r, 60))`);
+  await evaluate(`document.querySelector('#runner-dialog').dispatchEvent(new Event('cancel', { cancelable: true }))`);
+  await waitRunDone();
+  await check('Escape during a run acts as Stop and keeps the dialog open',
+    `(() => {
+      const s = __verify.runnerState;
+      return document.querySelector('#runner-dialog').open && s.endReason === 'stopped' && s.entries[1].status === 'skipped';
+    })()`);
+  await check('after the run only Close is offered',
+    `!document.querySelector('#runner-close').hidden && document.querySelector('#runner-stop').hidden && document.querySelector('#runner-run').hidden && document.querySelector('#runner-cancel').hidden`);
+  await evaluate(`document.querySelector('#runner-close').click()`);
+
   console.log(`\n${results.length} checks passed`);
 } finally {
   await close();
