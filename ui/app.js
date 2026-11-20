@@ -3479,6 +3479,51 @@ let collMenuId = null;
 let collMenuOpener = null;
 let collMenuView = "main";
 
+// Ephemeral runner state — never persisted (see collection-runner spec).
+const runnerState = { active: false, stopRequested: false, phase: "select", nodeId: null, entries: [], endReason: null };
+
+/* ----------------------------------------------------------- folder menu */
+// Folders have no other context actions today; the menu only offers the runner.
+let folderMenuId = null;
+let folderMenuOpener = null;
+
+function openFolderMenu(id, x, y, opener) {
+  folderMenuId = id;
+  folderMenuOpener = opener;
+  const menu = $("#folder-menu");
+  menu.querySelector('[data-menu="run"]').disabled = runnerState.active;
+  menu.hidden = false;
+  placeMenu(menu, x, y);
+  menu.querySelector(".ctx-item")?.focus();
+}
+
+function closeFolderMenu() {
+  $("#folder-menu").hidden = true;
+  folderMenuId = null;
+  if (folderMenuOpener) { folderMenuOpener.focus(); folderMenuOpener = null; }
+}
+
+$("#folder-menu").addEventListener("keydown", (event) => {
+  if (event.key === "Escape" || event.key === "Tab") { event.preventDefault(); closeFolderMenu(); return; }
+  const items = [...$("#folder-menu").querySelectorAll(".ctx-item:not(:disabled)")];
+  const at = items.indexOf(document.activeElement);
+  if (event.key === "ArrowDown") { event.preventDefault(); items[(at + 1) % items.length]?.focus(); }
+  if (event.key === "ArrowUp") { event.preventDefault(); items[(at - 1 + items.length) % items.length]?.focus(); }
+  if (event.key === "Home") { event.preventDefault(); items[0]?.focus(); }
+  if (event.key === "End") { event.preventDefault(); items.at(-1)?.focus(); }
+});
+
+$("#folder-menu").addEventListener("click", (event) => {
+  const button = event.target.closest('[data-menu="run"]');
+  if (!button || button.disabled || !folderMenuId) return;
+  const id = folderMenuId;
+  closeFolderMenu();
+  openRunnerDialog(id);
+});
+
+// Temporary no-op so the menu wiring loads; replaced by the real dialog in Task 3.
+function openRunnerDialog() {}
+
 function placeMenu(menu, x, y) {
   const pad = 6;
   menu.style.left = `${Math.max(pad, Math.min(x, window.innerWidth - menu.offsetWidth - pad))}px`;
@@ -3498,6 +3543,7 @@ function renderCollMenu() {
         : `<button class="ctx-item" role="menuitem" disabled>No other workspace</button>`}`;
   } else {
     menu.innerHTML = `
+      <button class="ctx-item" data-menu="run" role="menuitem" ${runnerState.active ? "disabled" : ""}>Run collection</button>
       <button class="ctx-item" data-menu="favorite" role="menuitem">${collection.favorite ? "Remove from favorites" : "Add to favorites"}</button>
       <button class="ctx-item" data-menu="move" role="menuitem">Move to another workspace</button>`;
   }
@@ -3570,6 +3616,12 @@ $("#collections").addEventListener("contextmenu", (event) => {
     openReqMenu(request.dataset.id, event.clientX, event.clientY, request);
     return;
   }
+  const folder = event.target.closest('.node[data-kind="folder"]');
+  if (folder) {
+    event.preventDefault();
+    openFolderMenu(folder.dataset.id, event.clientX, event.clientY, folder.querySelector(".node-head .caret") ?? folder);
+    return;
+  }
   const node = event.target.closest('.node[data-kind="collection"]');
   if (!node) return;
   event.preventDefault();
@@ -3583,6 +3635,13 @@ $("#collections").addEventListener("keydown", (event) => {
     event.preventDefault();
     const rect = request.getBoundingClientRect();
     openReqMenu(request.dataset.id, rect.left, rect.bottom, request);
+    return;
+  }
+  const folder = event.target.closest?.('.node[data-kind="folder"]');
+  if (folder) {
+    event.preventDefault();
+    const rect = folder.querySelector(".node-head").getBoundingClientRect();
+    openFolderMenu(folder.dataset.id, rect.left, rect.bottom, event.target);
     return;
   }
   const node = event.target.closest?.('.node[data-kind="collection"]');
@@ -3646,6 +3705,7 @@ $("#coll-menu").addEventListener("click", (event) => {
     return;
   }
   closeCollMenu();
+  if (action === "run") { openRunnerDialog(id); return; }
   if (action === "favorite") toggleFavorite(id);
   else if (action === "move-to") void moveCollection(id, button.dataset.ws);
 });
@@ -3663,6 +3723,7 @@ document.addEventListener("click", (event) => {
   if (!$("#tab-menu").hidden && !event.target.closest("#tab-menu")) closeTabMenu();
   // composedPath, not closest: a menu click can re-render the menu, which detaches the target.
   if (!$("#coll-menu").hidden && !event.composedPath().includes($("#coll-menu"))) closeCollMenu();
+  if (!$("#folder-menu").hidden && !event.composedPath().includes($("#folder-menu"))) closeFolderMenu();
   if (!$("#req-menu").hidden && !event.composedPath().includes($("#req-menu"))) closeReqMenu();
   if (!$("#ws-pop").hidden && !event.target.closest("#ws-bar")) closeWsPop();
   if (!$("#env-pop").hidden && !event.target.closest("#env-bar")) closeEnvPop();

@@ -80,6 +80,50 @@ try {
       return tab.response === before && document.activeElement === document.querySelector('#url');
     })()`);
 
+  await check('right-click on a folder opens a folder menu with Run collection',
+    `(() => {
+      const v = __verify;
+      const folder = v.newFolder({ name: 'Sub', items: [v.state.collections[0].items[2]] });
+      v.state.collections[0].items.splice(2, 0, folder);
+      v.render();
+      const el = document.querySelector('.node[data-kind="folder"]');
+      el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }));
+      const menu = document.querySelector('#folder-menu');
+      return !menu.hidden && !!menu.querySelector('[data-menu="run"]');
+    })()`);
+  await check('Escape closes the folder menu',
+    `(() => {
+      const menu = document.querySelector('#folder-menu');
+      menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return menu.hidden;
+    })()`);
+  await check('Shift+F10 on a folder opens the folder menu',
+    `(() => {
+      const el = document.querySelector('.node[data-kind="folder"]');
+      el.focus();
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true }));
+      const open = !document.querySelector('#folder-menu').hidden;
+      document.querySelector('#folder-menu').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return open;
+    })()`);
+  await check('collection context menu offers Run collection',
+    `(() => {
+      const el = document.querySelector('.node[data-kind="collection"]');
+      el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 120 }));
+      const menu = document.querySelector('#coll-menu');
+      return !menu.hidden && !!menu.querySelector('[data-menu="run"]');
+    })()`);
+  await check('Run collection is disabled while a run is active',
+    `(() => {
+      __verify.runnerState.active = true;
+      const el = document.querySelector('.node[data-kind="collection"]');
+      el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 120 }));
+      const disabled = document.querySelector('#coll-menu [data-menu="run"]').disabled;
+      __verify.runnerState.active = false;
+      document.querySelector('#coll-menu').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return disabled;
+    })()`);
+
   console.log(`\n${results.length} checks passed`);
 } finally {
   await close();
