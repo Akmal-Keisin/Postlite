@@ -3521,8 +3521,101 @@ $("#folder-menu").addEventListener("click", (event) => {
   openRunnerDialog(id);
 });
 
-// Temporary no-op so the menu wiring loads; replaced by the real dialog in Task 3.
-function openRunnerDialog() {}
+/* ------------------------------------------------------------- collection runner */
+
+const runnerDialog = $("#runner-dialog");
+let runnerRequests = [];        // checked-subtree requests in tree order
+const runnerChecked = new Set();
+let runnerOpener = null;
+
+// DFS in stored order; requests are the non-folder leaves.
+function collectRunnerRequests(node, out = []) {
+  for (const child of node.items ?? []) {
+    if (child.kind === "folder") collectRunnerRequests(child, out);
+    else out.push(child);
+  }
+  return out;
+}
+
+function openRunnerDialog(nodeId, opener = null) {
+  if (runnerState.active) return;
+  const node = locateCollection(nodeId) ?? locate(nodeId);
+  if (!node || (node.kind !== "folder" && !locateCollection(nodeId))) return;
+  runnerState.nodeId = nodeId;
+  runnerState.phase = "select";
+  runnerState.entries = [];
+  runnerState.endReason = null;
+  runnerState.stopRequested = false;
+  runnerOpener = opener;
+  runnerRequests = collectRunnerRequests(node);
+  runnerChecked.clear();
+  for (const req of runnerRequests) runnerChecked.add(req.id);
+  $("#runner-title").textContent = `Run “${node.name}”`;
+  $("#runner-sub").textContent = "Requests run in tree order through the same pipeline as Send. The run stops at the first failure.";
+  $("#runner-tree").hidden = false;
+  $("#runner-results").hidden = true;
+  $("#runner-cancel").hidden = false;
+  $("#runner-run").hidden = false;
+  $("#runner-stop").hidden = true;
+  $("#runner-stop").disabled = false;
+  $("#runner-close").hidden = true;
+  renderRunnerSelection(node);
+  runnerDialog.returnValue = "cancel";
+  runnerDialog.showModal();
+  $("#runner-tree input")?.focus();
+}
+
+function renderRunnerSelection(node = locateCollection(runnerState.nodeId) ?? locate(runnerState.nodeId)) {
+  const row = (child, depth) => {
+    const pad = `style="padding-left:${6 + depth * 16}px"`;
+    if (child.kind === "folder") {
+      const leaves = collectRunnerRequests(child);
+      const checked = leaves.filter((r) => runnerChecked.has(r.id)).length;
+      const box = `<input type="checkbox" data-run-folder="${esc(child.id)}" ${checked === leaves.length && leaves.length ? "checked" : ""} aria-label="Select all requests in ${esc(child.name)}" />`;
+      return `<div class="runner-tree-row folder" ${pad}><label>${box}<span class="node-name">${esc(child.name)}</span></label></div>`
+        + (child.items ?? []).map((c) => row(c, depth + 1)).join("");
+    }
+    return `<div class="runner-tree-row" ${pad}><label><input type="checkbox" data-run-id="${esc(child.id)}" ${runnerChecked.has(child.id) ? "checked" : ""} /><span class="method ${esc(child.method)}">${esc(child.method)}</span><span class="node-name">${esc(child.name)}</span></label></div>`;
+  };
+  $("#runner-tree").innerHTML = (node.items ?? []).map((c) => row(c, 0)).join("");
+  // indeterminate is a property, not an attribute — set it after render
+  for (const box of $$("#runner-tree input[data-run-folder]")) {
+    const folder = locate(box.dataset.runFolder);
+    const leaves = folder ? collectRunnerRequests(folder) : [];
+    const checked = leaves.filter((r) => runnerChecked.has(r.id)).length;
+    box.indeterminate = checked > 0 && checked < leaves.length;
+  }
+  $("#runner-count").textContent = `${runnerChecked.size} of ${runnerRequests.length} selected`;
+  $("#runner-run").disabled = runnerChecked.size === 0;
+}
+
+$("#runner-tree").addEventListener("change", (event) => {
+  const box = event.target;
+  if (box.dataset.runId) {
+    box.checked ? runnerChecked.add(box.dataset.runId) : runnerChecked.delete(box.dataset.runId);
+  } else if (box.dataset.runFolder) {
+    const folder = locate(box.dataset.runFolder);
+    for (const req of folder ? collectRunnerRequests(folder) : [])
+      box.checked ? runnerChecked.add(req.id) : runnerChecked.delete(req.id);
+  } else return;
+  renderRunnerSelection();
+});
+
+$("#runner-run").addEventListener("click", () => void startRunner());
+$("#runner-stop").addEventListener("click", stopRunner);
+runnerDialog.addEventListener("cancel", (event) => {
+  // Escape during a run acts as Stop; the dialog must not close mid-run.
+  if (runnerState.active) { event.preventDefault(); stopRunner(); }
+});
+runnerDialog.addEventListener("close", () => {
+  runnerState.phase = "select";
+  if (runnerOpener) { runnerOpener.focus(); runnerOpener = null; }
+});
+
+// Implemented in Task 4; no-ops keep the dialog loadable until then.
+async function startRunner() {}
+function stopRunner() {}
+function renderRunnerResults() {}
 
 function placeMenu(menu, x, y) {
   const pad = 6;

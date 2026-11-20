@@ -84,7 +84,7 @@ try {
     `(() => {
       const v = __verify;
       const folder = v.newFolder({ name: 'Sub', items: [v.state.collections[0].items[2]] });
-      v.state.collections[0].items.splice(2, 0, folder);
+      v.state.collections[0].items.splice(2, 1, folder);
       v.render();
       const el = document.querySelector('.node[data-kind="folder"]');
       el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }));
@@ -122,6 +122,58 @@ try {
       __verify.runnerState.active = false;
       document.querySelector('#coll-menu').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       return disabled;
+    })()`);
+
+  // Task 3 — selection dialog. Give the Sub folder a second request so the
+  // indeterminate state is reachable, then open the dialog on the collection.
+  await evaluate(`(() => {
+    const v = __verify;
+    const sub = v.state.collections[0].items[2];
+    sub.items.push(v.newRequest({ name: 'Fourth', url: 'http://127.0.0.1:8100/api/echo?n=4' }));
+    v.persist(); v.render();
+    v.openRunnerDialog(v.state.collections[0].id);
+    return true;
+  })()`);
+  await check('runner dialog opens modal with the node name in the title',
+    `document.querySelector('#runner-dialog').open && document.querySelector('#runner-title').textContent.includes('Runner suite')`);
+  await check('all requests checked by default, counter shows m of m',
+    `(() => {
+      const boxes = [...document.querySelectorAll('#runner-tree input[data-run-id]')];
+      return boxes.length === 4 && boxes.every(b => b.checked) && document.querySelector('#runner-count').textContent === '4 of 4 selected';
+    })()`);
+  await check('selection tree is in tree order including subfolders',
+    `(() => {
+      const v = __verify, ids = [...document.querySelectorAll('#runner-tree input[data-run-id]')].map(b => b.dataset.runId);
+      const c = v.state.collections[0];
+      return ids[0] === c.items[0].id && ids[1] === c.items[1].id && ids[2] === c.items[2].items[0].id && ids[3] === c.items[2].items[1].id;
+    })()`);
+  await check('folder checkbox toggles all descendants and shows indeterminate',
+    `(() => {
+      const v = __verify, folder = v.state.collections[0].items[2];
+      const q = sel => document.querySelector(sel);
+      const fid = '#runner-tree input[data-run-folder="' + folder.id + '"]';
+      const cid = '#runner-tree input[data-run-id="' + folder.items[0].id + '"]';
+      q(fid).click();
+      const unchecked = !q(cid).checked && !q('#runner-tree input[data-run-id="' + folder.items[1].id + '"]').checked && q('#runner-count').textContent === '2 of 4 selected';
+      q(fid).click();
+      const rechecked = q(cid).checked && q('#runner-count').textContent === '4 of 4 selected';
+      q(cid).click();
+      const mixed = q(fid).indeterminate && q('#runner-count').textContent === '3 of 4 selected';
+      q(cid).click();
+      return unchecked && rechecked && mixed && q('#runner-count').textContent === '4 of 4 selected';
+    })()`);
+  await check('Run is disabled at zero selected',
+    `(() => {
+      const boxes = () => [...document.querySelectorAll('#runner-tree input[data-run-id]')];
+      for (let i = 0; i < 4; i++) boxes().find(b => b.checked)?.click();
+      const disabled = document.querySelector('#runner-run').disabled && document.querySelector('#runner-count').textContent === '0 of 4 selected';
+      for (let i = 0; i < 4; i++) boxes().find(b => !b.checked)?.click();
+      return disabled && !document.querySelector('#runner-run').disabled;
+    })()`);
+  await check('Cancel closes the dialog without running',
+    `(() => {
+      document.querySelector('#runner-cancel').click();
+      return !document.querySelector('#runner-dialog').open && !__verify.runnerState.active;
     })()`);
 
   console.log(`\n${results.length} checks passed`);

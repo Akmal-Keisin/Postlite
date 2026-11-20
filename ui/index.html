@@ -872,6 +872,24 @@
       </form>
     </dialog>
 
+    <dialog id="runner-dialog" aria-labelledby="runner-title">
+      <form method="dialog">
+        <h3 id="runner-title">Run collection</h3>
+        <p class="dialog-sub" id="runner-sub"></p>
+        <div class="runner-body">
+          <div id="runner-tree" aria-label="Requests to run"></div>
+          <div id="runner-results" hidden></div>
+        </div>
+        <div class="dialog-actions runner-actions">
+          <span id="runner-count" class="runner-count" role="status" aria-live="polite"></span>
+          <button value="cancel" class="tool outlined" id="runner-cancel" formnovalidate>Cancel</button>
+          <button type="button" class="primary" id="runner-run">Run</button>
+          <button type="button" class="tool outlined" id="runner-stop" hidden>Stop</button>
+          <button value="close" class="primary" id="runner-close" hidden>Close</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="collection-dialog" aria-labelledby="collection-dialog-title">
       <form method="dialog">
         <!-- First submit button = Enter's implicit submitter; keep it the primary action. -->
