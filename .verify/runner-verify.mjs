@@ -371,6 +371,21 @@ try {
   await check('closing after a run resets to selection phase for the next open',
     `__verify.runnerState.phase === 'select' && !document.querySelector('#runner-dialog').open`);
 
+  // Task 6 — screenshots (local artifacts, gitignored) and runtime-error trap.
+  await runSpecs([
+    { name: 'Login', url: 'http://127.0.0.1:8100/api/token', method: 'POST', test: 'pm.environment.set("token", pm.response.json().token);' },
+    { name: 'Authorized', url: E, headers: [{ key: 'Authorization', value: 'Bearer {{token}}' }] },
+  ], { bindEnv: true });
+  await evaluate(`(() => { document.querySelector('#runner-tree input[data-run-id]').focus(); return true; })()`);
+  await screenshot('runner-selection-dark.png');
+  await startAndWait();
+  await evaluate(`document.querySelectorAll('#runner-results .runner-row-head[data-expandable]')[0].click()`);
+  await screenshot('runner-results-dark.png');
+  await evaluate(`(() => { document.documentElement.dataset.theme = 'light'; return true; })()`);
+  await screenshot('runner-results-light.png');
+  await evaluate(`(() => { document.documentElement.dataset.theme = 'dark'; document.querySelector('#runner-close').click(); return true; })()`);
+  await check('no runtime exceptions during the whole suite', `__runtimeErrors.length === 0`);
+
   console.log(`\n${results.length} checks passed`);
 } finally {
   await close();

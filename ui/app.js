@@ -522,7 +522,40 @@ function buildEnvironmentApi(collection, vars) {
   };
 }
 
-function buildPm({ vars, request, response, results, environment }) {
+// pm.collectionVariables writes into the collection's own variable table, not the
+// bound environment, so the value stays with the collection and shows in its Variables tab.
+function buildCollectionVariablesApi(collection, vars) {
+  const find = (name) => collection?.variables.find((row) => row.key.trim() === String(name).trim());
+  const touch = () => {
+    persist(false);
+    renderSettings();
+  };
+  return {
+    get: (name) => find(name)?.value,
+    has: (name) => Boolean(find(name)),
+    set: (name, value) => {
+      if (!collection) throw new Error("This request has no collection to store collection variables in.");
+      const key = String(name).trim();
+      if (!key) throw new Error("Collection variable name is required.");
+      const text = String(value);
+      const row = find(key);
+      if (row) row.value = text;
+      else collection.variables.push({ key, value: text, enabled: true, secret: false });
+      vars.set(key, text);
+      touch();
+    },
+    unset: (name) => {
+      if (!collection) return;
+      const index = collection.variables.findIndex((row) => row.key.trim() === String(name).trim());
+      if (index >= 0) {
+        collection.variables.splice(index, 1);
+        touch();
+      }
+    },
+  };
+}
+
+function buildPm({ vars, request, response, results, environment, collectionVariables }) {
   const pm = {
     test(name, fn) {
       try {
@@ -542,6 +575,7 @@ function buildPm({ vars, request, response, results, environment }) {
   if (request) pm.request = requestApi(request);
   if (response) pm.response = responseApi(response);
   if (environment) pm.environment = environment;
+  if (collectionVariables) pm.collectionVariables = collectionVariables;
   return pm;
 }
 
@@ -2690,7 +2724,8 @@ async function executeRequest(req) {
 
   // ancestors run first so a folder can prepare what its requests consume
   const environment = buildEnvironmentApi(parents[0], vars);
-  const prePm = () => buildPm({ vars, request: prepared, results, environment });
+  const collectionVariables = buildCollectionVariablesApi(parents[0], vars);
+  const prePm = () => buildPm({ vars, request: prepared, results, environment, collectionVariables });
   for (const node of parents) runScript(node.scripts?.pre, prePm(), node.name, results);
   runScript(req.scripts.pre, prePm(), req.name, results);
   finalizePrepared(prepared, auth, vars);
@@ -2721,7 +2756,7 @@ async function executeRequest(req) {
 
   if (!response.error) {
     for (const node of [req, ...[...parents].reverse()])
-      runScript(node.scripts?.test, buildPm({ vars, response, results, environment }), node.name, results);
+      runScript(node.scripts?.test, buildPm({ vars, response, results, environment, collectionVariables }), node.name, results);
   }
   return { response, results, limitKB };
 }
@@ -3651,6 +3686,11 @@ async function startRunner() {
   runnerState.active = false;
   runnerState.phase = "done";
   runnerState.endReason = runnerState.endReason ?? (runnerState.stopRequested ? "stopped" : "done");
+  $("#runner-sub").textContent = runnerState.endReason === "done"
+    ? "All requests passed. Results are view-only — nothing is saved."
+    : runnerState.endReason === "failed"
+      ? "Stopped at the first failure. Results are view-only — nothing is saved."
+      : "Stopped. Results are view-only — nothing is saved.";
   $("#runner-stop").hidden = true;
   $("#runner-close").hidden = false;
   renderRunnerResults();
