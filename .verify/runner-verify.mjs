@@ -329,6 +329,48 @@ try {
     `!document.querySelector('#runner-close').hidden && document.querySelector('#runner-stop').hidden && document.querySelector('#runner-run').hidden && document.querySelector('#runner-cancel').hidden`);
   await evaluate(`document.querySelector('#runner-close').click()`);
 
+  // Task 5 — result row expansion and final state.
+  await runSpecs([
+    { name: 'Pass', url: E, test: 'pm.test("has body", () => pm.expect(pm.response.text()).to.include("method"));' },
+    { name: 'Fail test', url: E, test: 'pm.test("must be 201", () => pm.expect(pm.response.code).to.equal(201));' },
+    { name: 'Never', url: E },
+  ]);
+  await startAndWait();
+  await check('failed row shows status, elapsed and tests passed/total',
+    `(() => {
+      const row = document.querySelectorAll('#runner-results .runner-row')[1];
+      const meta = row.querySelector('.runner-meta').textContent;
+      return /200/.test(meta) && /ms/.test(meta) && /0\\/1 tests/.test(meta);
+    })()`);
+  await evaluate(`document.querySelectorAll('#runner-results .runner-row-head')[1].click()`);
+  await check('expanding a row shows test names, failure message and body preview',
+    `(() => {
+      const row = document.querySelectorAll('#runner-results .runner-row')[1];
+      const detail = row.querySelector('.runner-detail');
+      return !detail.hidden && row.querySelector('.runner-row-head').getAttribute('aria-expanded') === 'true'
+        && detail.textContent.includes('must be 201') && detail.querySelector('.runner-body-preview').textContent.includes('"method"');
+    })()`);
+  await evaluate(`document.querySelectorAll('#runner-results .runner-row-head')[1].click()`);
+  await check('clicking again collapses the row',
+    `document.querySelectorAll('#runner-results .runner-row')[1].querySelector('.runner-detail').hidden`);
+  await check('not-run rows are not expandable',
+    `(() => {
+      const row = document.querySelectorAll('#runner-results .runner-row')[2];
+      return row.querySelector('.runner-meta').textContent === 'Not run' && !row.querySelector('.runner-row-head').hasAttribute('data-expandable');
+    })()`);
+  await check('final header shows the failed end state',
+    `document.querySelector('#runner-count .runner-final.failed')?.textContent === 'Failed'`);
+  await check('body preview is plain text, not injected HTML',
+    `(() => {
+      const row = document.querySelectorAll('#runner-results .runner-row')[0];
+      row.querySelector('.runner-row-head').click();
+      const pre = row.querySelector('.runner-body-preview');
+      return pre.childElementCount === 0 && pre.textContent.length > 0;
+    })()`);
+  await evaluate(`document.querySelector('#runner-close').click()`);
+  await check('closing after a run resets to selection phase for the next open',
+    `__verify.runnerState.phase === 'select' && !document.querySelector('#runner-dialog').open`);
+
   console.log(`\n${results.length} checks passed`);
 } finally {
   await close();

@@ -3526,6 +3526,7 @@ $("#folder-menu").addEventListener("click", (event) => {
 const runnerDialog = $("#runner-dialog");
 let runnerRequests = [];        // checked-subtree requests in tree order
 const runnerChecked = new Set();
+const runnerExpanded = new Set(); // entry indexes expanded in the result list
 let runnerOpener = null;
 
 // DFS in stored order; requests are the non-folder leaves.
@@ -3549,6 +3550,7 @@ function openRunnerDialog(nodeId, opener = null) {
   runnerOpener = opener;
   runnerRequests = collectRunnerRequests(node);
   runnerChecked.clear();
+  runnerExpanded.clear();
   for (const req of runnerRequests) runnerChecked.add(req.id);
   $("#runner-title").textContent = `Run “${node.name}”`;
   $("#runner-sub").textContent = "Requests run in tree order through the same pipeline as Send. The run stops at the first failure.";
@@ -3663,6 +3665,16 @@ function stopRunner() {
   renderRunnerResults();
 }
 
+function runnerDetailHtml(entry) {
+  const tests = entry.results.map((r) => `
+    <li class="${r.passed ? "pass" : "fail"}">
+      <span class="mark" aria-hidden="true">${r.passed ? "✓" : "✕"}</span>
+      <span>${esc(r.name)}${r.message ? ` <span class="test-msg">— ${esc(r.message)}</span>` : ""}</span>
+    </li>`).join("");
+  return `<ul class="runner-tests">${tests || `<li class="skip"><span class="mark">–</span><span>No tests</span></li>`}</ul>
+    <pre class="runner-body-preview"></pre>`;
+}
+
 function renderRunnerResults() {
   const s = runnerState;
   const done = s.entries.filter((e) => e.status === "passed" || e.status === "failed").length;
@@ -3680,17 +3692,45 @@ function renderRunnerResults() {
       : entry.status === "running" ? "Running…"
       : entry.response.error ? `Error · ${entry.response.elapsed_ms ?? 0} ms`
       : `${entry.response.status} · ${entry.response.elapsed_ms} ms · ${passed}/${entry.results.length} tests`;
+    const finished = entry.status === "passed" || entry.status === "failed";
+    const expanded = runnerExpanded.has(i);
+    // Finished rows are real buttons (keyboard-operable); the rest are inert.
+    const head = finished
+      ? `<button type="button" class="runner-row-head" data-expandable aria-expanded="${expanded}" aria-label="${esc(req.name)}: ${esc(meta)}">`
+      : `<div class="runner-row-head" aria-label="${esc(req.name)}: ${esc(meta)}">`;
+    const headClose = finished ? "</button>" : "</div>";
     return `<div class="runner-row" data-index="${i}">
-      <div class="runner-row-head" role="button" tabindex="0" aria-expanded="false" aria-label="${esc(req.name)}: ${esc(meta)}">
+      ${head}
         <span class="runner-mark ${mark[0]}" aria-hidden="true">${mark[1]}</span>
         <span class="method ${esc(req.method)}">${esc(req.method)}</span>
         <span class="runner-name">${esc(req.name)}</span>
         <span class="runner-meta">${esc(meta)}</span>
-      </div>
-      <div class="runner-detail" hidden></div>
+      ${headClose}
+      <div class="runner-detail" ${expanded ? "" : "hidden"}></div>
     </div>`;
   }).join("");
+  // Body previews are set via textContent — responses can contain markup.
+  for (const [i, entry] of s.entries.entries()) {
+    if (entry.status !== "passed" && entry.status !== "failed") continue;
+    const detail = $(`#runner-results .runner-row[data-index="${i}"] .runner-detail`);
+    detail.innerHTML = runnerDetailHtml(entry);
+    detail.querySelector(".runner-body-preview").textContent = entry.response.error
+      ? entry.response.error
+      : entry.response.body + (entry.response.truncated ? "\n… (response truncated by size limit)" : "");
+  }
 }
+
+$("#runner-results").addEventListener("click", (event) => {
+  const head = event.target.closest(".runner-row-head[data-expandable]");
+  if (!head) return;
+  const row = head.closest(".runner-row");
+  const index = Number(row.dataset.index);
+  const detail = row.querySelector(".runner-detail");
+  const open = detail.hidden;
+  detail.hidden = !open;
+  head.setAttribute("aria-expanded", String(open));
+  open ? runnerExpanded.add(index) : runnerExpanded.delete(index);
+});
 
 function placeMenu(menu, x, y) {
   const pad = 6;
