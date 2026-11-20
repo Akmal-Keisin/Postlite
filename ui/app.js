@@ -2677,17 +2677,16 @@ function exportTarget(req) {
   };
 }
 
-async function send() {
-  if ($("#send").disabled) return;
-  const tab = activeTab();
-  const req = tab?.req;
+// Shared send core for manual Send and the collection runner. No tab, button
+// or response-pane side effects; pm.environment write-through inside scripts
+// is intentional and identical to manual sends (see collection-runner spec).
+async function executeRequest(req) {
+  const results = [];
+  const limitKB = state.settings.response.maxResponseSizeKB;
   if (!req || !req.url.trim()) {
-    notify("URL is required: type a request URL, then send.");
-    $("#url").focus();
-    return;
+    return { response: { error: "URL is required", elapsed_ms: 0 }, results, limitKB };
   }
   const { parents, vars, auth, prepared } = prepareRequest(req);
-  const results = [];
 
   // ancestors run first so a folder can prepare what its requests consume
   const environment = buildEnvironmentApi(parents[0], vars);
@@ -2696,12 +2695,8 @@ async function send() {
   runScript(req.scripts.pre, prePm(), req.name, results);
   finalizePrepared(prepared, auth, vars);
 
-  const button = $("#send");
-  button.disabled = true;
-  button.textContent = "Sending";
-  let response;
   const settings = state.settings;
-  const limitKB = settings.response.maxResponseSizeKB;
+  let response;
   try {
     response = await invoke("http_send", {
       request: {
@@ -2722,17 +2717,35 @@ async function send() {
     });
   } catch (err) {
     response = { error: String(err), elapsed_ms: 0 };
-  } finally {
-    button.disabled = false;
-    button.textContent = "Send";
   }
 
   if (!response.error) {
     for (const node of [req, ...[...parents].reverse()])
       runScript(node.scripts?.test, buildPm({ vars, response, results, environment }), node.name, results);
   }
+  return { response, results, limitKB };
+}
 
-  tab.response = { ...response, results, limitKB };
+async function send() {
+  if ($("#send").disabled) return;
+  const tab = activeTab();
+  const req = tab?.req;
+  if (!req || !req.url.trim()) {
+    notify("URL is required: type a request URL, then send.");
+    $("#url").focus();
+    return;
+  }
+  const button = $("#send");
+  button.disabled = true;
+  button.textContent = "Sending";
+  let outcome;
+  try {
+    outcome = await executeRequest(req);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Send";
+  }
+  tab.response = { ...outcome.response, results: outcome.results, limitKB: outcome.limitKB };
   tab.exampleView = null;
   renderResponse();
   refreshCookiesIfVisible();
