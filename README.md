@@ -37,6 +37,8 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
   - **Rename**: right-click a request row (or its tab). The new name lands in the tree and every open tab at once.
   - **Tabs**: the tab strip scrolls horizontally when tabs overflow, with a thin scrollbar and wheel support, and keeps the active tab in view.
 
+- **History**: every send — manual or through the runner — lands in a per-workspace **History** panel (the third rail view). Rows carry method, name/URL, status, latency, and a relative time; consecutive identical sends collapse with a run count, and the list is capped at 100 entries. Clicking a row re-opens what was sent: saved requests select their existing tab, unsaved scratch sends restore a snapshot clone, deleted requests say so. The sidebar filter narrows rows, **Clear all** wipes the workspace's history after confirmation, and history survives restarts independent of the "restore last session" setting. History is excluded from backups.
+
 - **Auth**: none / basic / bearer / API-key, set at request, folder, or collection level, with inheritance.
 
 - **Variables**: `{{token}}` interpolation with collection, folder, and environment scopes.
@@ -234,6 +236,7 @@ These harnesses use a separate debug build, so they never touch a real workspace
 | `tier2b-verify.mjs --no-secret` | nothing written; drawer explains (relaunch with `POSTLITE_FORCE_NO_SECRET_STORE=1`) | 20 |
 | `tier2c-dnd-verify.mjs` | drag & drop import, tree reordering | 52 |
 | `runner-verify.mjs` | collection runner: selection, ordering, env chaining, stop semantics, `pm.collectionVariables` | 43 |
+| `history-verify.mjs` | request history: model, recording, panel, click-through, backup exclusion | 23 |
 
 `tier2b-verify` runs its own forward proxy on `127.0.0.1:8890` to prove manual-proxy routing and bypass on the wire. It uses the harness server's `/set` and `/echo` routes to inspect exactly which cookies were sent.
 

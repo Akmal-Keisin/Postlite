@@ -266,6 +266,51 @@ try {
   })()`);
   await check('no runtime errors during all history interactions', `__runtimeErrors.length === 0`);
 
+  // --- Task 5: backup exclusion ------------------------------------------------
+  await check('backup strips history', `(async () => {
+    if (!window.__historyFetchStubbed) {
+      // Tauri's invoke is non-writable; the fetch-based custom protocol IPC is
+      // the writable seam (same pattern as tier1-verify).
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = typeof input === 'string' ? input : input.url;
+        if (url.endsWith('/save_export_file')) {
+          const args = JSON.parse(init.body);
+          window.__backupSaves = window.__backupSaves || [];
+          window.__backupSaves.push(Promise.resolve(JSON.parse(args.contents)));
+          return Promise.resolve(new Response(JSON.stringify('C:/exports/' + args.defaultName), { status: 200, headers: { 'content-type': 'application/json', 'Tauri-Response': 'ok' } }));
+        }
+        return originalFetch(input, init);
+      };
+      window.__historyFetchStubbed = true;
+    }
+    const done = __verify.exportBackup();
+    // exportBackup awaits the save queue before opening the confirm dialog, so
+    // poll for it instead of a fixed delay; race the promise so a stuck dialog
+    // can never hang the whole suite.
+    await new Promise(resolve => {
+      const start = Date.now();
+      const timer = setInterval(() => {
+        if (document.querySelector('#confirm-dialog')?.open) { clearInterval(timer); resolve(true); }
+        else if (Date.now() - start > 5000) { clearInterval(timer); resolve(false); }
+      }, 30);
+    });
+    document.querySelector('#confirm-ok').click();
+    const outcome = await Promise.race([done, new Promise(r => setTimeout(() => r('timeout'), 5000))]);
+    const doc = outcome === 'timeout' ? undefined : await window.__backupSaves[0];
+    const workspaces = doc?.payload?.workspaces ?? [];
+    return doc?.kind === 'postlite.backup' && workspaces.length >= 1
+      && workspaces.every(ws => Array.isArray(ws.history) && ws.history.length === 0)
+      && __verify.state.history.length >= 1;
+  })()`);
+  await check('restore of a backup without history starts empty', `(async () => {
+    const v = __verify;
+    const payload = v.workspacePayload();
+    const stripped = JSON.parse(JSON.stringify({ ...payload, workspaces: [{ ...payload.workspaces[0], history: undefined }] }));
+    const [merged] = v.applySavedPayload(stripped, 'merge');
+    return Array.isArray(merged.history) && merged.history.length === 0;
+  })()`);
+
   console.log(`\n${results.length} checks passed`);
 } catch (err) {
   console.error(`FAIL ${err.message}`);

@@ -1761,6 +1761,9 @@ function validateBackup(doc) {
 async function exportBackup() {
   await flushWorkspace();
   const payload = workspacePayload();
+  // History is excluded from backups like cookies (see history plan); a
+  // restored backup therefore starts with an empty history.
+  payload.workspaces = payload.workspaces.map(({ history: droppedHistory, ...rest }) => ({ ...rest, history: [] }));
   const described = describePayload(payload);
   const confirmed = await confirmDialogShow({
     title: "Export full backup",
