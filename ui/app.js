@@ -2053,6 +2053,32 @@ async function clearHistory() {
 
 $("#history-clear").addEventListener("click", () => void clearHistory());
 
+// History rows re-open what was sent: a saved request selects its existing tab
+// (tree-click semantics), an unsaved entry restores its snapshot as a fresh-id
+// clone, and a since-deleted request explains itself instead of failing.
+$("#history").addEventListener("click", (event) => {
+  const row = event.target.closest(".history-row");
+  if (!row) return;
+  const entry = state.history.find((e) => e.id === row.dataset.id);
+  if (!entry) return;
+  if (entry.ref) {
+    const stored = locate(entry.ref);
+    if (!stored) {
+      notify("That request was deleted from the collection.");
+      return;
+    }
+    const existing = state.tabs.find((t) => t.req?.id === stored.id);
+    existing ? selectTab(existing.id) : addTab(structuredClone(stored));
+    return;
+  }
+  if (entry.snapshot) {
+    const { id: droppedSnapshotId, ...rest } = structuredClone(entry.snapshot);
+    addTab(newRequest(rest));
+    return;
+  }
+  notify("Nothing to open for this entry.");
+});
+
 // Favorites sort above the rest. toggleFavorite keeps them there in storage too;
 // this sort only guards collections that arrive from imports or backups.
 const orderedCollections = () => [

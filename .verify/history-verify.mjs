@@ -88,6 +88,11 @@ try {
   if (executed >= 6) {
     await settle();
     await reload();
+    // The reload wiped the page context — re-arm the runtime-error capture so
+    // every interaction after this point is still covered by the final check.
+    await evaluate(`(() => {
+      window.__runtimeErrors = []; window.addEventListener('error', e => __runtimeErrors.push(e.message));
+    })()`);
     await check('history entries survive the reload intact', `(() => {
       const v = __verify;
       const entry = v.state.history.find(e => e.url === 'http://127.0.0.1:8100/api/echo?scratch=1');
@@ -213,6 +218,53 @@ try {
       && Array.isArray(payload.workspaces[0].history)
       && payload.workspaces[0].history.length === 0;
   })()`);
+
+  // --- Task 4: click-through semantics -----------------------------------------
+  await check('saved row reuses the live tab', `(() => {
+    const v = __verify;
+    v.state.history = [];
+    const req = v.state.collections[0].items[0];
+    v.recordHistory(req, { status: 200, status_text: 'OK', elapsed_ms: 5 });
+    v.renderSidebar();
+    const savedTab = v.addTab(JSON.parse(JSON.stringify(req)));
+    v.addTab(v.newRequest({ name: 'Other', url: 'http://127.0.0.1:8100/api/echo?other=1', method: 'GET' }));
+    // The scratch tab is active now; clicking the saved request's row must select its existing tab.
+    const entryId = v.state.history.find(e => e.ref === req.id).id;
+    document.querySelector('#history .history-row[data-id="' + entryId + '"]').click();
+    return v.state.activeTabId === savedTab.id && v.state.tabs.length === 2;
+  })()`);
+  await check('unsaved row restores a fresh-id clone', `(() => {
+    const v = __verify;
+    v.state.history = [];
+    const scratch = v.newRequest({ name: 'SnapClick', url: 'http://127.0.0.1:8100/api/echo?snapclick=1', method: 'GET' });
+    v.recordHistory(scratch, { status: 200, status_text: 'OK', elapsed_ms: 5 });
+    v.renderSidebar();
+    const entry = v.state.history[0];
+    const tabsBefore = v.state.tabs.length;
+    document.querySelector('#history .history-row[data-id="' + entry.id + '"]').click();
+    const newTab = v.state.tabs[v.state.tabs.length - 1];
+    return v.state.tabs.length === tabsBefore + 1
+      && newTab.req.id !== entry.snapshot.id
+      && newTab.req.url === entry.snapshot.url
+      && newTab.req.name === 'SnapClick';
+  })()`);
+  await check('deleted row notifies and opens nothing', `(() => {
+    const v = __verify;
+    v.state.history = [];
+    const c = v.state.collections[0];
+    const req = c.items[0];
+    v.recordHistory(req, { status: 200, status_text: 'OK', elapsed_ms: 5 });
+    c.items = [];
+    v.renderSidebar();
+    const entry = v.state.history[0];
+    const tabsBefore = v.state.tabs.length;
+    document.querySelector('#history .history-row[data-id="' + entry.id + '"]').click();
+    const notified = document.querySelector('#tool-note').textContent;
+    return tabsBefore === v.state.tabs.length
+      && Boolean(v.state.history.find(e => e.id === entry.id))
+      && notified.toLowerCase().includes('deleted');
+  })()`);
+  await check('no runtime errors during all history interactions', `__runtimeErrors.length === 0`);
 
   console.log(`\n${results.length} checks passed`);
 } catch (err) {
