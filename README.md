@@ -113,7 +113,7 @@ node .verify/tier2b-verify.mjs --after-restart   # session gone, persistent back
 # or relaunch it with POSTLITE_FORCE_NO_SECRET_STORE=1 and run:
 node .verify/tier2b-verify.mjs --no-secret       # nothing written, drawer explains (20)
 node .verify/tier2c-dnd-verify.mjs  # drag & drop import + tree reordering (52)
-node .verify/runner-verify.mjs    # collection runner: selection, ordering, env chaining, stop semantics (38)
+node .verify/runner-verify.mjs    # collection runner: selection, ordering, env chaining, stop semantics, pm.collectionVariables (43)
 ```
 
 `tier2b-verify` runs its own forward proxy on `127.0.0.1:8890` to prove manual-proxy routing and bypass on the wire, and uses the harness server's `/set` and `/echo` routes to inspect exactly which cookies were sent. `POSTLITE_FORCE_NO_SECRET_STORE` is only honored in debug builds. After a verification session, delete the isolated app-data directory and any `*.tier1verify20261110.postlite.store` credentials so nothing of it survives.

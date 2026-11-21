@@ -2139,7 +2139,7 @@ function renderBody(req) {
   $("#form-wrap").classList.toggle("is-visible", req.body.mode === "form-data");
   $("#body").hidden = req.body.mode !== "raw";
   $("#body-empty-hint").hidden = req.body.mode !== "none";
-  renderRows($("#form-table").tBodies[0], req.body.form, { check: false, desc: true, types: true });
+  renderRows($("#form-table").tBodies[0], req.body.form, { desc: true, types: true });
 }
 
 const fileName = (path) => String(path).split(/[\\/]/).pop() || String(path);
@@ -4054,7 +4054,7 @@ for (const [sel, key] of [
     }
     // Switching Text/File swaps the value cell between an input and the file picker.
     if (key === "form" && field === "type")
-      renderRows($(sel).tBodies[0], rows, { check: false, desc: true, types: true });
+      renderRows($(sel).tBodies[0], rows, { desc: true, types: true });
     persist(event.target.type === "checkbox");
   });
   $(sel).addEventListener("click", (event) => {
@@ -4068,7 +4068,7 @@ for (const [sel, key] of [
       return;
     }
     rows.splice(index, 1);
-    renderRows($(sel).tBodies[0], rows, { check: key !== "form", mask: key === "headers" ? headerMasked : null, desc: key === "params" || key === "form", types: key === "form" });
+    renderRows($(sel).tBodies[0], rows, { check: true, mask: key === "headers" ? headerMasked : null, desc: key === "params" || key === "form", types: key === "form" });
     persist();
   });
 }
@@ -4079,7 +4079,7 @@ async function pickFormFile(index) {
   const path = await invoke("pick_file");
   if (!path) return;
   rows[index].value = path;
-  renderRows($("#form-table").tBodies[0], rows, { check: false, desc: true, types: true });
+  renderRows($("#form-table").tBodies[0], rows, { desc: true, types: true });
   persist();
 }
 
@@ -4096,7 +4096,7 @@ $$("[data-add]").forEach((button) =>
     const rows = rowTarget(button.dataset.add);
     if (!rows) return;
     rows.push({ key: "", value: "", enabled: true });
-    renderRows($(`#${button.dataset.add}-table`).tBodies[0], rows, { check: button.dataset.add !== "form", mask: button.dataset.add === "headers" ? headerMasked : null, desc: button.dataset.add === "params" || button.dataset.add === "form", types: button.dataset.add === "form" });
+    renderRows($(`#${button.dataset.add}-table`).tBodies[0], rows, { check: true, mask: button.dataset.add === "headers" ? headerMasked : null, desc: button.dataset.add === "params" || button.dataset.add === "form", types: button.dataset.add === "form" });
     persist();
   })
 );

@@ -371,6 +371,66 @@ try {
   await check('closing after a run resets to selection phase for the next open',
     `__verify.runnerState.phase === 'select' && !document.querySelector('#runner-dialog').open`);
 
+  // pm.collectionVariables — set/get/has/unset from scripts, persisted to the
+  // collection's own Variables table and never to the bound environment.
+  const VAR_SPECS = [
+    { name: 'Setter', url: E, headers: [{ key: 'X-Cv', value: '{{cv_token}}' }],
+      pre: 'pm.collectionVariables.set("cv_token", "abc"); pm.test("get", () => pm.expect(pm.collectionVariables.get("cv_token")).to.equal("abc"));',
+      test: 'pm.collectionVariables.set("cv_test", "t"); pm.test("has", () => pm.expect(pm.collectionVariables.has("cv_token")).to.equal(true));' },
+    { name: 'Reader', url: E, headers: [{ key: 'X-Cv', value: '{{cv_token}}' }] },
+    { name: 'Unsetter', url: E,
+      pre: 'pm.collectionVariables.unset("cv_token");',
+      test: 'pm.test("gone", () => pm.expect(pm.collectionVariables.has("cv_token")).to.equal(false));' },
+  ];
+  const seedVars = (specs) => evaluate(`(() => {
+    const v = __verify;
+    v.state.collections = []; v.state.environments = []; v.state.tabs = []; v.state.activeTabId = null;
+    const env = v.newEnvironment({ name: 'Vars env' });
+    v.state.environments.push(env);
+    const items = ${JSON.stringify(specs)}.map(s => v.newRequest({ name: s.name, url: s.url, method: 'GET',
+      headers: (s.headers ?? []).map(h => ({ key: h.key, value: h.value, enabled: true })),
+      scripts: { pre: s.pre ?? '', test: s.test ?? '' } }));
+    const c = v.newCollection('Vars suite', { items, variables: [] });
+    c.environmentId = env.id;
+    v.state.collections.push(c);
+    v.addTab(items[0]);
+    v.persist(); v.render();
+    return true;
+  })()`);
+  await seedVars(VAR_SPECS);
+  await check('pm.collectionVariables set/get/has work in a pre-script and the same request sees the value',
+    `(async () => {
+      const { response, results } = await __verify.executeRequest(__verify.state.collections[0].items[0]);
+      return results.every(r => r.passed) && results.some(r => r.name === 'get') && JSON.parse(response.body).headers['x-cv'] === 'abc';
+    })()`);
+  await check('test-script set writes to the collection Variables table, not the bound environment',
+    `(() => {
+      const c = __verify.state.collections[0], env = __verify.state.environments[0];
+      return c.variables.some(r => r.key === 'cv_token' && r.value === 'abc' && r.enabled !== false)
+        && c.variables.some(r => r.key === 'cv_test' && r.value === 't')
+        && !env.variables.some(r => r.key.startsWith('cv_'));
+    })()`);
+  await check('the next request reads the collection variable through {{ }} interpolation',
+    `(async () => {
+      const { response } = await __verify.executeRequest(__verify.state.collections[0].items[1]);
+      return JSON.parse(response.body).headers['x-cv'] === 'abc';
+    })()`);
+  await check('unset removes the collection variable and has() returns false',
+    `(async () => {
+      const v = __verify, c = v.state.collections[0];
+      const { results } = await v.executeRequest(c.items[2]);
+      return results.every(r => r.passed) && !c.variables.some(r => r.key === 'cv_token') && c.variables.some(r => r.key === 'cv_test');
+    })()`);
+  await seedVars(VAR_SPECS.slice(0, 2));
+  await evaluate(`__verify.openRunnerDialog(__verify.state.collections[0].id)`);
+  await startAndWait();
+  await check('runner passes a collection variable from one request to the next',
+    `(() => {
+      const s = __verify.runnerState;
+      return s.entries.every(e => e.status === 'passed') && JSON.parse(s.entries[1].response.body).headers['x-cv'] === 'abc';
+    })()`);
+  await evaluate(`document.querySelector('#runner-close').click()`);
+
   // Task 6 — screenshots (local artifacts, gitignored) and runtime-error trap.
   await runSpecs([
     { name: 'Login', url: 'http://127.0.0.1:8100/api/token', method: 'POST', test: 'pm.environment.set("token", pm.response.json().token);' },

@@ -1,0 +1,17 @@
+{
+  "name": "postlite-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing postlite workspaces and request sending to AI agents",
+  "type": "module",
+  "private": true,
+  "bin": { "postlite-mcp": "server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "undici": "^7.10.0",
+    "zod": "^3.25.0"
+  }
+}
