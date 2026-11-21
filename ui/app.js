@@ -56,6 +56,7 @@ const state = {
   activeWorkspaceId: null,
   collections: [],
   environments: [],
+  history: [],
   tabs: [],
   activeTabId: null,
   expanded: new Set(),
@@ -143,6 +144,30 @@ function newRequest(fields = {}) {
   return req;
 }
 
+const MAX_HISTORY = 100;
+
+// Workspace history entries, newest-first. Unknown fields fall back to the same
+// defaults a fresh entry would carry; the cap drops the oldest on load too.
+function normalizeHistory(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .filter((e) => e && typeof e === "object" && !Array.isArray(e))
+    .slice(0, MAX_HISTORY)
+    .map((e) => ({
+      id: typeof e.id === "string" && e.id ? e.id : uid(),
+      at: typeof e.at === "string" ? e.at : new Date().toISOString(),
+      method: typeof e.method === "string" ? e.method : "GET",
+      url: typeof e.url === "string" ? e.url : "",
+      name: typeof e.name === "string" ? e.name : "",
+      status: Number.isFinite(Number(e.status)) ? Number(e.status) : 0,
+      statusText: typeof e.statusText === "string" ? e.statusText : "",
+      ok: e.ok === true,
+      elapsedMs: Number.isFinite(Number(e.elapsedMs)) ? Number(e.elapsedMs) : 0,
+      ref: typeof e.ref === "string" && e.ref ? e.ref : null,
+      snapshot: e.snapshot && typeof e.snapshot === "object" && !Array.isArray(e.snapshot) ? e.snapshot : null,
+      runs: Number.isInteger(e.runs) && e.runs >= 1 ? e.runs : 1,
+    }));
+}
+
 function newFolder(fields = {}) {
   return {
     kind: "folder",
@@ -187,6 +212,7 @@ function newWorkspace(fields = {}) {
     name: fields.name ?? "My Workspace",
     collections: fields.collections ?? [],
     environments: fields.environments ?? [],
+    history: fields.history ?? [],
     openTabs: fields.openTabs ?? [],
     openTabId: fields.openTabId ?? null,
   };
@@ -601,6 +627,7 @@ function syncWorkspace() {
   if (current) {
     current.collections = state.collections;
     current.environments = state.environments;
+    current.history = state.history;
     current.openTabs = state.tabs;
     current.openTabId = state.activeTabId;
   }
@@ -617,6 +644,7 @@ function workspacePayload() {
       name: ws.name,
       collections: ws.collections,
       environments: ws.environments,
+      history: ws.history ?? [],
       tabs: (ws.openTabs ?? []).map((t) => (t.kind === "environment" ? { kind: "environment", envId: t.envId } : t.req)),
       activeTabIndex: (ws.openTabs ?? []).findIndex((t) => t.id === ws.openTabId),
       activeTabId: ws.openTabId ?? null,
@@ -674,6 +702,9 @@ function hydrateWorkspace(saved) {
   const ws = newWorkspace({ id: saved.id, name: saved.name ?? "My Workspace" });
   ws.collections = (saved.collections ?? []).map(migrateCollection);
   ws.environments = (saved.environments ?? []).map(newEnvironment);
+  // History is data, not session state: it loads on every launch, independent
+  // of the "restore last session" setting (only open tabs are gated by that).
+  ws.history = normalizeHistory(saved.history);
   // An old tab may predate `examples`; inherit the stored node's examples so a
   // later save cannot silently wipe them (an explicit [] is still respected).
   const storedFor = (id) => {
@@ -724,6 +755,7 @@ function enterWorkspace(ws) {
   state.activeWorkspaceId = ws.id;
   state.collections = ws.collections;
   state.environments = ws.environments;
+  state.history = ws.history ?? [];
   state.tabs = ws.openTabs ?? [];
   state.activeTabId = ws.openTabId ?? null;
   const tab = state.tabs.find((t) => t.id === state.activeTabId);
@@ -2759,6 +2791,35 @@ async function executeRequest(req) {
       runScript(node.scripts?.test, buildPm({ vars, response, results, environment, collectionVariables }), node.name, results);
   }
   return { response, results, limitKB };
+}
+
+// One entry per send (manual or runner), recorded after the response settles
+// regardless of status. Identity for collapsing is method + authored url + name
+// + reference; the authored url is stored, never the interpolated one, so
+// resolved secrets cannot reach workspace.json.
+function recordHistory(req, response) {
+  if (!req || !req.url?.trim()) return;
+  const saved = locate(req.id);
+  const entry = {
+    id: uid(), at: new Date().toISOString(),
+    method: req.method, url: req.url, name: req.name ?? "",
+    status: Number(response?.status) || 0,
+    statusText: typeof response?.status_text === "string" ? response.status_text : "",
+    ok: !response?.error,
+    elapsedMs: Number(response?.elapsed_ms) || 0,
+    ref: saved ? saved.id : null,
+    snapshot: saved ? null : structuredClone({ ...req, examples: [] }),
+    runs: 1,
+  };
+  const top = state.history[0];
+  if (top && top.method === entry.method && top.url === entry.url && top.name === entry.name && (top.ref ?? null) === (entry.ref ?? null)) {
+    Object.assign(top, { at: entry.at, status: entry.status, statusText: entry.statusText, ok: entry.ok, elapsedMs: entry.elapsedMs });
+    top.runs += 1;
+  } else {
+    state.history.unshift(entry);
+    if (state.history.length > MAX_HISTORY) state.history.length = MAX_HISTORY;
+  }
+  persist();
 }
 
 async function send() {
