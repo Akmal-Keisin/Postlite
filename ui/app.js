@@ -154,7 +154,7 @@ function normalizeHistory(raw) {
     .slice(0, MAX_HISTORY)
     .map((e) => ({
       id: typeof e.id === "string" && e.id ? e.id : uid(),
-      at: typeof e.at === "string" ? e.at : new Date().toISOString(),
+      at: typeof e.at === "string" && Number.isFinite(new Date(e.at).getTime()) ? e.at : new Date().toISOString(),
       method: typeof e.method === "string" ? e.method : "GET",
       url: typeof e.url === "string" ? e.url : "",
       name: typeof e.name === "string" ? e.name : "",
@@ -2034,6 +2034,7 @@ function renderHistory() {
           ${entry.runs > 1 ? `<span class="history-runs" title="sent ${entry.runs} times">${entry.runs}</span>` : ""}
         </span>
         <span class="history-status ${historyStatusClass(entry)}">${entry.ok ? entry.status : "ERR"}</span>
+        <span class="history-latency">${entry.ok ? `${entry.elapsedMs} ms` : ""}</span>
         <span class="history-time">${timeAgo(entry.at)}</span>
       </button>
     </div>`

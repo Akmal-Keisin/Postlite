@@ -188,6 +188,8 @@ try {
     return rows.length === 3 && hello && post && dead
       && hello.querySelector('.history-method').textContent === 'GET'
       && hello.querySelector('.history-status').textContent === '200'
+      && hello.querySelector('.history-latency').textContent === '5 ms'
+      && dead.querySelector('.history-latency').textContent === ''
       && hello.querySelector('.history-time').textContent.trim().length > 0
       && hello.querySelector('.history-runs')?.textContent === '2'
       && hello.querySelector('.history-url')?.textContent.includes('/api/echo?n=1')

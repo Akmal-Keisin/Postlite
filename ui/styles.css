@@ -4318,7 +4318,7 @@ label:has(input:disabled),
 
 .history-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   column-gap: 10px;
   align-items: center;
   width: 100%;
@@ -4389,6 +4389,12 @@ label:has(input:disabled),
 .history-status.warn { color: var(--dim); }
 .history-status.fail,
 .history-status.err { color: var(--err); }
+
+.history-latency {
+  font-size: 11px;
+  white-space: nowrap;
+  opacity: 0.75;
+}
 
 .history-time {
   font-size: 11px;
