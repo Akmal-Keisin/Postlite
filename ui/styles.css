@@ -1152,7 +1152,10 @@ button.link:hover {
   grid-template-rows: 38px 1fr;
 }
 
+/* #req-pane must be listed beside .req: the ID rule at 1746 sets display:flex,
+   and an ID beats any run of classes, so class-only selectors never hid it. */
 .main.no-tabs .req,
+.main.no-tabs #req-pane,
 .main.no-tabs .res {
   display: none;
 }
@@ -2598,6 +2601,7 @@ textarea#body {
 }
 
 .main.settings-open .req,
+.main.settings-open #req-pane,
 .main.settings-open .res {
   display: none;
 }

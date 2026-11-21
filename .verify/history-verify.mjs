@@ -211,6 +211,14 @@ try {
   })()`);
   await check('clear-all empties and persists', `(async () => {
     document.querySelector('#history-clear').click();
+    // The click handler is async; poll for the confirm dialog instead of racing it.
+    await new Promise(resolve => {
+      const start = Date.now();
+      const timer = setInterval(() => {
+        if (document.querySelector('#confirm-dialog')?.open) { clearInterval(timer); resolve(true); }
+        else if (Date.now() - start > 3000) { clearInterval(timer); resolve(false); }
+      }, 30);
+    });
     const dialog = document.querySelector('#confirm-dialog');
     if (!dialog.open) return false;
     document.querySelector('#confirm-ok').click();
@@ -311,6 +319,23 @@ try {
     const stripped = JSON.parse(JSON.stringify({ ...payload, workspaces: [{ ...payload.workspaces[0], history: undefined }] }));
     const [merged] = v.applySavedPayload(stripped, 'merge');
     return Array.isArray(merged.history) && merged.history.length === 0;
+  })()`);
+
+  // --- Regression: selecting a collection hides the request editor -------------
+  // #req-pane's ID rule (display:flex) used to beat the class-only hide rules,
+  // leaving the editor and the settings pane stacked on top of each other.
+  await check('selecting a collection hides the request editor', `(async () => {
+    const v = __verify;
+    v.state.sidebarView = 'collections';
+    document.querySelector('.shell').classList.remove('rail-collapsed');
+    v.render();
+    const head = [...document.querySelectorAll('#collections .node-head')].find(h => h.textContent.includes('History suite'));
+    if (!head) return false;
+    head.querySelector('.node-name').click();
+    await new Promise(r => setTimeout(r, 100));
+    return document.querySelector('.main').classList.contains('settings-open')
+      && getComputedStyle(document.querySelector('.req')).display === 'none'
+      && !document.querySelector('#settings-pane').hidden;
   })()`);
 
   console.log(`\n${results.length} checks passed`);

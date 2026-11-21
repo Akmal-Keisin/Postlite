@@ -236,7 +236,7 @@ These harnesses use a separate debug build, so they never touch a real workspace
 | `tier2b-verify.mjs --no-secret` | nothing written; drawer explains (relaunch with `POSTLITE_FORCE_NO_SECRET_STORE=1`) | 20 |
 | `tier2c-dnd-verify.mjs` | drag & drop import, tree reordering | 52 |
 | `runner-verify.mjs` | collection runner: selection, ordering, env chaining, stop semantics, `pm.collectionVariables` | 43 |
-| `history-verify.mjs` | request history: model, recording, panel, click-through, backup exclusion | 23 |
+| `history-verify.mjs` | request history: model, recording, panel, click-through, backup exclusion | 24 |
 
 `tier2b-verify` runs its own forward proxy on `127.0.0.1:8890` to prove manual-proxy routing and bypass on the wire. It uses the harness server's `/set` and `/echo` routes to inspect exactly which cookies were sent.
 
