@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Documentation — Postlite</title>
+  <meta name="description" content="How to use Postlite: install it, send your first request, organize collections, work with variables and environments, run scripts, import from Postman, and drive it from AI agents over MCP." />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='1.5' y='1.5' width='21' height='21' rx='6.5' fill='%23ff6b35'/%3E%3Cpath d='M5.4 12h3l1.7-4 2.6 8 1.7-4h4.2' fill='none' stroke='%2316100c' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./assets/site.css" />
+  <script>
+    try {
+      var t = localStorage.getItem("postlite.site.theme");
+      document.documentElement.dataset.theme =
+        t === "light" || t === "dark" ? t
+        : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <svg class="visually-hidden" aria-hidden="true" focusable="false">
+    <symbol id="i-pulse" viewBox="0 0 16 16"><path d="M1.5 8h3l1.8-4.2 2.6 8.4L10.7 8h3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 16 16"><path d="M8.8 1.6 3.4 9h3.4l-.8 5.4L11.6 7H8.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+    <symbol id="i-check" viewBox="0 0 16 16"><path d="m3.6 8.4 2.8 2.8 6-6.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-github" viewBox="0 0 16 16"><path fill="currentColor" stroke="none" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.2v1.8M8 13v1.8M1.2 8H3M13 8h1.8M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 16 16"><path d="M13.4 9.8A6 6 0 0 1 6.2 2.6 6 6 0 1 0 13.4 9.8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 16 16"><path d="M5 3.5 10.5 8 5 12.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 7.2v3.6M8 4.9v.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2 14.4 13H1.6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 6.2v3.2M8 11.4v.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-cookie" viewBox="0 0 16 16"><path d="M8 1.8a6.2 6.2 0 1 0 6.2 6.2 2.6 2.6 0 0 1-3.2-3.2A6.2 6.2 0 0 0 8 1.8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="6" cy="7" r="0.9" fill="currentColor" stroke="none"/><circle cx="8.4" cy="10.4" r="0.9" fill="currentColor" stroke="none"/><circle cx="11" cy="9.6" r="0.9" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="7" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.2 7V5a2.8 2.8 0 0 1 5.6 0v2" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.3 8h11.4M8 2.2c1.7 1.8 2.5 3.7 2.5 5.8S9.7 12 8 13.8C6.3 12 5.5 10.1 5.5 8S6.3 4 8 2.2z" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+    <symbol id="i-import" viewBox="0 0 16 16"><path d="M8 2.4v7.2M5.2 6.8 8 9.6l2.8-2.8M2.6 11.4v2.2h10.8v-2.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-download" viewBox="0 0 16 16"><path d="M8 2.2v8M5 7.4 8 10.4l3-3M2.6 13.4h10.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-code" viewBox="0 0 16 16"><path d="m5.4 4.4-3.6 3.6 3.6 3.6M10.6 4.4l3.6 3.6-3.6 3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-play" viewBox="0 0 16 16"><path d="M4.4 2.8v10.4L13 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 16 16"><path d="M2 4.2h4.4l1.2 1.6H14v7.4H2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+    <symbol id="i-braces" viewBox="0 0 16 16"><path d="M6 2.6c-1.3 0-1.6.7-1.6 1.6v2.1c0 .8-.5 1.2-1.4 1.7.9.5 1.4.9 1.4 1.7v2.1c0 .9.3 1.6 1.6 1.6M10 2.6c1.3 0 1.6.7 1.6 1.6v2.1c0 .8.5 1.2 1.4 1.7-.9.5-1.4.9-1.4 1.7v2.1c0 .9-.3 1.6-1.6 1.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-key" viewBox="0 0 16 16"><circle cx="5.4" cy="10.6" r="3.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="m7.8 8.2 5.4-5.4M11 5l2 2M9 3l2 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 16 16"><path d="M3.2 3.2l9.6 9.6M6.5 4.1A6.6 6.6 0 0 1 8 3.8c3.9 0 6.2 4.2 6.2 4.2a11.4 11.4 0 0 1-2 2.6M9.4 11.9a6.4 6.4 0 0 1-1.4.3C4.1 12.2 1.8 8 1.8 8a11.6 11.6 0 0 1 2.5-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.7 6.7a1.9 1.9 0 0 0 2.6 2.6" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 16 16"><path d="M8 1.8 13.4 4v4.2c0 3.4-2.3 5.4-5.4 6.2-3.1-.8-5.4-2.8-5.4-6.2V4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="m5.8 8 1.6 1.6 2.8-3.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.4 1.8v2.2M9.6 1.8v2.2M6.4 12v2.2M9.6 12v2.2M1.8 6.4H4M1.8 9.6H4M12 6.4h2.2M12 9.6h2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 16 16"><path d="m6.5 2-.4 1.7-1 .6-1.7-.5-1.5 2.4L3.2 7v1.2l-1.3 1 1.5 2.5 1.7-.5 1 .6.4 1.7h3l.4-1.7 1-.6 1.7.5 1.5-2.5-1.3-1V7l1.3-.8-1.5-2.4-1.7.5-1-.6L9.5 2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="7.8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+  </svg>
+
+  <header class="site-nav">
+    <div class="container">
+      <a class="brand" href="./index.html">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="21" height="21" rx="6.5" style="fill: var(--accent)" />
+          <path d="M5.4 12h3l1.7-4 2.6 8 1.7-4h4.2" fill="none" style="stroke: var(--accent-ink)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Postlite
+      </a>
+      <span class="nav-version">v0.2.7</span>
+      <nav class="nav-links" aria-label="Site">
+        <a href="./index.html"><svg class="ic" aria-hidden="true"><use href="#i-pulse" /></svg>Home</a>
+        <a href="./docs.html" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-book" /></svg>Documentation</a>
+        <a href="https://github.com/WildanR19/Postlite" target="_blank" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-github" /></svg>GitHub</a>
+      </nav>
+      <button class="theme-toggle" type="button" aria-label="Toggle color theme">
+        <svg class="ic icon-sun" aria-hidden="true"><use href="#i-sun" /></svg>
+        <svg class="ic icon-moon" aria-hidden="true"><use href="#i-moon" /></svg>
+      </button>
+      <button class="nav-burger" type="button" aria-label="Open menu" aria-expanded="false">
+        <svg class="ic" aria-hidden="true"><use href="#i-menu" /></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="docs-hero">
+      <div class="container">
+        <h1>Documentation</h1>
+        <p>Everything you need to run Postlite and get the most out of it — from the first request to scripts, the collection runner, Postman interop, and the MCP server for AI agents.</p>
+      </div>
+    </div>
+
+    <div class="container docs-layout">
+      <!-- ============ sidebar ============ -->
+      <aside class="docs-sidebar" aria-label="Documentation contents">
+        <button class="docs-sidebar-toggle" type="button" aria-expanded="false">
+          Contents
+          <svg class="ic" aria-hidden="true"><use href="#i-chevron" /></svg>
+        </button>
+        <h2>Getting started</h2>
+        <ol>
+          <li><a href="#introduction">Introduction</a></li>
+          <li><a href="#installation">Installation</a></li>
+          <li><a href="#first-request">Your first request</a></li>
+        </ol>
+        <h2>Organizing requests</h2>
+        <ol>
+          <li><a href="#collections">Collections &amp; workspaces</a></li>
+          <li><a href="#variables">Variables &amp; environments</a></li>
+          <li><a href="#auth">Authentication</a></li>
+          <li><a href="#bodies">Request bodies</a></li>
+        </ol>
+        <h2>Automation</h2>
+        <ol>
+          <li><a href="#scripts">Scripts</a></li>
+          <li><a href="#runner">Collection runner</a></li>
+        </ol>
+        <h2>Moving data</h2>
+        <ol>
+          <li><a href="#import-export">Import &amp; export</a></li>
+          <li><a href="#codegen">cURL &amp; code generation</a></li>
+        </ol>
+        <h2>Network &amp; security</h2>
+        <ol>
+          <li><a href="#cookies">Cookies</a></li>
+          <li><a href="#proxy">Proxy</a></li>
+          <li><a href="#privacy">Privacy &amp; masking</a></li>
+        </ol>
+        <h2>Reference</h2>
+        <ol>
+          <li><a href="#settings">Settings</a></li>
+          <li><a href="#keyboard-shortcuts">Keyboard shortcuts</a></li>
+          <li><a href="#data-backups">Data &amp; backups</a></li>
+          <li><a href="#mcp-server">MCP server</a></li>
+        </ol>
+      </aside>
+
+      <!-- ============ content ============ -->
+      <article class="docs-content">
+
+        <section class="doc-section" id="introduction">
+          <h2><span class="sec-num">01</span>Introduction</h2>
+          <p><strong>Postlite</strong> is a lightweight desktop HTTP client built with <a href="https://tauri.app" target="_blank" rel="noopener">Tauri v2</a> and Rust. It covers the day-to-day request workflow: send HTTP calls, organize them into collections, reuse variables and auth, and move data in and out with Postman's open JSON formats — all in a small native window instead of a browser tab.</p>
+          <p>It is built for developers who want a fast, local API client without accounts, cloud sync, or a subscription. Everything lives in one JSON file on your machine.</p>
+          <div class="callout">
+            <svg class="ic" aria-hidden="true"><use href="#i-info" /></svg>
+            <p><strong>Not affiliated with Postman.</strong> postlite is an independent project. "Postman" is a trademark of Postman, Inc.; the only relationship is that postlite can import and export Postman's open JSON formats.</p>
+          </div>
+          <h3>What's inside</h3>
+          <ul>
+            <li><strong>HTTP core</strong> — every standard verb plus <code>QUERY</code>, query params, headers, and bodies.</li>
+            <li><strong>Collections &amp; workspaces</strong> — nested folders, reordering, multiple workspaces.</li>
+            <li><strong>Variables &amp; auth</strong> — scoped interpolation and inherited authentication.</li>
+            <li><strong>Automation</strong> — pre-request/test scripts and a collection runner.</li>
+            <li><strong>Interop</strong> — Postman Collection v2.1, environment JSON, cURL.</li>
+            <li><strong>Security</strong> — encrypted cookie jar, OS secret store, privacy masking.</li>
+          </ul>
+        </section>
+
+        <section class="doc-section" id="installation">
+          <h2><span class="sec-num">02</span>Installation</h2>
+          <h3>Download a build</h3>
+          <p>The easiest path is a prebuilt binary or installer from the <a href="https://github.com/WildanR19/Postlite/releases" target="_blank" rel="noopener">Releases page</a>. CI builds Windows (NSIS installer preconfigured) and Ubuntu binaries and attaches them to each release.</p>
+
+          <h3>Build from source</h3>
+          <p>You need the <strong>Rust (stable) toolchain</strong> plus the Tauri v2 system prerequisites:</p>
+          <ul>
+            <li><strong>Windows</strong> — Microsoft Visual Studio C++ Build Tools and the WebView2 runtime.</li>
+            <li><strong>macOS</strong> — Xcode command line tools.</li>
+            <li><strong>Linux</strong> — the usual WebKit / GTK development packages.</li>
+          </ul>
+          <p>See the <a href="https://tauri.app/start/prerequisites/" target="_blank" rel="noopener">Tauri prerequisites guide</a> for details. Node.js is only needed for the verification harnesses and helper scripts — the app itself has no npm dependencies.</p>
+
+          <div class="code-block">
+            <button class="code-copy" type="button" aria-label="Copy commands"><svg class="ic" aria-hidden="true"><use href="#i-import" /></svg><span>Copy</span></button>
+            <pre><code><span class="cmt"># install the Tauri CLI once</span>
+cargo install tauri-cli
+
+<span class="cmt"># development with hot reload</span>
+cd src-tauri
+cargo tauri dev
+
+<span class="cmt"># production build (embeds the static UI from ../ui)</span>
+cargo build --release
+<span class="cmt"># -> src-tauri/target/release/postlite(.exe)</span>
+
+<span class="cmt"># installer / bundle (Windows NSIS target is preconfigured)</span>
+cargo tauri build</code></pre>
+          </div>
+          <div class="callout warn">
+            <svg class="ic" aria-hidden="true"><use href="#i-warn" /></svg>
+            <p>The UI is a static folder embedded at build time. Edits to <code>ui/</code> need a rebuild before they show up in the packaged app.</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="first-request">
+          <h2><span class="sec-num">03</span>Your first request</h2>
+          <ol class="doc-steps">
+            <li><strong>Open a tab.</strong> Postlite starts with one ready. <kbd>Ctrl</kbd>+<kbd>N</kbd> opens another.</li>
+            <li><strong>Pick a method and paste a URL.</strong> Every standard verb plus <code>QUERY</code> is available. URL segments like <code>:product_slug</code> are detected as path variables and get their own table.</li>
+            <li><strong>Add details on the tabs under the URL bar</strong> — query params, headers, a body (none / raw / form-data), or auth. Query and form-data rows accept an optional description.</li>
+            <li><strong>Send</strong> with the button or <kbd>Ctrl</kbd>+<kbd>Enter</kbd>. The response panel shows status, latency, size, headers, and a pretty-printed JSON body with syntax highlighting. The body copies in one click.</li>
+          </ol>
+
+          <h3>Reading the response</h3>
+          <p>Click any object or array line (or its caret) in the JSON view to fold it into a one-line summary with a key/item count. <strong>Collapse all</strong> / <strong>Expand all</strong> sit above the body; huge arrays start folded and children render lazily, so large responses stay fast.</p>
+
+          <h3>Save a response as an example</h3>
+          <p>The bookmark button in the response head saves any successful response as a <strong>named example</strong> — useful for documenting what an endpoint returns. The <strong>Examples</strong> picker lists them with status and date; opening one swaps the stage to the saved snapshot under a banner, with <strong>Back to live response</strong> to return. Sending again always returns to the live response.</p>
+
+          <h3>Generate code</h3>
+          <p>The <strong>Code</strong> link under Send opens a drawer that copies the request as a runnable cURL command or generates JavaScript (fetch / axios), PHP (cURL / Guzzle), Python (requests / urllib), or Go (<code>net/http</code>). It can also turn a pasted cURL command back into a request tab. See <a href="#codegen">cURL &amp; code generation</a>.</p>
+        </section>
+
+        <section class="doc-section" id="collections">
+          <h2><span class="sec-num">04</span>Collections &amp; workspaces</h2>
+          <h3>Saving requests</h3>
+          <p>Press <kbd>Ctrl</kbd>+<kbd>S</kbd> to save the active request into any collection or folder. Saved requests open from the tree into tabs; the tab strip scrolls horizontally when it overflows and keeps the active tab in view.</p>
+
+          <h3>Organizing the tree</h3>
+          <ul>
+            <li>Create, rename, and delete collections and nested folders.</li>
+            <li>The tree is filterable and expand/collapse state is remembered.</li>
+            <li><strong>Reorder</strong> by dragging any row (a grip appears on hover, a line marks the insertion point), or press <kbd>Alt</kbd>+<kbd>Up</kbd>/<kbd>Down</kbd> on a focused row. Order persists at every level and stays correct while the tree is filtered.</li>
+            <li><strong>Rename a request</strong> by right-clicking its row (or its tab) — the new name lands in the tree and every open tab at once.</li>
+          </ul>
+
+          <h3>Workspaces</h3>
+          <p>Create, rename, and switch workspaces from the top bar. Each workspace has its own collections, environments, and open tabs. Deleting a workspace (with confirmation) removes everything in it. Older single-workspace files migrate automatically on first launch.</p>
+        </section>
+
+        <section class="doc-section" id="variables">
+          <h2><span class="sec-num">05</span>Variables &amp; environments</h2>
+          <h3>Interpolation</h3>
+          <p>Write <code>{{token}}</code> anywhere a string goes — URL, params, headers, bodies, scripts. Postlite resolves it at send time across three scopes:</p>
+          <table class="doc-table">
+            <thead><tr><th scope="col">Scope</th><th scope="col">Where it's defined</th><th scope="col">Precedence</th></tr></thead>
+            <tbody>
+              <tr><td><code>collection</code></td><td>The collection's Variables table</td><td>lowest</td></tr>
+              <tr><td><code>environment</code></td><td>An environment bound to the collection</td><td>middle</td></tr>
+              <tr><td><code>folder</code></td><td>Variables on folders up the chain</td><td>highest</td></tr>
+            </tbody>
+          </table>
+          <p>A <strong>peek overlay</strong> under the URL bar resolves each token and names the scope it came from, so you always know which value is about to be sent.</p>
+
+          <div class="callout">
+            <svg class="ic" aria-hidden="true"><use href="#i-info" /></svg>
+            <p>Duplicate path slashes fold in joined URLs, so <code>{{api_url}}/api/...</code> works whether or not the variable ends in <code>/</code>. The scheme and query string are left untouched.</p>
+          </div>
+
+          <h3>Secret variables</h3>
+          <p>Flag a variable as <strong>secret</strong> and it is masked in editors and the peek overlay. Masking is display-only — the raw value is still sent. See <a href="#privacy">Privacy &amp; masking</a>.</p>
+
+          <h3>Environments</h3>
+          <p>Environments live in their own sidebar tab, scoped per workspace. Bind one to a collection through the selector in the top bar (next to <strong>Import</strong>); bindings persist per collection, and the bound environment participates in variable precedence.</p>
+
+          <h3>Path variables</h3>
+          <p>Segments like <code>:product_slug</code> in the URL get their own <strong>Path Variables</strong> table. Values are substituted URL-encoded on send and in generated code, and round-trip through Postman's <code>url.variable</code> format.</p>
+        </section>
+
+        <section class="doc-section" id="auth">
+          <h2><span class="sec-num">06</span>Authentication</h2>
+          <p>Four auth types are supported: <strong>none</strong>, <strong>Basic</strong>, <strong>Bearer</strong>, and <strong>API-key</strong>.</p>
+          <p>Auth can be set at three levels — request, folder, or collection — and <strong>inherits downward</strong>: a request with no auth of its own uses its folder's, which uses the collection's. That means one credential on the collection covers every request under it.</p>
+          <div class="callout warn">
+            <svg class="ic" aria-hidden="true"><use href="#i-warn" /></svg>
+            <p>Credentials are masked in the Auth tab with per-row reveal. Generated code and exports always carry the real values — treat any snippet you copy as a secret.</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="bodies">
+          <h2><span class="sec-num">07</span>Request bodies</h2>
+          <table class="doc-table">
+            <thead><tr><th scope="col">Type</th><th scope="col">Behavior</th></tr></thead>
+            <tbody>
+              <tr><td><strong>None</strong></td><td>No body is sent.</td></tr>
+              <tr><td><strong>Raw</strong></td><td>A plain text body — JSON, XML, whatever the API expects.</td></tr>
+              <tr><td><strong>Form-data</strong></td><td>Multipart rows of two kinds: <strong>Text</strong> sends plain fields; <strong>File</strong> opens a native picker and uploads the file's bytes as a multipart part, with filename and Content-Type guessed from the extension. Empty File rows are skipped on send.</td></tr>
+            </tbody>
+          </table>
+          <p>Query and form-data rows carry an optional <strong>description column</strong> (Postman's third column). Descriptions survive URL-bar edits and round-trip through Postman JSON, and file fields map to Postman's <code>formdata</code> <code>type: "file"</code> entries.</p>
+        </section>
+
+        <section class="doc-section" id="scripts">
+          <h2><span class="sec-num">08</span>Scripts</h2>
+          <p>Every request can carry a <strong>pre-request script</strong> (runs before sending) and a <strong>test script</strong> (runs on the response). Scripts execute in a minimal sandbox that exposes a small <code>pm</code> API — no arbitrary Node, no file access.</p>
+          <table class="doc-table">
+            <thead><tr><th scope="col">Object</th><th scope="col">What it gives you</th></tr></thead>
+            <tbody>
+              <tr><td><code>pm.request</code></td><td>Read the outgoing request (method, url, headers, …)</td></tr>
+              <tr><td><code>pm.response</code></td><td>Response <code>code</code>, headers, body text, <code>json()</code></td></tr>
+              <tr><td><code>pm.environment</code></td><td>Read/write the bound environment. Writes persist, so the next request can use the value.</td></tr>
+              <tr><td><code>pm.collectionVariables</code></td><td>Read/write the collection's own Variables table — the value stays with that collection.</td></tr>
+              <tr><td><code>pm.variables</code></td><td>Session-only values; not saved.</td></tr>
+            </tbody>
+          </table>
+          <p>A typical login chain — assert the response and store the token for the next request:</p>
+          <div class="code-block">
+            <button class="code-copy" type="button" aria-label="Copy script"><svg class="ic" aria-hidden="true"><use href="#i-import" /></svg><span>Copy</span></button>
+            <pre><code><span class="cmt">// Test script on a POST /login request</span>
+<span class="kwd">const</span> body = pm.response.json();
+
+pm.test(<span class="str">"status ok"</span>, () =&gt; {
+  pm.expect(pm.response.code).to.equal(<span class="num">200</span>);
+});
+
+<span class="cmt">// Persists into the bound environment, so the next</span>
+<span class="cmt">// request can use {{token}}</span>
+pm.environment.set(<span class="str">"token"</span>, body.data.token);
+
+<span class="cmt">// Alternatively: stays with the collection's own table</span>
+<span class="cmt">// pm.collectionVariables.set("token", body.data.token);</span></code></pre>
+          </div>
+          <p>Test results appear in the response's <strong>Tests</strong> tab.</p>
+        </section>
+
+        <section class="doc-section" id="runner">
+          <h2><span class="sec-num">09</span>Collection runner</h2>
+          <p>The runner executes a set of saved requests in order, through the exact Send pipeline — scripts, auth, environments, and cookies all apply.</p>
+          <ol class="doc-steps">
+            <li><strong>Right-click a collection or folder</strong> and open the runner.</li>
+            <li><strong>Pick requests</strong> in a checkbox tree. They run in the displayed order.</li>
+            <li><strong>Run.</strong> Progress is live; a <strong>Stop</strong> button halts the run. The run stops at the first failed test or transport error — a passing negative test (e.g. an expected 404) keeps it going.</li>
+            <li><strong>Inspect results</strong> per request, with test details and a body preview.</li>
+          </ol>
+          <div class="callout">
+            <svg class="ic" aria-hidden="true"><use href="#i-info" /></svg>
+            <p>Runner results are view-only — nothing is written back to the workspace. Env chaining during a run works: a login request's script sets the token the following requests then use.</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="import-export">
+          <h2><span class="sec-num">10</span>Import &amp; export</h2>
+          <h3>Postman formats</h3>
+          <ul>
+            <li><strong>Import</strong> Collection v2.1 JSON — folders, requests, descriptions, path variables, file fields, auth and saved examples are carried over.</li>
+            <li><strong>Export</strong> Collection v2.1 JSON that opens in Postman.</li>
+            <li><strong>Import / export</strong> Environment JSON the same way.</li>
+          </ul>
+
+          <h3>Drag &amp; drop</h3>
+          <p>Drop files anywhere in the window. Postlite detects the content and routes it:</p>
+          <table class="doc-table">
+            <thead><tr><th scope="col">Dropped file</th><th scope="col">Where it lands</th></tr></thead>
+            <tbody>
+              <tr><td>Postman collection / environment</td><td>The sidebar</td></tr>
+              <tr><td>postlite backup</td><td>The restore dialog</td></tr>
+              <tr><td>postlite settings</td><td>Preferences</td></tr>
+              <tr><td>cURL script</td><td>A new request tab (a script that fails to parse opens in the cURL dialog instead)</td></tr>
+            </tbody>
+          </table>
+
+          <h3>Where exports go</h3>
+          <p>Every export — collection, environment, settings, backup, code snippet — opens the <strong>native Save As dialog</strong> first. Cancelling writes nothing. The status line reports the path written.</p>
+        </section>
+
+        <section class="doc-section" id="codegen">
+          <h2><span class="sec-num">11</span>cURL &amp; code generation</h2>
+          <p>The <strong>Code</strong> link under Send opens a right-side drawer with three abilities:</p>
+          <ul>
+            <li><strong>Copy as cURL</strong> — a runnable command for the active request.</li>
+            <li><strong>Generate code</strong> — JavaScript (fetch / axios), PHP (cURL / Guzzle), Python (requests / urllib), and Go (<code>net/http</code>).</li>
+            <li><strong>Import cURL</strong> — paste a cURL command and get a request tab back.</li>
+          </ul>
+          <div class="callout warn">
+            <svg class="ic" aria-hidden="true"><use href="#i-warn" /></svg>
+            <p>Generated output carries <strong>resolved variables and inherited auth</strong> — secrets are inlined into the snippet. Handle copied code like a credential. cURL flags postlite cannot express (like <code>-x</code> or <code>--compressed</code>) are named on import rather than guessed.</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="cookies">
+          <h2><span class="sec-num">12</span>Cookies</h2>
+          <p>Postlite keeps a <strong>cookie jar per workspace</strong>, on by default. Server <code>Set-Cookie</code> rules are respected, and a manual <code>Cookie</code> header always beats the jar.</p>
+          <ul>
+            <li><strong>Persistent cookies</strong> are stored encrypted (AES-256-GCM); the key lives in the OS secret store — Windows Credential Manager, macOS Keychain, or the Linux Secret Service.</li>
+            <li><strong>Session cookies</strong> die when the app closes.</li>
+          </ul>
+          <div class="callout warn">
+            <svg class="ic" aria-hidden="true"><use href="#i-warn" /></svg>
+            <p>If no secret store is available, cookies still work for the session but nothing is saved — the Cookies drawer explains why.</p>
+          </div>
+          <h3>Cookie Manager</h3>
+          <p>The <strong>Cookies</strong> link under Send opens a drawer with rows grouped by domain, Secure / HttpOnly / SameSite chips, per-row reveal / copy / delete, domain filtering, and domain-wide delete.</p>
+          <h3>Settings</h3>
+          <p>Settings holds the <strong>Persist cookies</strong> switch and <strong>Clear all cookies</strong>. Turning persistence off deletes the saved jar. Deleting a workspace deletes its jar and key.</p>
+        </section>
+
+        <section class="doc-section" id="proxy">
+          <h2><span class="sec-num">13</span>Proxy</h2>
+          <p>Three modes, configured in Settings:</p>
+          <ul>
+            <li><strong>Direct</strong> — no proxy.</li>
+            <li><strong>Manual</strong> — a proxy URL plus optional username / password.</li>
+            <li><strong>Environment variables</strong> — <code>HTTP_PROXY</code> / <code>HTTPS_PROXY</code> / <code>ALL_PROXY</code> / <code>NO_PROXY</code> are honored.</li>
+          </ul>
+          <p>A <strong>bypass list</strong> sends selected hosts direct even when a proxy is active. Proxy credentials live in the OS secret store, never in settings or backups.</p>
+        </section>
+
+        <section class="doc-section" id="privacy">
+          <h2><span class="sec-num">14</span>Privacy &amp; masking</h2>
+          <p>Postlite masks sensitive values on screen so they don't end up in screenshots or pair-programming sessions:</p>
+          <ul>
+            <li>Headers named <code>Authorization</code>, <code>Cookie</code>, or anything containing <em>token / secret / key</em> are masked in the request header grid, the response header table, and the Auth tab — each row has a reveal control.</li>
+            <li>Variables flagged <strong>secret</strong> are masked in editors and the variable peek overlay.</li>
+          </ul>
+          <div class="callout warn">
+            <svg class="ic" aria-hidden="true"><use href="#i-warn" /></svg>
+            <p>Masking is <strong>display-only</strong>. Everything that leaves the app — send, copy, export, generated code — carries the real values. Both masks can be switched off in <strong>Settings → Privacy</strong>.</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="settings">
+          <h2><span class="sec-num">15</span>Settings</h2>
+          <p>Open preferences with <kbd>Ctrl</kbd>+<kbd>,</kbd>. A search bar (<kbd>Ctrl</kbd>+<kbd>F</kbd>, or <kbd>/</kbd> while the dialog is open) filters settings live, badges each category with its match count, and jumps to the first hit. <kbd>Esc</kbd> clears the query before it closes the dialog.</p>
+          <table class="doc-table">
+            <thead><tr><th scope="col">Group</th><th scope="col">What you can change</th></tr></thead>
+            <tbody>
+              <tr><td>Appearance</td><td>Light / dark / system theme, plus eight accent presets, each with a tuned dark and light variant</td></tr>
+              <tr><td>Storage</td><td>Auto-save and session restore</td></tr>
+              <tr><td>Request defaults</td><td>Timeout, redirect policy, TLS verification, cache, response size cap</td></tr>
+              <tr><td>Cookies &amp; proxy</td><td>Persistence switch, clear-all, proxy mode and bypass list</td></tr>
+              <tr><td>Response view</td><td>Default tab, syntax highlighting, JSON indent, word wrap</td></tr>
+              <tr><td>Privacy</td><td>Header and variable masking switches</td></tr>
+              <tr><td>Shortcuts</td><td>The fixed keyboard shortcuts, listed for reference</td></tr>
+            </tbody>
+          </table>
+          <p>Settings live in <code>workspace.json</code> under <code>settings</code>, and the whole block can be exported or imported as JSON.</p>
+        </section>
+
+        <section class="doc-section" id="keyboard-shortcuts">
+          <h2><span class="sec-num">16</span>Keyboard shortcuts</h2>
+          <table class="doc-table">
+            <thead><tr><th scope="col">Shortcut</th><th scope="col">Action</th></tr></thead>
+            <tbody>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>Send the active request</td></tr>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Save the active request into a collection</td></tr>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td><td>New request tab</td></tr>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd></td><td>New collection</td></tr>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>Focus the sidebar's tree search</td></tr>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>,</kbd></td><td>Open settings</td></tr>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>PgUp</kbd> / <kbd>Ctrl</kbd>+<kbd>PgDn</kbd></td><td>Previous / next tab</td></tr>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>W</kbd></td><td>Close the active tab</td></tr>
+              <tr><td><kbd>Alt</kbd>+<kbd>Up</kbd> / <kbd>Alt</kbd>+<kbd>Down</kbd></td><td>Move the focused tree row up / down</td></tr>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>F</kbd> or <kbd>/</kbd></td><td>Search settings (while the dialog is open)</td></tr>
+              <tr><td><kbd>Esc</kbd></td><td>Close the open popup / drawer; in settings, clear the search first</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="doc-section" id="data-backups">
+          <h2><span class="sec-num">17</span>Data &amp; backups</h2>
+          <p>Collections, tabs, environments, and settings save to a single JSON file in the OS app-data directory for identifier <code>app.postlite.desktop</code>:</p>
+          <table class="doc-table">
+            <thead><tr><th scope="col">OS</th><th scope="col">Path</th></tr></thead>
+            <tbody>
+              <tr><td>Windows</td><td><code>%APPDATA%\app.postlite.desktop\workspace.json</code></td></tr>
+              <tr><td>macOS</td><td><code>~/Library/Application Support/app.postlite.desktop/workspace.json</code></td></tr>
+              <tr><td>Linux</td><td><code>~/.local/share/app.postlite.desktop/workspace.json</code></td></tr>
+            </tbody>
+          </table>
+          <p>The file is plain JSON: <code>version</code>, <code>settings</code>, <code>activeWorkspaceId</code>, and <code>workspaces</code> (each holding collections, environments, tabs, and the active tab). It is easy to back up or move between machines.</p>
+
+          <h3>What stays out of the file</h3>
+          <ul>
+            <li><code>cookies/&lt;workspaceId&gt;.bin</code> — the workspace's persistent cookie jar, AES-256-GCM encrypted. The random key lives in the OS secret store under <code>app.postlite.desktop.postlite.store</code>.</li>
+            <li><code>secrets/global.bin</code> — the manual proxy credentials, encrypted the same way.</li>
+          </ul>
+
+          <h3>Backups</h3>
+          <p><strong>Import / Export</strong> in Settings writes the whole state to one <code>.postlite.backup</code> file and reads it back. Restore either merges beside your existing workspaces or replaces them — replace asks twice and restores the backup's preferences. Cookie jars and proxy credentials are deliberately excluded from backups.</p>
+        </section>
+
+        <section class="doc-section" id="mcp-server">
+          <h2><span class="sec-num">18</span>MCP server</h2>
+          <p>Postlite ships an <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP</a> server (<code>mcp/server.js</code>) that exposes your saved workspaces to AI agents — an agent can browse your collections and send requests through the same pipeline the app uses. The workspace file is <strong>read-only</strong> to the server; nothing is ever written back.</p>
+
+          <h3>Setup</h3>
+          <div class="code-block">
+            <button class="code-copy" type="button" aria-label="Copy commands"><svg class="ic" aria-hidden="true"><use href="#i-import" /></svg><span>Copy</span></button>
+            <pre><code><span class="cmt"># one-time: install the three dependencies</span>
+cd mcp
+npm install
+
+<span class="cmt"># register it in your MCP client config</span></code></pre>
+          </div>
+          <div class="code-block">
+            <button class="code-copy" type="button" aria-label="Copy config"><svg class="ic" aria-hidden="true"><use href="#i-import" /></svg><span>Copy</span></button>
+            <pre><code>{
+  <span class="str">"mcpServers"</span>: {
+    <span class="str">"postlite"</span>: {
+      <span class="str">"command"</span>: <span class="str">"node"</span>,
+      <span class="str">"args"</span>: [<span class="str">"&lt;path to repo&gt;/mcp/server.js"</span>]
+    }
+  }
+}</code></pre>
+          </div>
+          <p>The server reads the same <code>workspace.json</code> the app uses, so requests you save in Postlite are immediately visible to agents — no export step.</p>
+
+          <h3>Tools</h3>
+          <table class="doc-table">
+            <thead><tr><th scope="col">Tool</th><th scope="col">Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>list_workspaces</code></td><td>Workspaces with collection and environment counts.</td></tr>
+              <tr><td><code>list_collections</code></td><td>The folder / request tree of a workspace (id, name, method, url). Defaults to the active workspace.</td></tr>
+              <tr><td><code>get_request</code></td><td>A saved request by id with its folder/collection chain, effective variables (collection &lt; environment &lt; folder), and resolved auth.</td></tr>
+              <tr><td><code>list_environments</code></td><td>Environments and their variables in a workspace.</td></tr>
+              <tr><td><code>send_request</code></td><td>Send a saved request by id, resolving variables, path variables, query params and inherited auth exactly like the app, with the app's saved HTTP settings. Accepts variable overrides applied with the highest precedence.</td></tr>
+              <tr><td><code>send_http_request</code></td><td>Send an ad-hoc request not saved in postlite (method, URL, headers, raw body), using the app's HTTP settings.</td></tr>
+            </tbody>
+          </table>
+
+          <div class="callout warn">
+            <svg class="ic" aria-hidden="true"><use href="#i-warn" /></svg>
+            <p>Two deliberate gaps when sending via MCP: pre-request/test scripts are <strong>not</strong> run, and the encrypted cookie jar is <strong>not</strong> attached — set a <code>Cookie</code> header manually if needed. The server returns these notes with every response.</p>
+          </div>
+        </section>
+
+        <section class="doc-section" id="help">
+          <h2><span class="sec-num">19</span>Getting help</h2>
+          <ul>
+            <li><strong>Bugs and feature ideas</strong> — open an issue on <a href="https://github.com/WildanR19/Postlite/issues" target="_blank" rel="noopener">GitHub Issues</a>.</li>
+            <li><strong>Source code</strong> — <a href="https://github.com/WildanR19/Postlite" target="_blank" rel="noopener">github.com/WildanR19/Postlite</a>, MIT licensed.</li>
+            <li><strong>Contributing</strong> — PRs are welcome; CI runs <code>cargo test</code> and a release build on Windows and Ubuntu.</li>
+          </ul>
+        </section>
+
+      </article>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div>
+        <a class="footer-brand" href="./index.html">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="1.5" y="1.5" width="21" height="21" rx="6.5" style="fill: var(--accent)" />
+            <path d="M5.4 12h3l1.7-4 2.6 8 1.7-4h4.2" fill="none" style="stroke: var(--accent-ink)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          Postlite
+        </a>
+        <p class="footer-note">
+          Distributed under the MIT License.
+          <strong>Not affiliated with Postman.</strong> postlite is an independent project;
+          "Postman" is a trademark of Postman, Inc. — the only relationship is that postlite can
+          import and export Postman's open JSON formats.
+        </p>
+      </div>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="./index.html">Home</a>
+        <a href="#introduction">Back to top</a>
+        <a href="https://github.com/WildanR19/Postlite" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/WildanR19/Postlite/releases" target="_blank" rel="noopener">Releases</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="./assets/site.js"></script>
+</body>
+</html>
