@@ -95,6 +95,66 @@ try {
     })()`);
   }
 
+  // --- Task 2: recording sends in executeRequest ------------------------------
+  await check('manual send records a saved-request entry', `(async () => {
+    const v = __verify;
+    v.state.history = [];
+    const req = v.state.collections[0].items[0];
+    const { response } = await v.executeRequest(req);
+    const top = v.state.history[0];
+    return !response.error && top && top.ref === req.id && top.ok === true && top.status === 200
+      && top.url === 'http://127.0.0.1:8100/api/echo?n=1' && top.name === 'Hello';
+  })()`);
+  await check('unsaved tab records a snapshot without examples', `(async () => {
+    const v = __verify;
+    v.state.history = [];
+    const req = v.newRequest({ name: 'Snap', url: 'http://127.0.0.1:8100/api/echo?snap=1', method: 'GET',
+      examples: [{ name: 'old', body: 'x' }] });
+    await v.executeRequest(req);
+    const top = v.state.history[0];
+    return top.ref === null && top.snapshot && top.snapshot.url === 'http://127.0.0.1:8100/api/echo?snap=1'
+      && Array.isArray(top.snapshot.examples) && top.snapshot.examples.length === 0 && top.snapshot.response === undefined;
+  })()`);
+  await check('transport error records ok:false', `(async () => {
+    const v = __verify;
+    v.state.history = [];
+    const req = v.newRequest({ name: 'Dead', url: 'http://127.0.0.1:9/x', method: 'GET' });
+    const { response } = await v.executeRequest(req);
+    const top = v.state.history[0];
+    return Boolean(response.error) && top && top.ok === false && top.status === 0 && top.ref === null && Boolean(top.snapshot);
+  })()`);
+  await check('authored url is stored unresolved', `(async () => {
+    const v = __verify;
+    v.state.history = [];
+    const c = v.newCollection('Var suite', { items: [
+      v.newRequest({ name: 'Templated', url: '{{base}}/api/echo?tpl=1', method: 'GET' }),
+    ], variables: [{ key: 'base', value: 'http://127.0.0.1:8100', enabled: true }] });
+    v.state.collections.push(c);
+    const { response } = await v.executeRequest(c.items[0]);
+    const top = v.state.history[0];
+    return !response.error && top && top.url === '{{base}}/api/echo?tpl=1' && top.ref === c.items[0].id;
+  })()`);
+  await check('runner records one entry per request', `(async () => {
+    const v = __verify;
+    v.state.history = [];
+    const c = v.newCollection('Run suite', { items: ['a', 'b', 'c'].map(n =>
+      v.newRequest({ name: 'Run ' + n, url: 'http://127.0.0.1:8100/api/echo?run=' + n, method: 'GET' })) });
+    v.state.collections.push(c);
+    v.openRunnerDialog(c.id);
+    document.querySelector('#runner-run').click();
+    const done = await new Promise(resolve => {
+      const start = Date.now();
+      const timer = setInterval(() => {
+        if (!v.runnerState.active && v.runnerState.phase === 'done') { clearInterval(timer); resolve(true); }
+        else if (Date.now() - start > 20000) { clearInterval(timer); resolve(false); }
+      }, 30);
+    });
+    document.querySelector('#runner-close')?.click();
+    const top3 = v.state.history.slice(0, 3).map(e => e.name).sort();
+    return done && top3.join(',') === 'Run a,Run b,Run c'
+      && v.state.history.slice(0, 3).every(e => e.ref && e.ok && e.status === 200);
+  })()`);
+
   console.log(`\n${results.length} checks passed`);
 } catch (err) {
   console.error(`FAIL ${err.message}`);

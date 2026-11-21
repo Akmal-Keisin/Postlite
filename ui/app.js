@@ -2790,6 +2790,8 @@ async function executeRequest(req) {
     for (const node of [req, ...[...parents].reverse()])
       runScript(node.scripts?.test, buildPm({ vars, response, results, environment, collectionVariables }), node.name, results);
   }
+  // History records every send, manual or runner (see history plan).
+  recordHistory(req, response);
   return { response, results, limitKB };
 }
 
