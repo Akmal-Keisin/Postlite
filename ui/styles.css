@@ -52,10 +52,6 @@
      danger family reads as one with the theme instead of a foreign constant.
      --danger-err-share is the red share of that mix; cold accents raise it. */
   --danger-err-share: 70%;
-  --danger-a: #ff6d80;
-  --danger-b: #e6415a;
-  --danger-line: #ff8091;
-  --danger-fg: #2a060b;
   --danger-hot: color-mix(in srgb, var(--err) var(--danger-err-share), var(--accent));
   --dot: rgba(157, 174, 188, 0.11);
 }
@@ -104,10 +100,6 @@
   --backdrop: rgba(32, 42, 53, 0.45);
   --primary-fg: color-mix(in srgb, var(--accent) 6%, #fff);
   --danger-err-share: 70%;
-  --danger-a: #e5484d;
-  --danger-b: #c2333a;
-  --danger-line: #f0616a;
-  --danger-fg: #fff0f2;
   --danger-hot: color-mix(in srgb, var(--err) var(--danger-err-share), var(--accent));
   --dot: rgba(32, 42, 53, 0.065);
 }
@@ -2884,23 +2876,21 @@ button.danger {
   align-items: center;
   justify-content: center;
   padding: 8px 18px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--danger-a) var(--danger-err-share), var(--accent)),
-    color-mix(in srgb, var(--danger-b) var(--danger-err-share), var(--accent))
-  );
-  border: 1px solid color-mix(in srgb, var(--danger-line) var(--danger-err-share), var(--accent));
+  /* Quiet chrome, same family as .confirm-icon: faint tinted fill, thin
+     border, red text — the header chip and this button read as one element. */
+  background: color-mix(in srgb, var(--danger-hot) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger-hot) 38%, transparent);
   border-radius: var(--r-m);
-  color: var(--danger-fg);
+  color: var(--danger-hot);
   font-weight: 700;
   letter-spacing: 0.2px;
   cursor: pointer;
-  box-shadow: 0 2px 14px color-mix(in srgb, var(--danger-hot) 28%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.22);
-  transition: filter var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
 }
 
 button.danger:hover {
-  filter: brightness(1.07);
+  background: color-mix(in srgb, var(--danger-hot) 20%, transparent);
+  border-color: color-mix(in srgb, var(--danger-hot) 52%, transparent);
 }
 
 button.danger:active {
