@@ -358,10 +358,22 @@ function resolveAuth(req, parents) {
   return normAuth(null, "noauth");
 }
 
+// Send-time dynamic tokens. They resolve only when the vars are marked as on
+// the wire (executeRequest sets vars.onWire), so generated code, cURL and copy
+// paths built from the same pipeline keep the tokens literal.
+const DYNAMIC_VARS = {
+  $guid: () => crypto.randomUUID(),
+  $timestamp: () => String(Math.floor(Date.now() / 1000)),
+  $isoTimestamp: () => new Date().toISOString(),
+  $randomInt: () => String(Math.floor(Math.random() * 1001)),
+};
+
 function interpolate(text, vars) {
-  return String(text).replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (whole, name) =>
-    vars.has(name) ? String(vars.get(name)) : whole
-  );
+  return String(text).replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (whole, name) => {
+    if (vars.has(name)) return String(vars.get(name));
+    if (vars.onWire && DYNAMIC_VARS[name]) return String(DYNAMIC_VARS[name]());
+    return whole;
+  });
 }
 
 const base64 = (text) => {
@@ -2872,6 +2884,9 @@ async function executeRequest(req) {
     return { response: { error: "URL is required", elapsed_ms: 0 }, results, limitKB };
   }
   const { parents, vars, auth, prepared } = prepareRequest(req);
+  // Dynamic tokens ({{$timestamp}} and friends) resolve only for what actually
+  // goes on the wire; exports built from this same pipeline stay literal.
+  vars.onWire = true;
 
   // ancestors run first so a folder can prepare what its requests consume
   const environment = buildEnvironmentApi(parents[0], vars);
@@ -4569,7 +4584,8 @@ function renderVarOverlay(names, liveText) {
   const shown = (hit) => (hit.secret ? `<code class="var-value secret">${SECRET_MASK}</code>` : `<code class="var-value">${esc(hit.value) || '""'}</code>`);
   const rows = names
     .map((name) => {
-      const hit = resolveVar(name, sources);
+      const hit = resolveVar(name, sources)
+        ?? (DYNAMIC_VARS[name] ? { value: DYNAMIC_VARS[name](), scope: "dynamic", secret: false } : null);
       return `
       <div class="var-row ${hit ? "" : "missing"}">
         <code class="var-token">{{${esc(name)}}}</code>
