@@ -1950,19 +1950,108 @@ const envRowMarkup = (env, bound) => `
   </div>`;
 
 function renderSidebar() {
-  const isEnv = state.sidebarView === "environments";
-  const envBtns = { "#expand-all": !isEnv, "#collapse-all": !isEnv, "#new-collection": !isEnv, "#new-environment": isEnv, "#env-import-btn": isEnv };
+  const view = state.sidebarView;
+  const isEnv = view === "environments";
+  const isHistory = view === "history";
+  const envBtns = {
+    "#expand-all": !isEnv && !isHistory,
+    "#collapse-all": !isEnv && !isHistory,
+    "#new-collection": !isEnv && !isHistory,
+    "#new-environment": isEnv,
+    "#env-import-btn": isEnv,
+    "#history-clear": isHistory,
+  };
   for (const [sel, shown] of Object.entries(envBtns)) $(sel).hidden = !shown;
-  $("#sidebar-title").textContent = isEnv ? "Environments" : "Collections";
-  $("#collections").hidden = isEnv;
+  $("#sidebar-title").textContent = isHistory ? "History" : isEnv ? "Environments" : "Collections";
+  $("#collections").hidden = isEnv || isHistory;
   $("#environments").hidden = !isEnv;
-  $("#tree-search").placeholder = isEnv ? "Filter environments…" : "Filter collections…";
+  $("#history").hidden = !isHistory;
+  $("#tree-search").placeholder = isHistory ? "Filter history…" : isEnv ? "Filter environments…" : "Filter collections…";
   $("#tree-search-clear").hidden = !state.filter.trim();
   // Only one list is kept in the DOM, so tree queries never see stale rows.
-  $(isEnv ? "#collections" : "#environments").innerHTML = "";
-  if (isEnv) renderEnvironments();
+  const activeHost = isHistory ? "#history" : isEnv ? "#environments" : "#collections";
+  for (const host of ["#collections", "#environments", "#history"]) {
+    if (host !== activeHost) $(host).innerHTML = "";
+  }
+  if (isHistory) renderHistory();
+  else if (isEnv) renderEnvironments();
   else renderCollections();
 }
+
+/* --------------------------------------------------------------------- history */
+
+function timeAgo(iso) {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const date = new Date(then);
+  const options = { day: "numeric", month: "short" };
+  if (date.getFullYear() !== new Date().getFullYear()) options.year = "numeric";
+  return date.toLocaleDateString([], options);
+}
+
+// Transport errors (ok=false) are always err; 2xx ok, 3xx neutral, 4xx/5xx fail.
+const historyStatusClass = (entry) =>
+  !entry.ok ? "err" : entry.status < 300 ? "ok" : entry.status < 400 ? "warn" : "fail";
+
+function renderHistory() {
+  const host = $("#history");
+  const q = state.filter.trim().toLowerCase();
+  const entries = q
+    ? state.history.filter((e) => `${e.method} ${e.name} ${e.url}`.toLowerCase().includes(q))
+    : state.history;
+  if (!entries.length) {
+    host.innerHTML = q
+      ? `<div class="empty">
+          <svg class="ic" aria-hidden="true"><use href="#i-search" /></svg>
+          <b>No matches</b>
+          <span>Nothing matches “${esc(state.filter.trim())}”. Press Esc or × to clear the filter.</span>
+        </div>`
+      : `<div class="empty">
+          <svg class="ic" aria-hidden="true"><use href="#i-clock" /></svg>
+          <b>No history yet</b>
+          <span>Send a request and it shows up here.</span>
+        </div>`;
+    return;
+  }
+  host.innerHTML = entries
+    .map(
+      (entry) => `
+    <div class="history-item">
+      <button class="history-row" type="button" data-id="${entry.id}" title="${esc(entry.url)}">
+        <span class="history-method">${esc(entry.method)}</span>
+        <span class="history-main">
+          <span class="history-name">${esc(entry.name || entry.url)}</span>
+          ${entry.name ? `<span class="history-url">${esc(entry.url)}</span>` : ""}
+          ${entry.runs > 1 ? `<span class="history-runs" title="sent ${entry.runs} times">${entry.runs}</span>` : ""}
+        </span>
+        <span class="history-status ${historyStatusClass(entry)}">${entry.ok ? entry.status : "ERR"}</span>
+        <span class="history-time">${timeAgo(entry.at)}</span>
+      </button>
+    </div>`
+    )
+    .join("");
+}
+
+async function clearHistory() {
+  if (!state.history.length) return;
+  const confirmed = await confirmDialogShow({
+    title: "Clear history",
+    message: "Delete all history entries for this workspace? This cannot be undone.",
+    action: "Clear",
+  });
+  if (!confirmed) return;
+  state.history = [];
+  persist();
+  renderHistory();
+}
+
+$("#history-clear").addEventListener("click", () => void clearHistory());
 
 // Favorites sort above the rest. toggleFavorite keeps them there in storage too;
 // this sort only guards collections that arrive from imports or backups.
@@ -2822,6 +2911,7 @@ function recordHistory(req, response) {
     if (state.history.length > MAX_HISTORY) state.history.length = MAX_HISTORY;
   }
   persist();
+  if (state.sidebarView === "history") renderHistory();
 }
 
 async function send() {
@@ -4357,6 +4447,7 @@ $("#env-import-btn").addEventListener("click", () => $("#env-import-file").click
 const RAIL_VIEWS = [
   ["#rail-collections", "collections"],
   ["#rail-environments", "environments"],
+  ["#rail-history", "history"],
 ];
 
 function renderRail() {

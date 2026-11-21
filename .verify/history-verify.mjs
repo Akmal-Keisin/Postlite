@@ -31,9 +31,10 @@ const seed = () => evaluate(`(() => {
 const reseedHistory = () => evaluate(`(() => {
   const v = __verify;
   v.state.history = [];
-  v.recordHistory({ id: 'h1', method: 'GET', url: 'http://127.0.0.1:8100/api/echo?n=1', name: 'Hello' }, { status: 200, status_text: 'OK', elapsed_ms: 5 });
-  v.recordHistory({ id: 'h2', method: 'POST', url: 'http://127.0.0.1:8100/api/echo', name: '' }, { status: 404, status_text: 'Not Found', elapsed_ms: 7 });
   v.recordHistory({ id: 'h3', method: 'GET', url: 'http://127.0.0.1:9/x', name: 'Dead' }, { error: 'connection refused', elapsed_ms: 0 });
+  v.recordHistory({ id: 'h2', method: 'POST', url: 'http://127.0.0.1:8100/api/echo', name: '', params: [{ key: 'q', value: 'snapsecret', enabled: true }] }, { status: 404, status_text: 'Not Found', elapsed_ms: 7 });
+  v.recordHistory({ id: 'h1', method: 'GET', url: 'http://127.0.0.1:8100/api/echo?n=1&token=supersecret', name: 'Hello' }, { status: 200, status_text: 'OK', elapsed_ms: 5 });
+  v.recordHistory({ id: 'h1', method: 'GET', url: 'http://127.0.0.1:8100/api/echo?n=1&token=supersecret', name: 'Hello' }, { status: 200, status_text: 'OK', elapsed_ms: 5 });
   v.render();
   return true;
 })()`);
@@ -153,6 +154,64 @@ try {
     const top3 = v.state.history.slice(0, 3).map(e => e.name).sort();
     return done && top3.join(',') === 'Run a,Run b,Run c'
       && v.state.history.slice(0, 3).every(e => e.ref && e.ok && e.status === 200);
+  })()`);
+
+  // --- Task 3: history sidebar panel ------------------------------------------
+  await check('rail switches to history view', `(() => {
+    document.querySelector('#rail-history').click();
+    const v = __verify;
+    return document.querySelector('#sidebar-title').textContent === 'History'
+      && !document.querySelector('#history').hidden
+      && document.querySelector('#collections').hidden
+      && v.state.sidebarView === 'history';
+  })()`);
+  await check('empty state copy', `(() => {
+    const v = __verify;
+    v.state.history = [];
+    v.renderSidebar();
+    return document.querySelector('#history').textContent.includes('No history yet')
+      && document.querySelector('#history').textContent.includes('Send a request');
+  })()`);
+  await reseedHistory();
+  await check('rows render method, name, status, time', `(() => {
+    const v = __verify;
+    v.renderSidebar();
+    const rows = [...document.querySelectorAll('#history .history-row')];
+    const hello = rows.find(r => r.textContent.includes('Hello'));
+    const post = rows.find(r => r.querySelector('.history-status')?.textContent === '404');
+    const dead = rows.find(r => r.querySelector('.history-status')?.textContent === 'ERR');
+    return rows.length === 3 && hello && post && dead
+      && hello.querySelector('.history-method').textContent === 'GET'
+      && hello.querySelector('.history-status').textContent === '200'
+      && hello.querySelector('.history-time').textContent.trim().length > 0
+      && hello.querySelector('.history-runs')?.textContent === '2'
+      && hello.querySelector('.history-url')?.textContent.includes('/api/echo?n=1')
+      && !post.textContent.includes('snapsecret')
+      && post.querySelector('.history-name').textContent === 'http://127.0.0.1:8100/api/echo'
+      && !document.querySelector('#history-clear').hidden;
+  })()`);
+  await check('filter narrows history rows', `(() => {
+    const v = __verify;
+    v.state.filter = 'echo';
+    v.renderSidebar();
+    const narrowed = document.querySelectorAll('#history .history-row').length;
+    v.state.filter = 'zzzz-nothing';
+    v.renderSidebar();
+    const noMatch = document.querySelector('#history').textContent.includes('No matches');
+    v.state.filter = '';
+    v.renderSidebar();
+    return narrowed === 2 && noMatch && document.querySelectorAll('#history .history-row').length === 3;
+  })()`);
+  await check('clear-all empties and persists', `(async () => {
+    document.querySelector('#history-clear').click();
+    const dialog = document.querySelector('#confirm-dialog');
+    if (!dialog.open) return false;
+    document.querySelector('#confirm-ok').click();
+    await new Promise(r => setTimeout(r, 50));
+    const payload = __verify.workspacePayload();
+    return __verify.state.history.length === 0
+      && Array.isArray(payload.workspaces[0].history)
+      && payload.workspaces[0].history.length === 0;
   })()`);
 
   console.log(`\n${results.length} checks passed`);
