@@ -48,9 +48,15 @@
   --selection-fg: #fff;
   --backdrop: rgba(5, 7, 10, 0.62);
   --primary-fg: color-mix(in srgb, var(--accent) 12%, #000);
-  --danger-bg: linear-gradient(180deg, #ff6d80, #e6415a);
+  /* Destructive actions stay red but lean toward the active accent, so the
+     danger family reads as one with the theme instead of a foreign constant.
+     --danger-err-share is the red share of that mix; cold accents raise it. */
+  --danger-err-share: 70%;
+  --danger-a: #ff6d80;
+  --danger-b: #e6415a;
   --danger-line: #ff8091;
   --danger-fg: #2a060b;
+  --danger-hot: color-mix(in srgb, var(--err) var(--danger-err-share), var(--accent));
   --dot: rgba(157, 174, 188, 0.11);
 }
 
@@ -97,22 +103,28 @@
   --selection-fg: #202a35;
   --backdrop: rgba(32, 42, 53, 0.45);
   --primary-fg: color-mix(in srgb, var(--accent) 6%, #fff);
-  --danger-bg: linear-gradient(180deg, #e5484d, #c2333a);
+  --danger-err-share: 70%;
+  --danger-a: #e5484d;
+  --danger-b: #c2333a;
   --danger-line: #f0616a;
   --danger-fg: #fff0f2;
+  --danger-hot: color-mix(in srgb, var(--err) var(--danger-err-share), var(--accent));
   --dot: rgba(32, 42, 53, 0.065);
 }
 
 /* Accent presets. The attribute lives on <html> and on each settings swatch,
    so a swatch previews its own hue; light variants run darker to keep text
-   contrast on white. Semantic method/status hues are deliberately untouched. */
+   contrast on white. Semantic method/status hues are deliberately untouched.
+   Cold accents keep a higher danger red share (--danger-err-share): mixing
+   toward blue/green at the warm share desaturates the red past the point
+   where it still reads as destructive. */
 [data-accent="ember"] { --accent: #ff6b35; --accent-hi: #ff8352; }
-[data-accent="ocean"] { --accent: #38bdf8; --accent-hi: #6ed3fb; }
-[data-accent="mint"] { --accent: #34d399; --accent-hi: #6ee7b7; }
-[data-accent="violet"] { --accent: #a78bfa; --accent-hi: #c2aefc; }
+[data-accent="ocean"] { --accent: #38bdf8; --accent-hi: #6ed3fb; --danger-err-share: 85%; }
+[data-accent="mint"] { --accent: #34d399; --accent-hi: #6ee7b7; --danger-err-share: 85%; }
+[data-accent="violet"] { --accent: #a78bfa; --accent-hi: #c2aefc; --danger-err-share: 85%; }
 [data-accent="rose"] { --accent: #fb7185; --accent-hi: #fda4af; }
 [data-accent="amber"] { --accent: #fbbf24; --accent-hi: #fcd34d; }
-[data-accent="teal"] { --accent: #2dd4bf; --accent-hi: #7ee8dc; }
+[data-accent="teal"] { --accent: #2dd4bf; --accent-hi: #7ee8dc; --danger-err-share: 85%; }
 [data-accent="magenta"] { --accent: #e879f9; --accent-hi: #f0abfc; }
 
 :root[data-theme="light"][data-accent="ember"], :root[data-theme="light"] [data-accent="ember"] { --accent: #b83e0c; --accent-hi: #a9380a; }
@@ -2853,9 +2865,9 @@ textarea#body {
   height: 34px;
   flex: none;
   border-radius: 10px;
-  background: color-mix(in srgb, var(--err) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--err) 32%, transparent);
-  color: var(--err);
+  background: color-mix(in srgb, var(--danger-hot) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger-hot) 32%, transparent);
+  color: var(--danger-hot);
 }
 
 .confirm-icon .ic {
@@ -2872,14 +2884,18 @@ button.danger {
   align-items: center;
   justify-content: center;
   padding: 8px 18px;
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-line);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--danger-a) var(--danger-err-share), var(--accent)),
+    color-mix(in srgb, var(--danger-b) var(--danger-err-share), var(--accent))
+  );
+  border: 1px solid color-mix(in srgb, var(--danger-line) var(--danger-err-share), var(--accent));
   border-radius: var(--r-m);
   color: var(--danger-fg);
   font-weight: 700;
   letter-spacing: 0.2px;
   cursor: pointer;
-  box-shadow: 0 2px 14px color-mix(in srgb, var(--err) 28%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  box-shadow: 0 2px 14px color-mix(in srgb, var(--danger-hot) 28%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.22);
   transition: filter var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
 }
 
