@@ -14,7 +14,7 @@ const check = async (name, expression) => {
   console.log(`PASS ${name}`);
 };
 const settle = () => evaluate('__verify.flushWorkspace().then(()=>true)');
-// Seed one collection with a request against the echo fixture plus a variable,
+// Seed one collection with a request against the echo fixture plus variables,
 // and open its tab — the shared baseline for every suite below.
 const seed = () => evaluate(`(() => {
   const v = __verify;
@@ -81,11 +81,6 @@ try {
     url.dispatchEvent(new Event('input', { bubbles: true }));
     return true;
   })()`);
-  const keyInUrl = (key) => evaluate(`(() => {
-    const url = document.querySelector('#url');
-    url.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(key)}, bubbles: true }));
-    return true;
-  })()`);
   await check('typing {{ opens the dropdown listing scope variables', `(async () => {
     document.querySelector('#var-ac').hidden = true;
     const url = document.querySelector('#url');
@@ -97,7 +92,6 @@ try {
     return !ac.hidden && ac.textContent.includes('base') && ac.textContent.includes('secretKey');
   })()`);
   await check('query text after {{ filters the list', `(async () => {
-    await __verify.interpolate('noop', new Map());
     const url = document.querySelector('#url');
     url.value = 'http://{{ba';
     url.dispatchEvent(new Event('input', { bubbles: true }));
@@ -136,6 +130,72 @@ try {
     url.dispatchEvent(new Event('input', { bubbles: true }));
     url.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     return document.querySelector('#var-ac').hidden;
+  })()`);
+
+  // --- Task 3: duplicate request / folder / collection --------------------------
+  // Seed a folder with a child request and an example on the top-level request.
+  const seedDupes = () => evaluate(`(() => {
+    const v = __verify;
+    const c = v.state.collections[0];
+    c.items.push(v.newFolder({ name: 'Folder A', items: [
+      v.newRequest({ name: 'Inner', url: 'http://127.0.0.1:8100/api/echo' }),
+    ]}));
+    c.items[0].examples = v.normExamples([{ name: 'ex1', body: 'x' }]);
+    v.persist(); v.render();
+    return true;
+  })()`);
+  await seedDupes();
+  const dupMenuFlow = (kind) => `
+    const row = document.querySelector('#collections .node[data-kind="${kind}"]');
+    if (!row) return false;
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }));
+    // Scope to the menu that actually opened — hidden menus keep their
+    // listeners attached, so an unscoped querySelector would click the wrong one.
+    const item = document.querySelector('.ctx-menu:not([hidden]) [data-menu="duplicate"]');
+    if (!item) return false;
+    item.click();
+    return true;
+  `;
+  await check('duplicate request via context menu inserts a fresh-id copy', `(async () => {
+    const v = __verify;
+    const c = v.state.collections[0];
+    const tabsBefore = v.state.tabs.length;
+    const source = c.items[0];
+    if (!await (async () => { ${dupMenuFlow('request')} })()) return false;
+    const dup = c.items[1];
+    return c.items.length === 3 && c.items[2].kind === 'folder'
+      && dup.id !== source.id && dup.name === 'Hello copy' && dup.kind === 'request'
+      && v.state.tabs.length === tabsBefore;
+  })()`);
+  await check('duplicate folder gives every descendant a fresh id', `(async () => {
+    const v = __verify;
+    const c = v.state.collections[0];
+    const source = c.items.find(n => n.kind === 'folder');
+    if (!await (async () => { ${dupMenuFlow('folder')} })()) return false;
+    const dup = c.items.find(n => n.name === 'Folder A copy');
+    const ids = (n) => [n.id, ...(n.items ?? []).flatMap(ids)];
+    const sourceIds = ids(source);
+    const dupIds = ids(dup);
+    return dupIds.every(id => !sourceIds.includes(id)) && c.items.some(n => n.id === dup.id);
+  })()`);
+  await check('duplicate collection lands right after the source', `(async () => {
+    const v = __verify;
+    if (!await (async () => { ${dupMenuFlow('collection')} })()) return false;
+    const copy = v.state.collections[1];
+    return v.state.collections.length === 2
+      && copy.id !== v.state.collections[0].id
+      && copy.name === 'Quick wins suite copy';
+  })()`);
+  await check('duplicated request example ids are fresh', `(() => {
+    const v = __verify;
+    const c = v.state.collections[0];
+    const dup = c.items[1];
+    const source = c.items[0];
+    return dup.examples?.[0] && dup.examples[0].id !== source.examples[0].id;
+  })()`);
+  await check('duplication never touches open tabs', `(() => {
+    const v = __verify;
+    return v.state.tabs.length === 1 && v.state.tabs[0].req.name === 'Hello';
   })()`);
 
   console.log(`\n${results.length} checks passed`);

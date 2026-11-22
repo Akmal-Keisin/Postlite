@@ -3280,6 +3280,26 @@ function siblingArray(id) {
   return walk(state.collections);
 }
 
+// Deep copy with fresh ids everywhere (nodes and examples), named "… copy",
+// inserted directly after the source among its siblings; open tabs untouched.
+function duplicateNode(id) {
+  const at = state.collections.findIndex((c) => c.id === id);
+  const source = at !== -1 ? state.collections[at] : locate(id);
+  if (!source) return;
+  const copy = structuredClone(source);
+  const walk = (node) => {
+    node.id = uid();
+    for (const item of node.items ?? []) walk(item);
+    for (const example of node.examples ?? []) example.id = uid();
+  };
+  walk(copy);
+  copy.name = `${source.name} copy`;
+  if (at !== -1) state.collections.splice(at + 1, 0, copy);
+  else siblingArray(id).splice(siblingArray(id).indexOf(source) + 1, 0, copy);
+  persist();
+  render();
+}
+
 function siblingRows(node) {
   // Collections drag only within their own group, so favorites stay above the rest.
   const favorite = node.dataset.kind === "collection" ? node.classList.contains("is-favorite") : null;
@@ -3747,11 +3767,12 @@ $("#folder-menu").addEventListener("keydown", (event) => {
 });
 
 $("#folder-menu").addEventListener("click", (event) => {
-  const button = event.target.closest('[data-menu="run"]');
-  if (!button || button.disabled || !folderMenuId) return;
+  const button = event.target.closest("[data-menu]");
+  if (!button || !folderMenuId) return;
   const id = folderMenuId;
   closeFolderMenu();
-  openRunnerDialog(id);
+  if (button.dataset.menu === "run") openRunnerDialog(id);
+  else if (button.dataset.menu === "duplicate") duplicateNode(id);
 });
 
 /* ------------------------------------------------------------- collection runner */
@@ -3991,6 +4012,7 @@ function renderCollMenu() {
     menu.innerHTML = `
       <button class="ctx-item" data-menu="run" role="menuitem" ${runnerState.active ? "disabled" : ""}>Run collection</button>
       <button class="ctx-item" data-menu="favorite" role="menuitem">${collection.favorite ? "Remove from favorites" : "Add to favorites"}</button>
+      <button class="ctx-item" data-menu="duplicate" role="menuitem">Duplicate collection</button>
       <button class="ctx-item" data-menu="move" role="menuitem">Move to another workspace</button>`;
   }
 }
@@ -4118,10 +4140,12 @@ function openReqMenu(id, x, y, opener) {
 }
 
 $("#req-menu").addEventListener("click", (event) => {
-  if (!event.target.closest('[data-menu="rename"]') || !reqMenuId) return;
+  const button = event.target.closest("[data-menu]");
+  if (!button || !reqMenuId) return;
   const id = reqMenuId;
   closeReqMenu();
-  openRenameDialog({ kind: "request", id });
+  if (button.dataset.menu === "rename") openRenameDialog({ kind: "request", id });
+  else if (button.dataset.menu === "duplicate") duplicateNode(id);
 });
 
 $("#req-menu").addEventListener("keydown", (event) => {
@@ -4152,6 +4176,7 @@ $("#coll-menu").addEventListener("click", (event) => {
   }
   closeCollMenu();
   if (action === "run") { openRunnerDialog(id); return; }
+  if (action === "duplicate") { duplicateNode(id); return; }
   if (action === "favorite") toggleFavorite(id);
   else if (action === "move-to") void moveCollection(id, button.dataset.ws);
 });
