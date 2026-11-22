@@ -5348,16 +5348,16 @@ function fromInsomnia(doc) {
   }
   const workspaces = (doc.resources ?? []).filter((r) => r?._type === "workspace");
   const known = new Set(workspaces.map((w) => String(w._id)));
-  // Cycle guard: a folder that is its own parent (directly or via a loop)
-  // must not recurse forever.
-  const visited = new Set();
+  // Cycle guard: a folder is marked built before its subtree is walked, so a
+  // self- or loop-parented folder is never built inside itself.
+  const built = new Set();
   const collections = [];
   const environments = [];
   const buildChildren = (parentId, containers) => {
-    if (visited.has(parentId)) return;
-    visited.add(parentId);
     for (const res of byParent.get(parentId) ?? []) {
       if (res._type === "folder") {
+        if (built.has(String(res._id))) continue;
+        built.add(String(res._id));
         const auth = insomniaAuth(res.authentication);
         if (!auth && res.authentication && Object.keys(res.authentication).length) skipped.auth += 1;
         const folder = newFolder({ name: String(res.name ?? "Folder"), items: [], auth: auth ?? normAuth(null, "inherit") });
@@ -5393,6 +5393,8 @@ function fromInsomnia(doc) {
       if (res._type === "workspace") continue; // already collected above
       if (res._type === "request") first.items.push(insomniaRequest(res, skipped));
       else if (res._type === "folder") {
+        if (built.has(String(res._id))) continue;
+        built.add(String(res._id));
         const auth = insomniaAuth(res.authentication);
         if (!auth && res.authentication && Object.keys(res.authentication).length) skipped.auth += 1;
         const folder = newFolder({ name: String(res.name ?? "Folder"), items: [], auth: auth ?? normAuth(null, "inherit") });
@@ -5411,8 +5413,11 @@ function fromInsomnia(doc) {
    shape-based across the field spellings seen in the wild. */
 
 function looksLikeHoppscotchCollections(doc) {
-  return Array.isArray(doc) && doc.some((item) => item && typeof item === "object"
-    && (Array.isArray(item.folders) || Array.isArray(item.requests)));
+  const isHoppCollection = (item) => item && typeof item === "object"
+    && (Array.isArray(item.folders) || Array.isArray(item.requests));
+  // Both the collections export (an array) and the per-collection Export
+  // (a single verzod collection object) are accepted.
+  return Array.isArray(doc) ? doc.some(isHoppCollection) : isHoppCollection(doc);
 }
 
 function looksLikeHoppscotchEnvironments(doc) {
@@ -5463,10 +5468,11 @@ function hoppscotchRows(rows) {
   return (Array.isArray(rows) ? rows : []).filter((r) => r && (r.key || r.name)).map((r) => ({
     key: String(r.key ?? r.name ?? ""),
     // verzod environment rows keep currentValue (session) over initialValue
-    // (committed) — an empty currentValue must fall through, or secret rows
-    // that only carry a current value would import blank. params/headers
-    // carry value — reading them in order covers both vocabularies.
-    value: String(r.value ?? r.currentValue ?? r.initialValue ?? ""),
+    // (committed) — Hoppscotch exports secret rows with an empty current value
+    // and clearable empty currents on normal rows, so the chain must skip
+    // empty strings too (||, not ??). params/headers carry value — reading
+    // them in order covers both vocabularies.
+    value: String(r.value || r.currentValue || r.initialValue || ""),
     enabled: r.active !== false && r.disabled !== true,
     secret: r.secret === true,
     description: "",
@@ -5518,14 +5524,24 @@ function hoppscotchBody(raw, skipped) {
 }
 
 function hoppscotchRequest(raw, skipped) {
+  // GraphQL requests (a verzod collection union member, no endpoint) are out
+  // of scope — skip and count instead of importing a junk GET.
+  if (!raw.endpoint && !raw.url) {
+    skipped.other += 1;
+    return null;
+  }
   const auth = hoppscotchAuth(raw.auth, skipped, raw);
+  // v0-era requests keep the raw payload at request level (rawParams + contentType).
+  const body = raw.body ?? (typeof raw.rawParams === "string"
+    ? { contentType: raw.contentType ?? "text/plain", raw: raw.rawParams }
+    : undefined);
   return newRequest({
     name: String(raw.name ?? "Request"),
     method: String(raw.method ?? "GET").toUpperCase(),
     url: String(raw.endpoint ?? raw.url ?? ""),
     params: hoppscotchRows(raw.params),
     headers: hoppscotchRows(raw.headers),
-    body: hoppscotchBody(raw.body, skipped),
+    body: hoppscotchBody(body, skipped),
     auth: auth ?? normAuth(null, "inherit"),
   });
 }
@@ -5537,14 +5553,17 @@ function hoppscotchItems(folder, skipped) {
     items.push(newFolder({ name: String(sub.name ?? "Folder"), items: hoppscotchItems(sub, skipped), auth: auth ?? normAuth(null, "inherit") }));
   }
   for (const req of folder.requests ?? []) {
-    items.push(hoppscotchRequest(req, skipped));
+    const mapped = hoppscotchRequest(req, skipped);
+    if (mapped) items.push(mapped);
   }
   return items;
 }
 
 function fromHoppscotchCollections(doc) {
   const skipped = { auth: 0, body: 0, other: 0 };
-  const collections = (Array.isArray(doc) ? doc : []).flatMap((c) => {
+  // Both the collections export (array) and the per-collection Export (one
+  // object) land here — detection guarantees at least one collection shape.
+  const collections = (Array.isArray(doc) ? doc : [doc]).flatMap((c) => {
     if (!c || typeof c !== "object") { skipped.other += 1; return []; }
     // v2+ collections carry collection-level auth that requests inherit.
     const auth = hoppscotchAuth(c.auth, skipped, c);

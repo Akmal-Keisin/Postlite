@@ -271,6 +271,8 @@ try {
     { v: "2", name: "Verzod env", variables: [
       { key: "host", initialValue: "http://127.0.0.1:8100", currentValue: "http://127.0.0.1:8100", secret: false },
       { key: "apikey", initialValue: "", currentValue: "s3cr3t", secret: true },
+      // Real exports clear the session value while the committed value remains.
+      { key: "base2", initialValue: "http://set-in-initial", currentValue: "", secret: false },
     ] },
   ];
   await check('verzod bodies map: raw string, urlencoded array, multipart isFile', async () => {
@@ -316,7 +318,8 @@ try {
       if (!env) return false;
       const rows = Object.fromEntries(env.variables.map(r => [r.key, r]));
       return rows.host.value === "http://127.0.0.1:8100"
-        && rows.apikey.value === "s3cr3t" && rows.apikey.secret === true;
+        && rows.apikey.value === "s3cr3t" && rows.apikey.secret === true
+        && rows.base2.value === "http://set-in-initial";
     })()`);
   });
   await check('verzod imports report no skipped requests', async () => {
@@ -332,14 +335,48 @@ try {
     const bearer = c.items.find(i => i.name === "Bearer req");
     return Boolean(bearer) && bearer.auth.type === "bearer" && bearer.auth.bearer.token === "b-tok";
   })()`);
-  await check('parentId cycles import without crashing', async () => {
+  await check('parentId cycles import without crashing and without duplicating', async () => {
     await evaluate(`(async () => {
       const doc = ${JSON.stringify(insomniaDoc())};
       doc.resources.push({ _id: "fld_cyc", _type: "folder", parentId: "fld_cyc", name: "Cycle folder" });
       await __verify.importDroppedFiles([new File([JSON.stringify(doc)], "cycle.json", { type: "application/json" })]);
       return true;
     })()`);
-    return await evaluate(`__verify.state.collections.some(c => c.items.some(i => i.name === "Cycle folder"))`);
+    return await evaluate(`(() => {
+      const c = __verify.state.collections.find(c => c.items.some(i => i.name === "Cycle folder"));
+      if (!c) return false;
+      // The cycle guard must leave exactly one copy, never nested in itself.
+      const roots = c.items.filter(i => i.name === "Cycle folder");
+      return roots.length === 1 && !roots[0].items.some(i => i.name === "Cycle folder");
+    })()`);
+  });
+  await check('a single verzod collection object (per-collection Export) imports', async () => {
+    const doc = await evaluate(`(() => (${JSON.stringify(verzodDoc())})[0])()`);
+    return await evaluate(`(async () => {
+      const single = ${JSON.stringify(doc)};
+      await __verify.importDroppedFiles([new File([JSON.stringify(single)], "single.json", { type: "application/json" })]);
+      return __verify.state.collections.filter(c => c.name === "Verzod collection").length >= 2;
+    })()`);
+  });
+  await check('gql requests and bare legacy kind bodies skip with counts', async () => {
+    return await evaluate(`(async () => {
+      const doc = [{ name: "Hopp", folders: [], requests: [
+        { name: "GQL-ish", method: "POST", auth: { authType: "inherit", authActive: true }, body: { body: null, contentType: null } },
+        { name: "Kind only", method: "GET", endpoint: "http://127.0.0.1:8100/api/echo", body: { body: "formData" } },
+        { name: "Kind none", method: "GET", endpoint: "http://127.0.0.1:8100/api/echo", body: { body: "none" } },
+        { name: "V0 raw", method: "POST", endpoint: "http://127.0.0.1:8100/api/echo", rawParams: '{"v0":1}', contentType: "application/json" },
+      ] }];
+      await __verify.importDroppedFiles([new File([JSON.stringify(doc)], "edge.json", { type: "application/json" })]);
+      const c = __verify.state.collections.find(c => c.name === "Hopp");
+      if (!c) return false;
+      const gql = c.items.find(i => i.name === "GQL-ish");
+      const kindOnly = c.items.find(i => i.name === "Kind only");
+      const kindNone = c.items.find(i => i.name === "Kind none");
+      const v0 = c.items.find(i => i.name === "V0 raw");
+      return !gql && kindOnly.body.mode === "none"
+        && kindNone.body.mode === "none"
+        && v0.body.mode === "raw" && v0.body.raw === '{"v0":1}' && v0.body.contentType === "application/json";
+    })()`);
   });
   await check('the Import menu file input routes Insomnia JSON too', async () => {
     const before = await evaluate(`__verify.state.collections.filter(c => c.name === "Insomnia workspace").length`);
