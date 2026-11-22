@@ -905,6 +905,17 @@
         <h3 id="runner-title">Run collection</h3>
         <p class="dialog-sub" id="runner-sub"></p>
         <div class="runner-body">
+          <div id="runner-data-row" class="runner-data">
+            <label class="runner-data-file">
+              <button type="button" class="tool outlined" id="runner-data-pick">Data file…</button>
+              <input type="file" id="runner-data-file" accept=".csv,.json,application/json,text/csv" hidden />
+              <span id="runner-data-name">No data file — each request runs once</span>
+              <button type="button" class="icon-btn" id="runner-data-clear" hidden title="Remove data file" aria-label="Remove data file">
+                <svg class="ic" aria-hidden="true"><use href="#i-x" /></svg>
+              </button>
+            </label>
+            <label class="runner-delay">Delay (ms) <input type="number" id="runner-delay" min="0" max="60000" step="50" value="0" /></label>
+          </div>
           <div id="runner-tree" aria-label="Requests to run"></div>
           <div id="runner-results" hidden></div>
         </div>

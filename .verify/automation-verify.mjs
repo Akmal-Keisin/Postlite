@@ -1,0 +1,149 @@
+import assert from 'node:assert/strict';
+import { evaluate, close, reload } from './tier1-cdp.mjs';
+
+const results = [];
+let executed = 0;
+// Optional third arg: run only the first N checks (task-staged verification).
+const maxChecks = Number(process.argv[3]) || Infinity;
+const check = async (name, expression) => {
+  if (executed >= maxChecks) return;
+  // A function runs harness-side (multi-step flows); a string evaluates in the page.
+  const value = typeof expression === "function" ? await expression() : await evaluate(`(async()=>(${expression}))()`);
+  assert.equal(value, true, `${name}: ${JSON.stringify(value)}`);
+  executed++;
+  results.push(name);
+  console.log(`PASS ${name}`);
+};
+const settle = () => evaluate('__verify.flushWorkspace().then(()=>true)');
+// Seed a collection with three requests against the echo fixture.
+const seed = () => evaluate(`(() => {
+  const v = __verify;
+  v.state.collections = []; v.state.environments = []; v.state.tabs = []; v.state.activeTabId = null;
+  v.state.history = []; v.state.settings = v.normalizeSettings(); v.applyAppSettings();
+  const r = (name, url) => v.newRequest({ name, url, method: 'GET' });
+  const c = v.newCollection('Automation suite', { items: [
+    r('First', 'http://127.0.0.1:8100/api/echo?n=1'),
+    r('Second', 'http://127.0.0.1:8100/api/echo?n=2'),
+    r('Third', 'http://127.0.0.1:8100/api/echo?n=3'),
+  ]});
+  v.state.collections.push(c);
+  v.persist(); v.render();
+  return true;
+})()`);
+// Open the runner over the whole collection and attach a data file + delay.
+const openRunner = (dataRows, delayMs) => evaluate(`(async () => {
+  const v = __verify;
+  v.openRunnerDialog(v.state.collections[0].id);
+  if (${JSON.stringify(dataRows)}) {
+    const file = new File([JSON.stringify(${JSON.stringify(dataRows)})], "data.json", { type: "application/json" });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const input = document.querySelector("#runner-data-file");
+    input.files = dt.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    // The change handler parses asynchronously; let it land before running.
+    await new Promise(r => setTimeout(r, 150));
+  }
+  document.querySelector("#runner-delay").value = ${JSON.stringify(delayMs ?? 0)};
+  return true;
+})()`);
+const runAndFinish = async () => {
+  await evaluate(`document.querySelector('#runner-run').click()`);
+  return await evaluate(`new Promise(resolve => {
+    const start = Date.now();
+    const timer = setInterval(() => {
+      if (!__verify.runnerState.active && __verify.runnerState.phase === 'done') { clearInterval(timer); resolve({ ms: Date.now() - start }); }
+      else if (Date.now() - start > 30000) { clearInterval(timer); resolve({ ms: Date.now() - start, timeout: true }); }
+    }, 30);
+  })`);
+};
+
+try {
+  await reload();
+  await evaluate(`(() => {
+    window.__runtimeErrors = []; window.addEventListener('error', e => __runtimeErrors.push(e.message));
+  })()`);
+  await seed();
+
+  // --- Task 1: data scope + data-driven iterations -----------------------------
+  await check('parseDataFile handles JSON, CSV quotes, CRLF and BOM; rejects empties', `(() => {
+    const v = __verify;
+    const json = v.parseDataFile('[{"a":"1","b":2}]');
+    const csv = v.parseDataFile('\\ufeffa,b\\r\\n"x,1","y""z"\\r\\n2,3\\r\\n');
+    let emptyErr = "";
+    try { v.parseDataFile('[]'); } catch (e) { emptyErr = e.message; }
+    return json.length === 1 && json[0].a === "1" && json[0].b === "2"
+      && csv.length === 2 && csv[0].a === "x,1" && csv[0].b === 'y"z' && csv[1].a === "2"
+      && emptyErr.length > 0;
+  })()`);
+  await check('data rows fill the lowest-precedence scope on the wire', `(async () => {
+    const v = __verify;
+    const req = v.state.collections[0].items[0];
+    req.url = 'http://127.0.0.1:8100/api/echo?token={{token}}';
+    const { response } = await v.executeRequest(req, { token: 't1' });
+    return response.status === 200 && response.body.includes('token=t1');
+  })()`);
+  await check('collection variables win over data rows', `(async () => {
+    const v = __verify;
+    const c = v.state.collections[0];
+    c.variables = [{ key: 'token', value: 'cv', enabled: true }];
+    const req = c.items[0];
+    req.url = 'http://127.0.0.1:8100/api/echo?token={{token}}';
+    const { response } = await v.executeRequest(req, { token: 't1' });
+    return response.body.includes('token=cv');
+  })()`);
+  await check('pm.data.get exposes the row inside test scripts', `(async () => {
+    const v = __verify;
+    const c = v.state.collections[0];
+    const req = c.items[0];
+    req.scripts = { pre: '', test: 'pm.test("data", () => pm.expect(pm.data.get("token")).to.equal("t1"));' };
+    const { results } = await v.executeRequest(req, { token: 't1' });
+    return results.every(r => r.passed) && results.some(r => r.name === 'data');
+  })()`);
+  await check('data-driven runs flatten iterations in major order with grouping', async () => {
+    await openRunner([{ n: "1" }, { n: "2" }], 0);
+    await runAndFinish();
+    return await evaluate(`(() => {
+      const s = __verify.runnerState;
+      if (s.entries.length !== 6) return false;
+      const order = s.entries.map(e => e.iteration + ':' + e.req.name).join(',');
+      const iters = [...document.querySelectorAll('#runner-results .runner-iter')].map(d => d.textContent);
+      return order === '1:First,1:Second,1:Third,2:First,2:Second,2:Third'
+        && iters.join(',') === 'Iteration 1,Iteration 2' && s.endReason === 'done';
+    })()`);
+  });
+  await check('failures continue with data; the no-data contract still stops', async () => {
+    await evaluate(`(() => {
+      const c = __verify.state.collections[0];
+      // Earlier checks left a data-asserting script on First — clear everything
+      // so only Second's boom failure drives the stop semantics.
+      for (const item of c.items) item.scripts = { pre: '', test: '' };
+      c.items[1].scripts = { pre: '', test: 'pm.test("boom", () => pm.expect(1).to.equal(2));' };
+      return true;
+    })()`);
+    await openRunner([{ n: "1" }, { n: "2" }], 0);
+    await runAndFinish();
+    const withData = await evaluate(`(() => {
+      const s = __verify.runnerState;
+      return s.entries.length === 6 && s.entries.every(e => e.status !== 'skipped');
+    })()`);
+    await openRunner(null, 0);
+    await runAndFinish();
+    const withoutData = await evaluate(`(() => {
+      const s = __verify.runnerState;
+      return s.entries.map(e => e.status).join(',') === 'passed,failed,skipped' && s.endReason === 'failed';
+    })()`);
+    await evaluate(`(() => {
+      __verify.state.collections[0].items[1].scripts = { pre: '', test: '' };
+      return true;
+    })()`);
+    return withData && withoutData;
+  });
+
+  console.log(`\n${results.length} checks passed`);
+} catch (err) {
+  console.error(`FAIL ${err.message}`);
+  process.exitCode = 1;
+} finally {
+  await close();
+}

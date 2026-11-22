@@ -593,7 +593,7 @@ function buildCollectionVariablesApi(collection, vars) {
   };
 }
 
-function buildPm({ vars, request, response, results, environment, collectionVariables }) {
+function buildPm({ vars, request, response, results, environment, collectionVariables, data }) {
   const pm = {
     test(name, fn) {
       try {
@@ -609,6 +609,8 @@ function buildPm({ vars, request, response, results, environment, collectionVari
       set: (name, value) => vars.set(String(name), value),
       replace: (text) => interpolate(text, vars),
     },
+    // Data rows exist only in runner iterations; without one, reads are undefined.
+    data: { get: (name) => (data && Object.hasOwn(data, String(name)) ? String(data[String(name)]) : undefined) },
   };
   if (request) pm.request = requestApi(request);
   if (response) pm.response = responseApi(response);
@@ -2922,7 +2924,7 @@ function exportTarget(req) {
 // Shared send core for manual Send and the collection runner. No tab, button
 // or response-pane side effects; pm.environment write-through inside scripts
 // is intentional and identical to manual sends (see collection-runner spec).
-async function executeRequest(req) {
+async function executeRequest(req, data = null) {
   const results = [];
   const limitKB = state.settings.response.maxResponseSizeKB;
   if (!req || !req.url.trim()) {
@@ -2932,11 +2934,16 @@ async function executeRequest(req) {
   // Dynamic tokens ({{$timestamp}} and friends) resolve only for what actually
   // goes on the wire; exports built from this same pipeline stay literal.
   vars.onWire = true;
+  // Runner data rows are the lowest-precedence scope: they fill only keys no
+  // other scope defines, then interpolate like any variable.
+  for (const [key, value] of Object.entries(data ?? {})) {
+    if (!vars.has(key)) vars.set(key, String(value));
+  }
 
   // ancestors run first so a folder can prepare what its requests consume
   const environment = buildEnvironmentApi(parents[0], vars);
   const collectionVariables = buildCollectionVariablesApi(parents[0], vars);
-  const prePm = () => buildPm({ vars, request: prepared, results, environment, collectionVariables });
+  const prePm = () => buildPm({ vars, request: prepared, results, environment, collectionVariables, data: data ?? null });
   for (const node of parents) runScript(node.scripts?.pre, prePm(), node.name, results);
   runScript(req.scripts.pre, prePm(), req.name, results);
   finalizePrepared(prepared, auth, vars);
@@ -2967,7 +2974,7 @@ async function executeRequest(req) {
 
   if (!response.error) {
     for (const node of [req, ...[...parents].reverse()])
-      runScript(node.scripts?.test, buildPm({ vars, response, results, environment, collectionVariables }), node.name, results);
+      runScript(node.scripts?.test, buildPm({ vars, response, results, environment, collectionVariables, data: data ?? null }), node.name, results);
   }
   // History records every send, manual or runner (see history plan).
   recordHistory(req, response);
@@ -3000,7 +3007,10 @@ function recordHistory(req, response) {
     state.history.unshift(entry);
     if (state.history.length > MAX_HISTORY) state.history.length = MAX_HISTORY;
   }
-  persist();
+  // During runs the per-send flush coalesces into the autosave timer; the run
+  // end issues one structural persist for everything.
+  if (runnerCoalescing) persist(false);
+  else persist();
   if (state.sidebarView === "history") renderHistory();
 }
 
@@ -3884,7 +3894,10 @@ let collMenuOpener = null;
 let collMenuView = "main";
 
 // Ephemeral runner state — never persisted (see collection-runner spec).
-const runnerState = { active: false, stopRequested: false, phase: "select", nodeId: null, entries: [], endReason: null };
+const runnerState = { active: false, stopRequested: false, phase: "select", nodeId: null, entries: [], endReason: null, dataName: null, dataRows: null, delayMs: 0 };
+// While a run is in flight, per-send history persistence defers to the
+// autosave timer; the run flushes everything once when it ends.
+let runnerCoalescing = false;
 
 /* ----------------------------------------------------------- folder menu */
 // Folders have no other context actions today; the menu only offers the runner.
@@ -3952,6 +3965,15 @@ function openRunnerDialog(nodeId, opener = null) {
   runnerState.entries = [];
   runnerState.endReason = null;
   runnerState.stopRequested = false;
+  runnerState.dataName = null;
+  runnerState.dataRows = null;
+  runnerState.delayMs = 0;
+  $("#runner-data-name").textContent = "No data file";
+  $("#runner-data-clear").hidden = true;
+  $("#runner-data-file").value = "";
+  $("#runner-delay").value = 0;
+  $("#runner-delay").disabled = false;
+  $("#runner-data-pick").disabled = false;
   runnerOpener = opener;
   runnerRequests = collectRunnerRequests(node);
   runnerChecked.clear();
@@ -3971,6 +3993,83 @@ function openRunnerDialog(nodeId, opener = null) {
   runnerDialog.showModal();
   $("#runner-tree input")?.focus();
 }
+
+// The data file makes the run data-driven: JSON array of objects, or CSV with
+// a header row. Values are strings; a parse failure notifies and clears.
+function parseDataFile(text) {
+  const trimmed = text.replace(/^\uFEFF/, "").trim();
+  if (!trimmed.startsWith("[")) {
+    const rows = parseCsvRows(trimmed);
+    if (!rows.length) throw new Error("data file is empty");
+    const [header, ...rest] = rows;
+    const keys = header.map((k) => k.trim());
+    if (rest.length === 0) throw new Error("data file has a header but no rows");
+    return rest.map((cells) => Object.fromEntries(keys.map((k, i) => [k, cells[i] ?? ""])));
+  }
+  const parsed = JSON.parse(trimmed);
+  if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("data file is empty");
+  if (parsed.some((r) => !r || typeof r !== "object" || Array.isArray(r))) throw new Error("data rows must be objects");
+  return parsed.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [String(k), String(v)])));
+}
+
+// Minimal CSV: comma delimiter, quoted fields with "" escapes, CRLF/BOM tolerated.
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else quoted = false;
+      } else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(field);
+      field = "";
+      if (row.length > 1 || row[0] !== "") rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  row.push(field);
+  if (row.length > 1 || row[0] !== "") rows.push(row);
+  return rows;
+}
+
+$("#runner-data-pick").addEventListener("click", () => $("#runner-data-file").click());
+$("#runner-data-file").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    runnerState.dataRows = parseDataFile(await file.text());
+    runnerState.dataName = file.name;
+    $("#runner-data-name").textContent = `${file.name} — ${runnerState.dataRows.length} iteration${runnerState.dataRows.length === 1 ? "" : "s"}`;
+    $("#runner-data-clear").hidden = false;
+    $("#error").textContent = "";
+  } catch (err) {
+    runnerState.dataRows = null;
+    runnerState.dataName = null;
+    $("#runner-data-name").textContent = "No data file — each request runs once";
+    $("#runner-data-clear").hidden = true;
+    showError(`data file: ${err.message}`);
+  } finally {
+    event.target.value = "";
+  }
+});
+$("#runner-data-clear").addEventListener("click", () => {
+  runnerState.dataRows = null;
+  runnerState.dataName = null;
+  $("#runner-data-name").textContent = "No data file — each request runs once";
+  $("#runner-data-clear").hidden = true;
+  $("#runner-data-file").value = "";
+});
+$("#runner-delay").addEventListener("input", (event) => {
+  runnerState.delayMs = Math.max(0, Math.min(60000, Math.floor(Number(event.target.value) || 0)));
+});
 
 function renderRunnerSelection(node = locateCollection(runnerState.nodeId) ?? locate(runnerState.nodeId)) {
   const row = (child, depth) => {
@@ -4025,39 +4124,60 @@ async function startRunner() {
   if (runnerState.active || runnerState.phase !== "select") return;
   const checked = runnerRequests.filter((req) => runnerChecked.has(req.id));
   if (!checked.length) return;
+  const rows = runnerState.dataRows;
   runnerState.active = true;
   runnerState.stopRequested = false;
   runnerState.endReason = null;
   runnerState.phase = "running";
-  runnerState.entries = checked.map((req) => ({ req, status: "pending", response: null, results: [] }));
+  // Iteration-major: every data row (or the single no-data pass) runs all
+  // selected requests in tree order.
+  runnerState.entries = (rows ?? [null]).flatMap((data, i) =>
+    checked.map((req) => ({ req, data: rows ? data : null, iteration: rows ? i + 1 : null, status: "pending", response: null, results: [] })));
   $("#runner-tree").hidden = true;
+  $("#runner-data-row").hidden = false;
+  for (const id of ["#runner-data-pick", "#runner-delay"]) $(id).disabled = true;
   $("#runner-results").hidden = false;
   $("#runner-cancel").hidden = true;
   $("#runner-run").hidden = true;
   $("#runner-stop").hidden = false;
   $("#runner-close").hidden = true;
-  $("#runner-sub").textContent = "Running…";
+  $("#runner-sub").textContent = rows
+    ? `Running ${rows.length} iteration${rows.length === 1 ? "" : "s"} × ${checked.length} request${checked.length === 1 ? "" : "s"}. Failed iterations continue.`
+    : "Running…";
   renderRunnerResults();
+  runnerCoalescing = true;
 
-  for (const entry of runnerState.entries) {
+  for (let i = 0; i < runnerState.entries.length; i++) {
+    const entry = runnerState.entries[i];
     if (runnerState.stopRequested) { entry.status = "skipped"; continue; }
     entry.status = "running";
     renderRunnerResults();
     // Same core as manual Send; a failing pre-script still completes the
     // pipeline — the stop check lives here, never inside executeRequest.
-    const { response, results } = await executeRequest(entry.req);
+    const { response, results } = await executeRequest(entry.req, entry.data);
     entry.response = response;
     entry.results = results;
     entry.status = runnerFailed(entry) ? "failed" : "passed";
-    if (entry.status === "failed") { runnerState.stopRequested = true; runnerState.endReason = "failed"; }
+    // Data-driven testing expects failing rows to continue; the no-data
+    // contract stops at the first failure.
+    if (entry.status === "failed" && !rows) { runnerState.stopRequested = true; runnerState.endReason = "failed"; }
     renderRunnerResults();
+    if (runnerState.delayMs > 0 && i < runnerState.entries.length - 1) {
+      // Chunked so Stop lands within a tick instead of after the full delay.
+      const until = Date.now() + runnerState.delayMs;
+      while (Date.now() < until && !runnerState.stopRequested) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(50, until - Date.now())));
+      }
+    }
   }
   for (const entry of runnerState.entries) if (entry.status === "pending") entry.status = "skipped";
   runnerState.active = false;
+  runnerCoalescing = false;
+  persist(); // history rows accumulated during the run flush once here
   runnerState.phase = "done";
   runnerState.endReason = runnerState.endReason ?? (runnerState.stopRequested ? "stopped" : "done");
   $("#runner-sub").textContent = runnerState.endReason === "done"
-    ? "All requests passed. Results are view-only — nothing is saved."
+    ? `All requests passed${rows ? ` across ${rows.length} iteration${rows.length === 1 ? "" : "s"}` : ""}. Results are view-only — nothing is saved.`
     : runnerState.endReason === "failed"
       ? "Stopped at the first failure. Results are view-only — nothing is saved."
       : "Stopped. Results are view-only — nothing is saved.";
@@ -4092,7 +4212,14 @@ function renderRunnerResults() {
     ? `<span class="runner-final ${s.endReason}">${s.endReason === "done" ? "Done" : s.endReason === "failed" ? "Failed" : "Stopped"}</span> · `
     : "";
   $("#runner-count").innerHTML = `${final}${done} of ${s.entries.length} run`;
-  $("#runner-results").innerHTML = s.entries.map((entry, i) => {
+  let lastIteration = null;
+  $("#runner-results").innerHTML = s.entries.flatMap((entry, i) => {
+    const parts = [];
+    // Data-driven runs group their rows under one divider per iteration.
+    if (s.dataRows && entry.iteration !== lastIteration) {
+      lastIteration = entry.iteration;
+      parts.push(`<div class="runner-iter">Iteration ${esc(String(entry.iteration))}</div>`);
+    }
     const req = entry.req;
     const mark = entry.status === "passed" ? ["pass", "✓"] : entry.status === "failed" ? ["fail", "✕"]
       : entry.status === "running" ? ["running", "…"] : ["skip", "–"];
@@ -4109,7 +4236,7 @@ function renderRunnerResults() {
       ? `<button type="button" class="runner-row-head" data-expandable aria-expanded="${expanded}" aria-label="${esc(req.name)}: ${esc(meta)}">`
       : `<div class="runner-row-head" aria-label="${esc(req.name)}: ${esc(meta)}">`;
     const headClose = finished ? "</button>" : "</div>";
-    return `<div class="runner-row" data-index="${i}">
+    parts.push(`<div class="runner-row" data-index="${i}">
       ${head}
         <span class="runner-mark ${mark[0]}" aria-hidden="true">${mark[1]}</span>
         <span class="method ${esc(req.method)}">${esc(req.method)}</span>
@@ -4117,7 +4244,8 @@ function renderRunnerResults() {
         <span class="runner-meta">${esc(meta)}</span>
       ${headClose}
       <div class="runner-detail" ${expanded ? "" : "hidden"}></div>
-    </div>`;
+    </div>`);
+    return parts;
   }).join("");
   // Body previews are set via textContent — responses can contain markup.
   for (const [i, entry] of s.entries.entries()) {
