@@ -72,6 +72,72 @@ try {
     return row && row.textContent.includes('dynamic') && !row.classList.contains('missing');
   })()`);
 
+  // --- Task 2: {{ autocomplete -------------------------------------------------
+  const typeInUrl = (value) => evaluate(`(() => {
+    const url = document.querySelector('#url');
+    url.value = ${JSON.stringify(value)};
+    url.focus();
+    url.setSelectionRange(url.value.length, url.value.length);
+    url.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`);
+  const keyInUrl = (key) => evaluate(`(() => {
+    const url = document.querySelector('#url');
+    url.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(key)}, bubbles: true }));
+    return true;
+  })()`);
+  await check('typing {{ opens the dropdown listing scope variables', `(async () => {
+    document.querySelector('#var-ac').hidden = true;
+    const url = document.querySelector('#url');
+    url.value = 'http://{{';
+    url.focus();
+    url.setSelectionRange(url.value.length, url.value.length);
+    url.dispatchEvent(new Event('input', { bubbles: true }));
+    const ac = document.querySelector('#var-ac');
+    return !ac.hidden && ac.textContent.includes('base') && ac.textContent.includes('secretKey');
+  })()`);
+  await check('query text after {{ filters the list', `(async () => {
+    await __verify.interpolate('noop', new Map());
+    const url = document.querySelector('#url');
+    url.value = 'http://{{ba';
+    url.dispatchEvent(new Event('input', { bubbles: true }));
+    const ac = document.querySelector('#var-ac');
+    return !ac.hidden && ac.textContent.includes('base') && !ac.textContent.includes('secretKey');
+  })()`);
+  await check('secret variables are masked in the list', `(async () => {
+    const url = document.querySelector('#url');
+    url.value = 'http://{{';
+    url.dispatchEvent(new Event('input', { bubbles: true }));
+    const ac = document.querySelector('#var-ac');
+    const row = ac.querySelector('[data-name="secretKey"]');
+    return row && row.classList.contains('is-secret') && !ac.textContent.includes('s3cr3t-value');
+  })()`);
+  await check('Enter inserts the highlighted variable', `(async () => {
+    const url = document.querySelector('#url');
+    url.value = 'http://{{ba';
+    url.dispatchEvent(new Event('input', { bubbles: true }));
+    url.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    return url.value === 'http://{{base}}' && document.querySelector('#var-ac').hidden;
+  })()`);
+  await check('dynamic tokens form a trailing group and insert on select', `(async () => {
+    const url = document.querySelector('#url');
+    url.value = 'http://{{';
+    url.dispatchEvent(new Event('input', { bubbles: true }));
+    const ac = document.querySelector('#var-ac');
+    const dynamicRow = ac.querySelector('[data-name="$timestamp"]');
+    if (!dynamicRow || !dynamicRow.closest('.var-ac-group')?.classList.contains('var-ac-dynamic')) return false;
+    // Selection happens on mousedown (keeps editor focus); .click() alone would never fire it.
+    dynamicRow.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    return url.value === 'http://{{$timestamp}}';
+  })()`);
+  await check('Escape closes the dropdown', `(async () => {
+    const url = document.querySelector('#url');
+    url.value = 'http://{{';
+    url.dispatchEvent(new Event('input', { bubbles: true }));
+    url.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    return document.querySelector('#var-ac').hidden;
+  })()`);
+
   console.log(`\n${results.length} checks passed`);
 } catch (err) {
   console.error(`FAIL ${err.message}`);

@@ -4643,6 +4643,160 @@ document.addEventListener("click", (event) => {
   closeVarOverlay();
 });
 
+/* ------------------------------------------------------------------ {{ autocomplete */
+
+const varAc = $("#var-ac");
+let varAcEditor = null;
+let varAcItems = [];
+let varAcIndex = 0;
+
+// Pixel position just past the caret inside an input or textarea, measured in
+// a mirror element styled like the editor (handles single-line and wrapped).
+function caretPoint(editor) {
+  const cs = getComputedStyle(editor);
+  const mirror = document.createElement("div");
+  for (const key of ["font", "letterSpacing", "lineHeight", "padding", "border", "boxSizing", "textIndent", "wordBreak", "overflowWrap"])
+    mirror.style[key] = cs[key];
+  mirror.style.position = "absolute";
+  mirror.style.visibility = "hidden";
+  mirror.style.whiteSpace = editor.tagName === "TEXTAREA" ? "pre-wrap" : "pre";
+  mirror.style.width = editor.clientWidth + "px";
+  mirror.textContent = editor.value.slice(0, editor.selectionEnd ?? 0);
+  const mark = document.createElement("span");
+  mark.textContent = "​";
+  mirror.append(mark);
+  document.body.append(mirror);
+  const box = editor.getBoundingClientRect();
+  const markBox = mark.getBoundingClientRect();
+  const mirrorBox = mirror.getBoundingClientRect();
+  mirror.remove();
+  return {
+    left: Math.min(box.left + markBox.left - mirrorBox.left, box.right - 8),
+    top: Math.min(box.top + markBox.bottom - mirrorBox.top + 4, window.innerHeight - 44),
+  };
+}
+
+// The active {{…  window: a "{{" before the caret whose closing "}}" has not
+// been typed yet; the text between them filters the list.
+function varAcContext(editor) {
+  const text = editor.value.slice(0, editor.selectionStart ?? 0);
+  const open = text.lastIndexOf("{{");
+  if (open === -1) return null;
+  const between = text.slice(open + 2);
+  if (between.includes("}}")) return null;
+  return { open, query: between.trim().toLowerCase() };
+}
+
+function varAcItemsFor(query) {
+  const items = [];
+  const seen = new Set();
+  const req = activeReq();
+  if (req) {
+    // Reverse source order so each name lands with its highest-precedence scope.
+    for (const source of [...varSources(req)].reverse()) {
+      for (const [name, value] of source.vars) {
+        if (seen.has(name)) continue;
+        if (query && !name.toLowerCase().includes(query)) continue;
+        seen.add(name);
+        const secret = maskVariable(name, source.secret.has(name));
+        items.push({ name, scope: source.label, secret, preview: secret ? SECRET_MASK : String(value).slice(0, 14), dynamic: false });
+      }
+    }
+  }
+  for (const name of Object.keys(DYNAMIC_VARS)) {
+    if (query && !name.toLowerCase().includes(query)) continue;
+    items.push({ name, scope: "dynamic", secret: false, preview: "generated at send", dynamic: true });
+  }
+  return items;
+}
+
+function setVarAcActive(index) {
+  varAcIndex = index;
+  const active = varAcItems[varAcIndex]?.name;
+  for (const el of varAc.querySelectorAll(".var-ac-item")) el.classList.toggle("is-active", el.dataset.name === active);
+  varAc.querySelector(".var-ac-item.is-active")?.scrollIntoView({ block: "nearest" });
+}
+
+function renderVarAc() {
+  if (!varAcItems.length) return closeVarAc();
+  const row = (item, i) => `
+      <button type="button" class="var-ac-item ${item.secret ? "is-secret" : ""} ${i === varAcIndex ? "is-active" : ""}"
+              data-name="${esc(item.name)}" role="option" aria-selected="${i === varAcIndex}">
+        <code class="var-ac-token">{{${esc(item.name)}}}</code>
+        <span class="var-ac-preview">${esc(item.preview)}</span>
+        <span class="var-ac-scope">${esc(item.scope)}</span>
+      </button>`;
+  const plain = varAcItems.map((item, i) => ({ item, i })).filter(({ item }) => !item.dynamic);
+  const dynamic = varAcItems.map((item, i) => ({ item, i })).filter(({ item }) => item.dynamic);
+  varAc.innerHTML = `
+    <div class="var-ac-group">${plain.map(({ item, i }) => row(item, i)).join("")}</div>
+    ${dynamic.length ? `<div class="var-ac-group var-ac-dynamic">${dynamic.map(({ item, i }) => row(item, i)).join("")}</div>` : ""}`;
+  varAc.hidden = false;
+  const point = caretPoint(varAcEditor);
+  varAc.style.left = `${Math.round(point.left)}px`;
+  varAc.style.top = `${Math.round(point.top)}px`;
+  setVarAcActive(varAcIndex);
+}
+
+function closeVarAc() {
+  varAc.hidden = true;
+  varAcEditor = null;
+  varAcItems = [];
+  varAcIndex = 0;
+}
+
+function insertVarAc(name) {
+  const editor = varAcEditor;
+  const ctx = editor && varAcContext(editor);
+  if (!ctx) return closeVarAc();
+  const caret = editor.selectionStart ?? 0;
+  const token = `{{${name}}}`;
+  editor.value = editor.value.slice(0, ctx.open) + token + editor.value.slice(caret);
+  const at = ctx.open + token.length;
+  editor.setSelectionRange(at, at);
+  closeVarAc();
+  editor.focus();
+  editor.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function maybeVarAc(event) {
+  const editor = event.target;
+  if (!activeReq()) return closeVarAc();
+  const ctx = varAcContext(editor);
+  if (!ctx) return closeVarAc();
+  varAcEditor = editor;
+  varAcItems = varAcItemsFor(ctx.query);
+  varAcIndex = 0;
+  renderVarAc();
+}
+
+function varAcKeydown(event) {
+  if (varAc.hidden || !varAcItems.length) return;
+  if (event.key === "ArrowDown") { event.preventDefault(); setVarAcActive((varAcIndex + 1) % varAcItems.length); }
+  else if (event.key === "ArrowUp") { event.preventDefault(); setVarAcActive((varAcIndex - 1 + varAcItems.length) % varAcItems.length); }
+  else if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); insertVarAc(varAcItems[varAcIndex].name); }
+  else if (event.key === "Escape") { event.preventDefault(); closeVarAc(); }
+}
+
+for (const editor of [$("#url"), $("#body")]) {
+  editor.addEventListener("input", maybeVarAc);
+  editor.addEventListener("keydown", varAcKeydown);
+}
+
+// mousedown so the editor keeps focus; the click event never lands anywhere.
+varAc.addEventListener("mousedown", (event) => {
+  const row = event.target.closest(".var-ac-item");
+  if (!row) return;
+  event.preventDefault();
+  insertVarAc(row.dataset.name);
+});
+
+document.addEventListener("click", (event) => {
+  if (varAc.hidden) return;
+  if (event.target.closest("#var-ac")) return;
+  closeVarAc();
+});
+
 $("#url").addEventListener("input", (event) => {
   if (!activeReq()) return;
   const { base, params } = splitUrl(event.target.value);

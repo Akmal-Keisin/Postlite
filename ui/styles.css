@@ -4411,3 +4411,68 @@ label:has(input:disabled),
   white-space: nowrap;
   opacity: 0.75;
 }
+
+/* --------------------------------------------------------------- {{ autocomplete */
+
+.var-ac {
+  min-width: 260px;
+  max-height: 224px;
+  overflow: auto;
+  display: block;
+}
+
+.var-ac-group + .var-ac-group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.var-ac-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  column-gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  border-radius: var(--r-s);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.var-ac-item.is-active {
+  background: var(--bg-3);
+}
+
+.var-ac-token {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.var-ac-preview {
+  font-size: 11px;
+  color: var(--dim);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.var-ac-item.is-secret .var-ac-preview {
+  color: var(--err);
+}
+
+.var-ac-scope {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(var(--surface-rgb), 0.55);
+  color: var(--dim);
+  white-space: nowrap;
+}
