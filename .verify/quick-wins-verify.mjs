@@ -7,7 +7,9 @@ let executed = 0;
 const maxChecks = Number(process.argv[3]) || Infinity;
 const check = async (name, expression) => {
   if (executed >= maxChecks) return;
-  const value = await evaluate(`(async()=>(${expression}))()`);
+  // A function runs harness-side (multi-step flows with evaluates); a string
+  // is evaluated in the page in one shot.
+  const value = typeof expression === "function" ? await expression() : await evaluate(`(async()=>(${expression}))()`);
   assert.equal(value, true, `${name}: ${JSON.stringify(value)}`);
   executed++;
   results.push(name);
@@ -197,6 +199,75 @@ try {
     const v = __verify;
     return v.state.tabs.length === 1 && v.state.tabs[0].req.name === 'Hello';
   })()`);
+
+  // --- Task 4: search in the response body -------------------------------------
+  // Seed a real response against /api/large-json (120 "row-" names).
+  const sendLarge = () => evaluate(`(async () => {
+    const v = __verify;
+    v.state.collections[0].items[0].url = 'http://127.0.0.1:8100/api/large-json';
+    await v.send();
+    return true;
+  })()`);
+  const openFindOn = (tab) => evaluate(`(() => {
+    document.querySelector('#res-tabs [data-tab="${tab}"]').click();
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
+    return !document.querySelector('#res-find').hidden;
+  })()`);
+  const findInput = (value) => evaluate(`(() => {
+    const input = document.querySelector('#res-find-input');
+    input.value = ${JSON.stringify(value)};
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`);
+  await sendLarge();
+  await check('Ctrl+F on raw view opens the find bar and marks matches', async () => {
+    if (!await openFindOn('raw')) return false;
+    return await evaluate(`(() => {
+      const input = document.querySelector('#res-find-input');
+      input.value = 'row-1';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const marks = document.querySelectorAll('#raw mark.res-find-mark');
+      return marks.length > 0 && document.querySelector('#res-find-count').textContent === '1 of ' + marks.length;
+    })()`);
+  });
+  await check('next and prev cycle the current match', async () => {
+    await evaluate(`document.querySelector('#res-find-next').click()`);
+    const second = await evaluate(`document.querySelector('#res-find-count').textContent`);
+    await evaluate(`document.querySelector('#res-find-prev').click()`);
+    const back = await evaluate(`document.querySelector('#res-find-count').textContent`);
+    return second === '2 of 31' && back === '1 of 31';
+  });
+  await check('pretty view search expands folds and finds matches', async () => {
+    if (!await openFindOn('pretty')) return false;
+    await findInput('row-42');
+    return await evaluate(`(() => {
+      const marks = document.querySelectorAll('#pretty mark.res-find-mark');
+      const current = document.querySelector('#pretty mark.res-find-mark.is-current');
+      return marks.length === 1 && Boolean(current);
+    })()`);
+  });
+  await check('Escape closes the find bar and unwraps marks', async () => {
+    await evaluate(`document.querySelector('#res-find-input')
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))`);
+    return await evaluate(`document.querySelector('#res-find').hidden
+      && document.querySelectorAll('#pretty mark.res-find-mark').length === 0`);
+  });
+  await check('a new send clears the find bar', async () => {
+    if (!await openFindOn('raw')) return false;
+    await findInput('row-1');
+    await sendLarge();
+    return await evaluate(`document.querySelector('#res-find').hidden
+      && document.querySelectorAll('#raw mark.res-find-mark').length === 0`);
+  });
+  await check('settings dialog owns Ctrl+F when open', async () => {
+    await evaluate(`__verify.openAppSettings()`);
+    // The dialog handler listens on the dialog element itself, so dispatch there.
+    await evaluate(`document.querySelector('#app-settings-dialog')
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))`);
+    const ok = await evaluate(`document.activeElement?.id === 'pref-search' && document.querySelector('#res-find').hidden`);
+    await evaluate(`document.querySelector('#app-settings-dialog').close()`);
+    return ok;
+  });
 
   console.log(`\n${results.length} checks passed`);
 } catch (err) {

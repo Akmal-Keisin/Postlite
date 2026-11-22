@@ -4476,3 +4476,51 @@ label:has(input:disabled),
   color: var(--dim);
   white-space: nowrap;
 }
+
+/* ------------------------------------------------------------------ res find */
+
+.res-find {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.res-find .ic {
+  width: 14px;
+  height: 14px;
+  color: var(--dim);
+}
+
+.res-find input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  outline: none;
+}
+
+.res-find-count {
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.res-find-up {
+  transform: rotate(180deg);
+}
+
+mark.res-find-mark {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+
+mark.res-find-mark.is-current {
+  background: color-mix(in srgb, var(--accent) 62%, transparent);
+  color: var(--primary-fg);
+}

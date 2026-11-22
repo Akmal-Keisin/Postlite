@@ -2710,6 +2710,9 @@ function renderPreview() {
 }
 
 function renderResponse() {
+  // The panes re-render below, destroying any search marks — reset the find
+  // bar with them (a new send, tab switch, or settings change closes it).
+  resetResFind();
   renderExamples();
   const response = effectiveResponse();
   const pill = $("#status");
@@ -3610,6 +3613,109 @@ $("#example-exit").addEventListener("click", () => {
 
 $("#json-collapse-all").addEventListener("click", () => jtBulk(false));
 $("#json-expand-all").addEventListener("click", () => jtBulk(true));
+
+/* ---------------------------------------------------------- response find bar */
+
+const resFind = $("#res-find");
+const resFindInput = $("#res-find-input");
+const resFindCount = $("#res-find-count");
+let resFindMarks = [];
+let resFindAt = -1;
+
+const resFindView = () => $("#res-tabs .tab.is-active")?.dataset.tab;
+const resFindEligible = () => {
+  const response = effectiveResponse();
+  if (!response || response.error) return false;
+  return resFindView() === "pretty" || resFindView() === "raw";
+};
+
+function resetResFind() {
+  resFind.hidden = true;
+  resFindInput.value = "";
+  resFindMarks = [];
+  resFindAt = -1;
+  resFindCount.textContent = "";
+}
+
+function closeResFind() {
+  const wasOpen = !resFind.hidden;
+  resetResFind();
+  // Re-render unwraps every <mark> the search left behind.
+  if (wasOpen) renderResponse();
+}
+
+function setCurrentResFind(index) {
+  if (!resFindMarks.length) return;
+  resFindMarks[resFindAt]?.classList.remove("is-current");
+  resFindAt = ((index % resFindMarks.length) + resFindMarks.length) % resFindMarks.length;
+  const mark = resFindMarks[resFindAt];
+  mark.classList.add("is-current");
+  resFindCount.textContent = `${resFindAt + 1} of ${resFindMarks.length}`;
+  mark.scrollIntoView({ block: "nearest" });
+}
+
+// Re-render the active pane (unwraps old marks), then wrap every match in the
+// pane's text nodes. In the pretty tree the bulk-expand runs first so matches
+// inside folded nodes are reachable; huge bodies cap it like Expand all does.
+function renderResFind() {
+  if (resFind.hidden) return;
+  const response = effectiveResponse();
+  const view = resFindView();
+  if (view === "pretty") {
+    renderPretty(response);
+    if ($("#pretty").classList.contains("jt-host")) jtBulk(true);
+  } else {
+    $("#raw").textContent = response.body;
+  }
+  const pane = view === "pretty" ? $("#pretty") : $("#raw");
+  resFindMarks = [];
+  resFindAt = -1;
+  const query = resFindInput.value;
+  if (!query) { resFindCount.textContent = ""; return; }
+  const lower = query.toLowerCase();
+  const walker = document.createTreeWalker(pane, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    const lowerText = text.toLowerCase();
+    if (!lowerText.includes(lower)) continue;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let at = lowerText.indexOf(lower);
+    while (at !== -1) {
+      frag.append(text.slice(last, at));
+      const mark = document.createElement("mark");
+      mark.className = "res-find-mark";
+      mark.textContent = text.slice(at, at + query.length);
+      frag.append(mark);
+      resFindMarks.push(mark);
+      last = at + lower.length;
+      at = lowerText.indexOf(lower, last);
+    }
+    frag.append(text.slice(last));
+    node.replaceWith(frag);
+  }
+  if (resFindMarks.length) setCurrentResFind(0);
+  else resFindCount.textContent = "No matches";
+}
+
+function openResFind() {
+  if (!resFindEligible()) return;
+  resFind.hidden = false;
+  resFindInput.focus();
+  resFindInput.select();
+  renderResFind();
+}
+
+resFindInput.addEventListener("input", renderResFind);
+resFindInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); setCurrentResFind(resFindAt + (event.shiftKey ? -1 : 1)); }
+  else if (event.key === "Escape") { event.preventDefault(); closeResFind(); }
+});
+$("#res-find-next").addEventListener("click", () => setCurrentResFind(resFindAt + 1));
+$("#res-find-prev").addEventListener("click", () => setCurrentResFind(resFindAt - 1));
+$("#res-find-close").addEventListener("click", closeResFind);
 
 let copyTimer;
 $("#copy-res").addEventListener("click", async () => {
@@ -5554,7 +5660,7 @@ document.addEventListener("keydown", (event) => {
   else if (event.key === "Escape" && !$("#env-pop").hidden) closeEnvPop({ restoreFocus: true });
   if (!(event.ctrlKey || event.metaKey) || event.altKey || event.repeat) return;
   const key = event.key.toLowerCase();
-  if (!["enter", "s", "n", "k", ",", "w", "pageup", "pagedown"].includes(key)) return;
+  if (!["enter", "s", "n", "k", ",", "w", "f", "pageup", "pagedown"].includes(key)) return;
   event.preventDefault();
   if (key === "enter") void send();
   else if (key === "s") openSaveDialog();
@@ -5565,6 +5671,8 @@ document.addEventListener("keydown", (event) => {
   else if (key === "pageup") cycleTab(-1);
   else if (key === "pagedown") cycleTab(1);
   else if (key === "w" && state.activeTabId) closeTab(state.activeTabId);
+  // The settings dialog handles Ctrl+F itself when open (its search field).
+  else if (key === "f" && !$("#app-settings-dialog").open) openResFind();
 });
 
 await loadWorkspace();

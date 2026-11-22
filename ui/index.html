@@ -409,6 +409,20 @@
             <button id="json-collapse-all" class="tool" type="button"><svg class="ic" aria-hidden="true"><use href="#i-fold" /></svg> Collapse all</button>
             <button id="json-expand-all" class="tool" type="button"><svg class="ic" aria-hidden="true"><use href="#i-unfold" /></svg> Expand all</button>
           </div>
+          <div id="res-find" class="res-find" hidden>
+            <svg class="ic" aria-hidden="true"><use href="#i-search" /></svg>
+            <input id="res-find-input" type="text" placeholder="Find in response…" autocomplete="off" spellcheck="false" aria-label="Find in response body" />
+            <span id="res-find-count" class="res-find-count" role="status" aria-live="polite"></span>
+            <button id="res-find-prev" class="icon-btn" title="Previous match (Shift+Enter)" aria-label="Previous match">
+              <svg class="ic res-find-up" aria-hidden="true"><use href="#i-caret" /></svg>
+            </button>
+            <button id="res-find-next" class="icon-btn" title="Next match (Enter)" aria-label="Next match">
+              <svg class="ic res-find-down" aria-hidden="true"><use href="#i-caret" /></svg>
+            </button>
+            <button id="res-find-close" class="icon-btn" title="Close (Esc)" aria-label="Close search">
+              <svg class="ic" aria-hidden="true"><use href="#i-x" /></svg>
+            </button>
+          </div>
           <pre id="pretty" role="tabpanel" class="is-active" data-tab="pretty"></pre>
           <pre id="raw" role="tabpanel" data-tab="raw"></pre>
           <iframe id="preview" data-tab="preview" sandbox="" title="HTML response preview" width="100%" height="100%"></iframe>
