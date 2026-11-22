@@ -77,8 +77,10 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
 ### Interop
 
 - **Postman**: import and export Collection v2.1, and import / export Environment JSON.
+- **Insomnia**: import format-4 exports — workspaces become collections (folders, requests, auth, bodies), workspace environments import flattened and bind to their collection. Exotic auth types are skipped and counted.
 - **Drag and drop**: drop files anywhere in the window. postlite detects the content and routes it:
   - Postman collections and environments go to the sidebar,
+  - Insomnia v4 exports and Hoppscotch collections / environment JSON too (skipped resources are counted in the report),
   - postlite backups go to the restore dialog,
   - postlite settings go to preferences,
   - cURL scripts open in a new tab. A script that fails to parse opens in the cURL dialog instead.
@@ -243,6 +245,7 @@ These harnesses use a separate debug build, so they never touch a real workspace
 | `runner-verify.mjs` | collection runner: selection, ordering, env chaining, stop semantics, `pm.collectionVariables` | 43 |
 | `history-verify.mjs` | request history: model, recording, panel, click-through, backup exclusion | 24 |
 | `quick-wins-verify.mjs` | dynamic variables, `{{` autocomplete, duplication, response find bar, save response | 27 |
+| `importers-verify.mjs` | insomnia + hoppscotch import, routing, skipping | 15 |
 
 `tier2b-verify` runs its own forward proxy on `127.0.0.1:8890` to prove manual-proxy routing and bypass on the wire. It uses the harness server's `/set` and `/echo` routes to inspect exactly which cookies were sent.
 
