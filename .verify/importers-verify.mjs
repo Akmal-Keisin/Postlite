@@ -39,6 +39,8 @@ const insomniaDoc = () => ({
       body: { mimeType: "multipart/form-data", params: [{ name: "f", value: "C:/x/a.png", type: "file" }, { name: "t", value: "hi" }] } },
     { _id: "req_query", _type: "request", parentId: "wrk_1", name: "Query req", method: "GET",
       url: "http://127.0.0.1:8100/api/echo?z=9", parameters: [{ name: "q", value: "1" }] },
+    { _id: "req_bearer", _type: "request", parentId: "wrk_1", name: "Bearer req", method: "GET",
+      url: "http://127.0.0.1:8100/api/echo", authentication: { type: "bearerToken", token: "b-tok" } },
     { _id: "env_1", _type: "environment", parentId: "wrk_1", name: "Dev",
       data: { base_url: "http://127.0.0.1:8100", nested: { deep: "v" } } },
   ],
@@ -223,8 +225,10 @@ try {
     })();
   })()`);
   await check('the Import menu file input routes Hoppscotch JSON too', async () => {
+    // Count before/after instead of wiping collections — later checks read the
+    // collections earlier imports left behind.
+    const before = await evaluate(`__verify.state.collections.filter(c => c.name === "Hoppscotch collection").length`);
     await evaluate(`(() => {
-      __verify.state.collections = []; __verify.render();
       const doc = ${JSON.stringify(hoppscotchDoc())};
       const dt = new DataTransfer();
       dt.items.add(new File([JSON.stringify(doc)], "hoppscotch.json", { type: "application/json" }));
@@ -235,7 +239,122 @@ try {
     })()`);
     return await evaluate(`(async () => {
       await new Promise(r => setTimeout(r, 80));
-      return __verify.state.collections.some(c => c.name === "Hoppscotch collection");
+      return __verify.state.collections.filter(c => c.name === "Hoppscotch collection").length === ${JSON.stringify(before + 1)};
+    })()`);
+  });
+
+  // --- Review-fix: verzod shapes real Hoppscotch exports use ---------------------
+  const verzodDoc = () => [{
+    v: 2, name: "Verzod collection", auth: { authType: "inherit", authActive: true }, headers: [],
+    folders: [{ v: 2, name: "V folder", auth: { authType: "inherit", authActive: true }, headers: [], folders: [], requests: [
+      { v: "5", name: "V raw", method: "POST", endpoint: "http://127.0.0.1:8100/api/echo",
+        auth: { authType: "inherit", authActive: true }, params: [], headers: [],
+        body: { contentType: "application/json", body: '{"v":1}' } },
+      { v: "5", name: "V none", method: "GET", endpoint: "http://127.0.0.1:8100/api/echo",
+        auth: { authType: "inherit", authActive: true }, params: [], headers: [], body: { body: null, contentType: null } },
+      { v: "5", name: "V form", method: "POST", endpoint: "http://127.0.0.1:8100/api/echo",
+        auth: { authType: "inherit", authActive: true }, params: [], headers: [],
+        body: { contentType: "multipart/form-data", body: [{ key: "f", value: "x.png", active: true, isFile: true }, { key: "t", value: "hi", active: true }] } },
+      { v: "5", name: "V urlenc", method: "POST", endpoint: "http://127.0.0.1:8100/api/echo",
+        auth: { authType: "inherit", authActive: true }, params: [], headers: [],
+        body: { contentType: "application/x-www-form-urlencoded", body: [{ key: "k", value: "v", active: true }] } },
+      { v: "5", name: "V apikey", method: "GET", endpoint: "http://127.0.0.1:8100/api/echo",
+        auth: { authType: "api-key", key: "X-Key", value: "kv", addTo: "QUERY_PARAMS", authActive: true }, params: [], headers: [],
+        body: { body: null, contentType: null } },
+      { v: "5", name: "V oauth", method: "GET", endpoint: "http://127.0.0.1:8100/api/echo",
+        auth: { authType: "oauth-2", grantTypeInfo: { token: "gz-tok", grantType: "CLIENT_CREDENTIALS" }, authActive: true }, params: [], headers: [],
+        body: { body: null, contentType: null } },
+    ]}],
+    requests: [],
+  }];
+  const verzodEnvs = () => [
+    { v: "2", name: "Verzod env", variables: [
+      { key: "host", initialValue: "http://127.0.0.1:8100", currentValue: "http://127.0.0.1:8100", secret: false },
+      { key: "apikey", initialValue: "", currentValue: "s3cr3t", secret: true },
+    ] },
+  ];
+  await check('verzod bodies map: raw string, urlencoded array, multipart isFile', async () => {
+    await evaluate(`(async () => {
+      const doc = ${JSON.stringify(verzodDoc())};
+      await __verify.importDroppedFiles([new File([JSON.stringify(doc)], "verzod.json", { type: "application/json" })]);
+      return true;
+    })()`);
+    return await evaluate(`(() => {
+      const v = __verify;
+      const c = v.state.collections.find(c => c.name === "Verzod collection");
+      if (!c) return false;
+      const folder = c.items.find(i => i.kind === "folder");
+      const raw = folder.items.find(i => i.name === "V raw");
+      const none = folder.items.find(i => i.name === "V none");
+      const form = folder.items.find(i => i.name === "V form");
+      const urlenc = folder.items.find(i => i.name === "V urlenc");
+      return raw.body.mode === "raw" && raw.body.raw === '{"v":1}' && raw.body.contentType === "application/json"
+        && none.body.mode === "none"
+        && form.body.mode === "form-data" && form.body.form[0].type === "file" && form.body.form[1].type === "text"
+        && urlenc.body.mode === "form-data" && urlenc.body.contentType === "application/x-www-form-urlencoded"
+        && urlenc.body.form[0].key === "k";
+    })()`);
+  });
+  await check('verzod inherit auth imports uncounted; apikey addTo and oauth grantTypeInfo map', `(() => {
+    const v = __verify;
+    const c = v.state.collections.find(c => c.name === "Verzod collection");
+    const folder = c.items.find(i => i.kind === "folder");
+    const apikey = folder.items.find(i => i.name === "V apikey");
+    const oauth = folder.items.find(i => i.name === "V oauth");
+    return apikey.auth.type === "apikey" && apikey.auth.apikey.addTo === "query"
+      && oauth.auth.type === "bearer" && oauth.auth.bearer.token === "gz-tok";
+  })()`);
+  await check('verzod environment rows use initialValue/currentValue/secret', async () => {
+    await evaluate(`(async () => {
+      const doc = ${JSON.stringify(verzodEnvs())};
+      await __verify.importDroppedFiles([new File([JSON.stringify(doc)], "verzod-env.json", { type: "application/json" })]);
+      return true;
+    })()`);
+    return await evaluate(`(() => {
+      const v = __verify;
+      const env = v.state.environments.find(e => e.name === "Verzod env");
+      if (!env) return false;
+      const rows = Object.fromEntries(env.variables.map(r => [r.key, r]));
+      return rows.host.value === "http://127.0.0.1:8100"
+        && rows.apikey.value === "s3cr3t" && rows.apikey.secret === true;
+    })()`);
+  });
+  await check('verzod imports report no skipped requests', async () => {
+    return await evaluate(`(async () => {
+      const doc = ${JSON.stringify(verzodDoc())};
+      await __verify.importDroppedFiles([new File([JSON.stringify(doc)], "verzod.json", { type: "application/json" })]);
+      return !document.querySelector('#tool-note').textContent.includes('skipped');
+    })()`);
+  });
+  await check('Insomnia bearer and bearerToken auth types map', `(() => {
+    const v = __verify;
+    const c = v.state.collections.find(c => c.name === "Insomnia workspace");
+    const bearer = c.items.find(i => i.name === "Bearer req");
+    return Boolean(bearer) && bearer.auth.type === "bearer" && bearer.auth.bearer.token === "b-tok";
+  })()`);
+  await check('parentId cycles import without crashing', async () => {
+    await evaluate(`(async () => {
+      const doc = ${JSON.stringify(insomniaDoc())};
+      doc.resources.push({ _id: "fld_cyc", _type: "folder", parentId: "fld_cyc", name: "Cycle folder" });
+      await __verify.importDroppedFiles([new File([JSON.stringify(doc)], "cycle.json", { type: "application/json" })]);
+      return true;
+    })()`);
+    return await evaluate(`__verify.state.collections.some(c => c.items.some(i => i.name === "Cycle folder"))`);
+  });
+  await check('the Import menu file input routes Insomnia JSON too', async () => {
+    const before = await evaluate(`__verify.state.collections.filter(c => c.name === "Insomnia workspace").length`);
+    await evaluate(`(() => {
+      const doc = ${JSON.stringify(insomniaDoc())};
+      const dt = new DataTransfer();
+      dt.items.add(new File([JSON.stringify(doc)], "insomnia.json", { type: "application/json" }));
+      const input = document.querySelector("#import-file");
+      input.files = dt.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    })()`);
+    return await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 80));
+      return __verify.state.collections.filter(c => c.name === "Insomnia workspace").length === ${JSON.stringify(before + 1)};
     })()`);
   });
 

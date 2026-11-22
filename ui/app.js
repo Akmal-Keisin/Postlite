@@ -5277,7 +5277,7 @@ function insomniaAuth(raw) {
   return null;
 }
 
-function insomniaBody(raw) {
+function insomniaBody(raw, skipped) {
   if (!raw || typeof raw !== "object") return normBody();
   const mime = String(raw.mimeType ?? "");
   if (/urlencoded|multipart/.test(mime) && Array.isArray(raw.params)) {
@@ -5293,6 +5293,9 @@ function insomniaBody(raw) {
   if (typeof raw.text === "string" && raw.text) {
     return normBody({ mode: "raw", raw: raw.text, contentType: mime || "application/json", form: [] });
   }
+  // Binary bodies (base64 in `file`, or a non-text mime without a text body)
+  // cannot become rows or raw text — skip and count them.
+  if (raw.file || (mime && !/json|xml|plain|graphql/i.test(mime))) skipped.body += 1;
   return normBody();
 }
 
@@ -5314,7 +5317,7 @@ function insomniaRequest(res, skipped) {
     headers: (Array.isArray(res.headers) ? res.headers : []).filter((h) => h && h.name).map((h) => ({
       key: String(h.name), value: String(h.value ?? ""), enabled: h.disabled !== true, secret: false, description: "", type: "text",
     })),
-    body: insomniaBody(res.body),
+    body: insomniaBody(res.body, skipped),
     auth: auth ?? normAuth(null, "inherit"),
   });
 }
@@ -5335,7 +5338,7 @@ function insomniaEnvironment(res) {
 }
 
 function fromInsomnia(doc) {
-  const skipped = { auth: 0 };
+  const skipped = { auth: 0, body: 0, other: 0 };
   const byParent = new Map();
   for (const res of doc.resources ?? []) {
     if (!INSOMNIA_RESOURCE_TYPES.has(String(res?._type))) continue;
@@ -5345,13 +5348,21 @@ function fromInsomnia(doc) {
   }
   const workspaces = (doc.resources ?? []).filter((r) => r?._type === "workspace");
   const known = new Set(workspaces.map((w) => String(w._id)));
+  // Cycle guard: a folder that is its own parent (directly or via a loop)
+  // must not recurse forever.
+  const visited = new Set();
   const collections = [];
   const environments = [];
   const buildChildren = (parentId, containers) => {
+    if (visited.has(parentId)) return;
+    visited.add(parentId);
     for (const res of byParent.get(parentId) ?? []) {
       if (res._type === "folder") {
-        const folder = newFolder({ name: String(res.name ?? "Folder"), items: [] });
+        const auth = insomniaAuth(res.authentication);
+        if (!auth && res.authentication && Object.keys(res.authentication).length) skipped.auth += 1;
+        const folder = newFolder({ name: String(res.name ?? "Folder"), items: [], auth: auth ?? normAuth(null, "inherit") });
         containers.push(folder);
+        known.add(String(res._id));
         buildChildren(String(res._id), folder.items);
       } else if (res._type === "request") {
         containers.push(insomniaRequest(res, skipped));
@@ -5371,19 +5382,25 @@ function fromInsomnia(doc) {
     }
     collections.push(collection);
   }
-  // Dangling parents land at the first workspace's root instead of vanishing.
+  // Dangling parents land at the first workspace's root instead of vanishing;
+  // sub-environments import unbound, and anything left over counts as skipped.
   for (const [parentId, resList] of byParent) {
     if (known.has(parentId)) continue;
     known.add(parentId);
     const first = collections[0];
-    if (!first) continue;
+    if (!first) { skipped.other += resList.length; continue; }
     for (const res of resList) {
+      if (res._type === "workspace") continue; // already collected above
       if (res._type === "request") first.items.push(insomniaRequest(res, skipped));
       else if (res._type === "folder") {
-        const folder = newFolder({ name: String(res.name ?? "Folder"), items: [] });
+        const auth = insomniaAuth(res.authentication);
+        if (!auth && res.authentication && Object.keys(res.authentication).length) skipped.auth += 1;
+        const folder = newFolder({ name: String(res.name ?? "Folder"), items: [], auth: auth ?? normAuth(null, "inherit") });
         first.items.push(folder);
         buildChildren(String(res._id), folder.items);
-      }
+      } else if (res._type === "environment") {
+        environments.push(insomniaEnvironment(res));
+      } else skipped.other += 1;
     }
   }
   return { collections, environments, skipped };
@@ -5403,33 +5420,87 @@ function looksLikeHoppscotchEnvironments(doc) {
     && !Array.isArray(item.folders) && !Array.isArray(item.requests) && (Array.isArray(item.variables) || (item.variables && typeof item.variables === "object")));
 }
 
-function hoppscotchAuth(raw, skipped) {
+function hoppscotchAuth(raw, skipped, request) {
+  // v0-era exports carry a string auth ("Basic Auth" / "Bearer Token") with
+  // the credentials on the request itself.
+  if (typeof raw === "string") {
+    const kind = raw.toLowerCase();
+    if (kind.includes("basic")) {
+      return normAuth({ type: "basic", basic: { username: String(request?.httpUser ?? ""), password: String(request?.httpPassword ?? "") } }, "noauth");
+    }
+    const bearer = String(request?.bearerToken ?? "");
+    if (kind.includes("bearer") && bearer) return normAuth({ type: "bearer", bearer: { token: bearer } }, "noauth");
+    if (!kind.includes("none")) skipped.auth += 1;
+    return null;
+  }
   const type = String(raw?.authType ?? "none");
+  // "inherit" is the verzod default and "none" is explicit; neither is a skip.
+  // authActive false means the user switched auth off — import as inherited.
+  if (type === "none" || type === "inherit") return null;
+  if (raw.authActive === false) return null;
   if (type === "basic") {
     return normAuth({ type: "basic", basic: { username: String(raw.username ?? raw.httpUser ?? ""), password: String(raw.password ?? raw.httpPassword ?? "") } }, "noauth");
   }
-  const token = String(raw.token ?? raw.bearerToken ?? "");
-  if (type === "bearer" && token) return normAuth({ type: "bearer", bearer: { token } }, "noauth");
+  if (type === "bearer") {
+    const token = String(raw.grantTypeInfo?.token ?? raw.token ?? raw.bearerToken ?? "");
+    return token ? normAuth({ type: "bearer", bearer: { token } }, "noauth") : null;
+  }
   if (type === "oauth-2" || type === "oauth2") {
-    const access = String(raw.accessToken?.access_token ?? raw.accessToken?.token ?? "");
+    // v3+ keeps the token in grantTypeInfo; v1–v2 at the top level.
+    const access = String(raw.grantTypeInfo?.token ?? raw.token ?? raw.accessToken?.access_token ?? raw.accessToken?.token ?? "");
     return access ? normAuth({ type: "bearer", bearer: { token: access } }, "noauth") : null;
   }
   if (type === "api-key" || type === "apikey") {
-    return normAuth({ type: "apikey", apikey: { key: String(raw.key ?? ""), value: String(raw.value ?? ""), addTo: raw.addTo === "query_params" ? "query" : "header" } }, "noauth");
+    // addTo spells "Headers"/"Query params" (v1–v3) or "HEADERS"/"QUERY_PARAMS"
+    // (v4+); match case-insensitively so query keys stay query keys.
+    return normAuth({ type: "apikey", apikey: { key: String(raw.key ?? ""), value: String(raw.value ?? ""), addTo: /query/i.test(raw.addTo ?? "") ? "query" : "header" } }, "noauth");
   }
-  if (type !== "none") skipped.auth += 1;
+  skipped.auth += 1;
   return null;
 }
 
 function hoppscotchRows(rows) {
   return (Array.isArray(rows) ? rows : []).filter((r) => r && (r.key || r.name)).map((r) => ({
-    key: String(r.key ?? r.name ?? ""), value: String(r.value ?? ""), enabled: r.active !== false && r.disabled !== true,
-    secret: false, description: "", type: r.type === "file" ? "file" : "text",
+    key: String(r.key ?? r.name ?? ""),
+    // verzod environment rows keep currentValue (session) over initialValue
+    // (committed) — an empty currentValue must fall through, or secret rows
+    // that only carry a current value would import blank. params/headers
+    // carry value — reading them in order covers both vocabularies.
+    value: String(r.value ?? r.currentValue ?? r.initialValue ?? ""),
+    enabled: r.active !== false && r.disabled !== true,
+    secret: r.secret === true,
+    description: "",
+    type: r.type === "file" || r.isFile === true ? "file" : "text",
   }));
 }
 
 function hoppscotchBody(raw, skipped) {
   if (!raw || typeof raw !== "object") return normBody();
+  // Legacy exports use `body` as a kind string ("contentType", "formURLEncoded",
+  // "formData", …) with the payload in raw/rawParams/form; verzod uses `body`
+  // as the payload itself with the mime beside it. The fixed legacy kind set
+  // is the discriminator between the two vocabularies.
+  const isLegacyKind = /^(contentType|formURLEncoded|formData|multipartFormData|multipartForm|none)$/i.test(String(raw.body ?? ""));
+  // Modern verzod union: {contentType, body} — a string payload is raw, an
+  // array is form rows (multipart when the content type says so or a row
+  // carries isFile), and both null means the request has no body at all.
+  if (Array.isArray(raw.body)) {
+    const multipart = raw.contentType === "multipart/form-data" || raw.body.some((r) => r?.isFile);
+    return normBody({
+      mode: "form-data",
+      contentType: multipart ? "multipart/form-data" : "application/x-www-form-urlencoded",
+      form: hoppscotchRows(raw.body),
+    });
+  }
+  if (!isLegacyKind && typeof raw.body === "string" && raw.body
+    && typeof raw.contentType === "string" && raw.contentType) {
+    // verzod raw: the mime sits beside the payload; a bare string body without
+    // one is a legacy kind we do not know, and is skipped below instead.
+    return normBody({ mode: "raw", raw: raw.body, contentType: raw.contentType, form: [] });
+  }
+  if (!isLegacyKind && (raw.body === null || raw.contentType === null)) return normBody();
+  // Legacy kind-string union: {body: "contentType"|"formURLEncoded"|"formData",
+  // raw|rawParams, form|bodyParams, contentType}.
   const kind = String(raw.body ?? raw.contentType ?? "");
   const form = raw.form ?? raw.params ?? raw.bodyParams;
   if (/formURLEncoded|urlencoded/i.test(kind) && Array.isArray(form)) {
@@ -5438,7 +5509,7 @@ function hoppscotchBody(raw, skipped) {
   if (/formData|multipart/i.test(kind) && Array.isArray(form)) {
     return normBody({ mode: "form-data", contentType: "multipart/form-data", form: hoppscotchRows(form) });
   }
-  const rawText = typeof raw.raw === "string" ? raw.raw : typeof raw.text === "string" ? raw.text : "";
+  const rawText = typeof raw.raw === "string" ? raw.raw : typeof raw.rawParams === "string" ? raw.rawParams : typeof raw.text === "string" ? raw.text : "";
   if (kind === "contentType" || rawText) {
     return normBody({ mode: "raw", raw: rawText, contentType: String(raw.contentType ?? "application/json"), form: [] });
   }
@@ -5447,7 +5518,7 @@ function hoppscotchBody(raw, skipped) {
 }
 
 function hoppscotchRequest(raw, skipped) {
-  const auth = hoppscotchAuth(raw.auth, skipped);
+  const auth = hoppscotchAuth(raw.auth, skipped, raw);
   return newRequest({
     name: String(raw.name ?? "Request"),
     method: String(raw.method ?? "GET").toUpperCase(),
@@ -5462,7 +5533,8 @@ function hoppscotchRequest(raw, skipped) {
 function hoppscotchItems(folder, skipped) {
   const items = [];
   for (const sub of folder.folders ?? []) {
-    items.push(newFolder({ name: String(sub.name ?? "Folder"), items: hoppscotchItems(sub, skipped) }));
+    const auth = hoppscotchAuth(sub.auth, skipped);
+    items.push(newFolder({ name: String(sub.name ?? "Folder"), items: hoppscotchItems(sub, skipped), auth: auth ?? normAuth(null, "inherit") }));
   }
   for (const req of folder.requests ?? []) {
     items.push(hoppscotchRequest(req, skipped));
@@ -5471,9 +5543,13 @@ function hoppscotchItems(folder, skipped) {
 }
 
 function fromHoppscotchCollections(doc) {
-  const skipped = { auth: 0, body: 0 };
-  const collections = (Array.isArray(doc) ? doc : []).filter((c) => c && typeof c === "object").map((c) =>
-    newCollection(String(c.name ?? "Hoppscotch collection"), { items: hoppscotchItems(c, skipped) }));
+  const skipped = { auth: 0, body: 0, other: 0 };
+  const collections = (Array.isArray(doc) ? doc : []).flatMap((c) => {
+    if (!c || typeof c !== "object") { skipped.other += 1; return []; }
+    // v2+ collections carry collection-level auth that requests inherit.
+    const auth = hoppscotchAuth(c.auth, skipped, c);
+    return [newCollection(String(c.name ?? "Hoppscotch collection"), { items: hoppscotchItems(c, skipped), auth: auth ?? normAuth(null, "inherit") })];
+  });
   return { collections, skipped };
 }
 
@@ -5499,24 +5575,24 @@ function routeJsonImport(doc, label, added, failures) {
     added.environments += 1;
     return true;
   }
-  if (doc?._type === "export" && Array.isArray(doc.resources)) {
-    if (doc.__export_format !== 4) {
-      failures.push(`${label}: Insomnia export format ${doc.__export_format} is unsupported — re-export with format 4`);
-      return true;
-    }
+  if (looksLikeInsomnia(doc)) {
     const { collections, environments, skipped } = fromInsomnia(doc);
     state.collections.push(...collections);
     state.environments.push(...environments);
     added.collections += collections.length;
     added.environments += environments.length;
-    added.skipped += skipped.auth;
+    added.skipped += skipped.auth + skipped.body + skipped.other;
+    return true;
+  }
+  if (doc?._type === "export" && Array.isArray(doc.resources)) {
+    failures.push(`${label}: Insomnia export format ${doc.__export_format} is unsupported — re-export with format 4`);
     return true;
   }
   if (looksLikeHoppscotchCollections(doc)) {
     const { collections, skipped } = fromHoppscotchCollections(doc);
     state.collections.push(...collections);
     added.collections += collections.length;
-    added.skipped += skipped.auth + skipped.body;
+    added.skipped += skipped.auth + skipped.body + skipped.other;
     return true;
   }
   if (looksLikeHoppscotchEnvironments(doc)) {

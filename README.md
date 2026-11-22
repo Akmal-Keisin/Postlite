@@ -245,7 +245,7 @@ These harnesses use a separate debug build, so they never touch a real workspace
 | `runner-verify.mjs` | collection runner: selection, ordering, env chaining, stop semantics, `pm.collectionVariables` | 43 |
 | `history-verify.mjs` | request history: model, recording, panel, click-through, backup exclusion | 24 |
 | `quick-wins-verify.mjs` | dynamic variables, `{{` autocomplete, duplication, response find bar, save response | 27 |
-| `importers-verify.mjs` | insomnia + hoppscotch import, routing, skipping | 15 |
+| `importers-verify.mjs` | insomnia + hoppscotch import, routing, skipping | 22 |
 
 `tier2b-verify` runs its own forward proxy on `127.0.0.1:8890` to prove manual-proxy routing and bypass on the wire. It uses the harness server's `/set` and `/echo` routes to inspect exactly which cookies were sent.
 
