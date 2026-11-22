@@ -45,6 +45,7 @@ const openRunner = (dataRows, delayMs) => evaluate(`(async () => {
     await new Promise(r => setTimeout(r, 150));
   }
   document.querySelector("#runner-delay").value = ${JSON.stringify(delayMs ?? 0)};
+  document.querySelector("#runner-delay").dispatchEvent(new Event("input", { bubbles: true }));
   return true;
 })()`);
 const runAndFinish = async () => {
@@ -138,6 +139,60 @@ try {
       return true;
     })()`);
     return withData && withoutData;
+  });
+
+  // --- Task 2: delay + coalesced history persistence ----------------------------
+  await check('a delay stretches the run wall time', async () => {
+    await openRunner(null, 300);
+    const { ms } = await runAndFinish();
+    return ms >= 600; // 3 entries with 300 ms gaps between them
+  });
+  await check('stop lands promptly during a delay', async () => {
+    await openRunner(null, 3000);
+    await evaluate(`document.querySelector('#runner-run').click()`);
+    await evaluate(`(() => {
+      // Stop as soon as the first entry finishes.
+      const timer = setInterval(() => {
+        if (__verify.runnerState.entries[0]?.status === 'passed') {
+          clearInterval(timer);
+          document.querySelector('#runner-stop').click();
+        }
+      }, 20);
+      return true;
+    })()`);
+    const finish = await evaluate(`new Promise(resolve => {
+      const start = Date.now();
+      const timer = setInterval(() => {
+        if (__verify.runnerState.phase === 'done') { clearInterval(timer); resolve(Date.now() - start); }
+        else if (Date.now() - start > 20000) { clearInterval(timer); resolve(99999); }
+      }, 30);
+    })`);
+    return finish < 5000;
+  });
+  await check('data-driven runs coalesce history into few end-of-run flushes', async () => {
+    // Count real disk-save requests through the fetch-IPC seam: coalescing must
+    // keep 9 sends well under the per-send flush count.
+    await evaluate(`(() => {
+      window.__saveCalls = 0;
+      if (!window.__saveSeam) {
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = (input, init) => {
+          const url = typeof input === 'string' ? input : input.url;
+          if (url.endsWith('/save_workspace')) { window.__saveCalls += 1; }
+          return originalFetch(input, init);
+        };
+        window.__saveSeam = true;
+      }
+      return true;
+    })()`);
+    const before = await evaluate(`window.__saveCalls`);
+    await openRunner([{ n: "1" }, { n: "2" }, { n: "3" }], 0);
+    await runAndFinish();
+    await evaluate(`(async () => { await new Promise(r => setTimeout(r, 250)); return true })()`);
+    const saves = await evaluate(`window.__saveCalls - ${JSON.stringify(before)}`);
+    const history = await evaluate(`__verify.state.history.filter(h => h.name === 'First' || h.name === 'Second' || h.name === 'Third').length`);
+    // 9 sends must not produce 9 saves: coalescing batches them.
+    return history >= 9 && saves < 6;
   });
 
   console.log(`\n${results.length} checks passed`);
