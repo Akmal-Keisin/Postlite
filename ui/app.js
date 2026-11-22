@@ -1331,9 +1331,12 @@ function toPostmanCollection(collection) {
 
 // Exports open the native Save As dialog so the user chooses the destination.
 // Plain-browser previews have no Tauri runtime; there a download is the only option.
-async function saveExport(file, text, filterName, extensions, mime) {
+async function saveExport(file, text, filterName, extensions, mime, contentsB64 = null) {
   if (!window.__TAURI_INTERNALS__) {
-    const url = URL.createObjectURL(new Blob([text], { type: mime }));
+    const payload = contentsB64
+      ? Uint8Array.from(atob(contentsB64), (c) => c.charCodeAt(0))
+      : text;
+    const url = URL.createObjectURL(new Blob([payload], { type: mime }));
     const link = document.createElement("a");
     link.href = url;
     link.download = file;
@@ -1345,7 +1348,7 @@ async function saveExport(file, text, filterName, extensions, mime) {
     return null;
   }
   try {
-    const path = await invoke("save_export_file", { defaultName: file, filterName, extensions, contents: text });
+    const path = await invoke("save_export_file", { defaultName: file, filterName, extensions, contents: text, contentsB64 });
     notify(path ? `Saved to ${path}` : "Export cancelled.");
     return path;
   } catch (err) {
@@ -2675,6 +2678,40 @@ function responseCopyText() {
   return response.body;
 }
 
+/* Save response: text bodies save exactly as received; binary ones arrive
+   base64-encoded in body_b64 and decode to the original bytes (see main.rs). */
+const RESPONSE_EXTENSIONS = [
+  ["application/json", "json"], ["text/html", "html"], ["application/xml", "xml"],
+  ["text/xml", "xml"], ["text/plain", "txt"], ["image/png", "png"], ["image/jpeg", "jpg"],
+  ["application/pdf", "pdf"], ["application/octet-stream", "bin"],
+];
+
+async function saveResponse() {
+  const response = effectiveResponse();
+  if (!response || response.error) return;
+  let base = "response";
+  try {
+    const last = new URL(activeReq()?.url ?? "").pathname.split("/").filter(Boolean).at(-1)?.replace(/[^\w.-]+/g, "_");
+    if (last) base = last;
+  } catch { /* a relative or malformed URL keeps the default name */ }
+  const type = (response.headers ?? []).find((h) => h.key.toLowerCase() === "content-type")?.value.toLowerCase() ?? "";
+  const mime = type.split(";")[0].trim();
+  const ext = RESPONSE_EXTENSIONS.find(([m]) => m === mime)?.[1] ?? "txt";
+  const extensions = [...new Set(RESPONSE_EXTENSIONS.map(([, e]) => e))];
+  const path = await saveExport(
+    `${base}.${ext}`,
+    response.body,
+    "Response",
+    extensions,
+    mime || "application/octet-stream",
+    response.body_b64 ?? null,
+  );
+  if (!path) return;
+  notify(response.truncated
+    ? `Saved to ${path} (the response was truncated by the size cap — the file holds what arrived)`
+    : `Saved to ${path}`);
+}
+
 let lastRenderedResponse;
 
 /* The response stage shows a designed idle/error card instead of an empty void.
@@ -2739,6 +2776,7 @@ function renderResponse() {
     $("#res-headers table").tBodies[0].innerHTML = "";
     $("#res-headers-count").textContent = "";
     $("#copy-res").hidden = true;
+    $("#save-res").hidden = true;
     renderTests([]);
     renderPreview();
     syncResStage();
@@ -2751,6 +2789,7 @@ function renderResponse() {
     $("#time").textContent = `${response.elapsed_ms} ms`;
     $("#size").textContent = "";
     $("#copy-res").hidden = true;
+    $("#save-res").hidden = true;
     renderPretty(null);
     $("#raw").textContent = "";
     $("#res-headers table").tBodies[0].innerHTML = "";
@@ -2760,6 +2799,7 @@ function renderResponse() {
     return;
   }
   $("#copy-res").hidden = false;
+  $("#save-res").hidden = false;
   const group =
     response.status >= 500 ? "server" : response.status >= 400 ? "client" : response.status >= 300 ? "redirect" : "ok";
   pill.className = `pill ${group}`;
@@ -3613,6 +3653,7 @@ $("#example-exit").addEventListener("click", () => {
 
 $("#json-collapse-all").addEventListener("click", () => jtBulk(false));
 $("#json-expand-all").addEventListener("click", () => jtBulk(true));
+$("#save-res").addEventListener("click", () => void saveResponse());
 
 /* ---------------------------------------------------------- response find bar */
 

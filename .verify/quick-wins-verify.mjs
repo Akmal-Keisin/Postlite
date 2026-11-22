@@ -269,6 +269,74 @@ try {
     return ok;
   });
 
+  // --- Task 5: save response to file -------------------------------------------
+  // The fetch-IPC seam captures save_export_file calls without native dialogs
+  // (same pattern tier1-verify uses for Tauri's non-writable invoke).
+  await evaluate(`(() => {
+    if (window.__qwSeam) return true;
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.endsWith('/save_export_file')) {
+        const args = JSON.parse(init.body);
+        window.__qwSaves = window.__qwSaves || [];
+        window.__qwSaves.push(args);
+        return Promise.resolve(new Response(JSON.stringify('C:/exports/' + args.defaultName), { status: 200, headers: { 'content-type': 'application/json', 'Tauri-Response': 'ok' } }));
+      }
+      return originalFetch(input, init);
+    };
+    window.__qwSeam = true;
+    return true;
+  })()`);
+  const sendTo = (url) => evaluate(`(async () => {
+    __verify.state.collections[0].items[0].url = ${JSON.stringify('http://127.0.0.1:8100')} + ${JSON.stringify(url)};
+    await __verify.send();
+    return true;
+  })()`);
+  const clickSave = () => evaluate(`(() => { window.__qwSaves = []; document.querySelector('#save-res').click(); return true })()`);
+  await check('text response saves its exact body with a derived name', async () => {
+    await sendTo('/api/echo?n=1');
+    await clickSave();
+    return await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 60));
+      const args = window.__qwSaves.at(-1);
+      const body = __verify.state.tabs[0].response.body;
+      return Boolean(args) && args.contents === body && args.contentsB64 === null && args.defaultName === 'echo.json';
+    })()`);
+  });
+  await check('binary response saves byte-faithful via base64', async () => {
+    await sendTo('/api/bin');
+    await clickSave();
+    return await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 60));
+      const args = window.__qwSaves.at(-1);
+      if (!args || !args.contentsB64) return false;
+      const bytes = Uint8Array.from(atob(args.contentsB64), c => c.charCodeAt(0));
+      const expected = [80, 75, 3, 4, 255, 0, 254, 128, 1];
+      return args.defaultName === 'bin.bin' && bytes.length === 9 && expected.every((b, i) => bytes[i] === b);
+    })()`);
+  });
+  await check('truncated saves carry a truncation warning', async () => {
+    await evaluate(`(() => { __verify.state.settings.response.maxResponseSizeKB = 1; __verify.applyAppSettings(); return true })()`);
+    await sendTo('/api/large');
+    const truncated = await evaluate(`__verify.state.tabs[0].response.truncated === true`);
+    await clickSave();
+    const note = await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 60));
+      return document.querySelector('#tool-note').textContent;
+    })()`);
+    await evaluate(`(() => { __verify.state.settings.response.maxResponseSizeKB = 2000; __verify.applyAppSettings(); return true })()`);
+    return truncated && note.includes('truncated');
+  });
+  await check('unknown content types fall back to .txt names', async () => {
+    await sendTo('/api/large');
+    await clickSave();
+    return await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 60));
+      return window.__qwSaves.at(-1).defaultName === 'large.txt';
+    })()`);
+  });
+
   console.log(`\n${results.length} checks passed`);
 } catch (err) {
   console.error(`FAIL ${err.message}`);

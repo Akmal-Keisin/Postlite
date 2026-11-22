@@ -39,6 +39,13 @@ const handler = (req, res) => {
     return;
   }
   if (url.pathname === "/api/large") { res.end("x".repeat(4096)); return; }
+  // Binary fixture: ZIP-ish magic plus bytes that are invalid UTF-8, for the
+  // byte-faithful save path (body_b64).
+  if (url.pathname === "/api/bin") {
+    res.writeHead(200, { "content-type": "application/octet-stream", "content-length": "9" });
+    res.end(Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xff, 0x00, 0xfe, 0x80, 0x01]));
+    return;
+  }
   if (url.pathname === "/api/slow") { setTimeout(() => res.end("slow"), 250); return; }
   // Cookie jar fixtures (Tier 2B P7/P9). /set plants a basket exercising the session/persistent
   // split, an expired delete, Secure, HttpOnly and SameSite; ?stage=seed first plants a cookie the

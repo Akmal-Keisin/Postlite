@@ -126,6 +126,10 @@ struct ResponsePayload {
     status_text: String,
     headers: Vec<HeaderPair>,
     body: String,
+    /// Base64 of the capped body when it is not valid UTF-8 (binary content);
+    /// `None` for text bodies, where `body` already is the exact bytes. Save
+    /// response writes this so binary files survive the IPC round-trip.
+    body_b64: Option<String>,
     truncated: bool,
     elapsed_ms: u128,
     size_bytes: usize,
@@ -385,6 +389,7 @@ async fn run_request(request: RequestPayload, ctx: &Ctx) -> ResponsePayload {
         status_text: String::new(),
         headers: Vec::new(),
         body: String::new(),
+        body_b64: None,
         truncated: false,
         elapsed_ms: 0,
         size_bytes: 0,
@@ -522,12 +527,19 @@ async fn run_request(request: RequestPayload, ctx: &Ctx) -> ResponsePayload {
     let truncated = size_bytes > max_body_bytes;
     let slice = &bytes[..size_bytes.min(max_body_bytes)];
     let body = String::from_utf8_lossy(slice).to_string();
+    // Text bodies are exact in `body` (lossy of valid UTF-8 is identity); only
+    // binary content needs the base64 escape hatch for byte-faithful saves.
+    let body_b64 = match std::str::from_utf8(slice) {
+        Ok(_) => None,
+        Err(_) => Some(b64_encode(slice)),
+    };
 
     ResponsePayload {
         status: status.as_u16(),
         status_text: status.canonical_reason().unwrap_or_default().to_string(),
         headers,
         body,
+        body_b64,
         truncated,
         elapsed_ms: started.elapsed().as_millis(),
         size_bytes,
@@ -539,6 +551,59 @@ async fn run_request(request: RequestPayload, ctx: &Ctx) -> ResponsePayload {
 fn with_error(mut response: ResponsePayload, error: String) -> ResponsePayload {
     response.error = Some(error);
     response
+}
+
+/// Minimal base64 (RFC 4648, standard alphabet with padding) for byte-faithful
+/// response bodies over the JSON IPC and binary saves. Hand-rolled so the
+/// dependency list stays untouched.
+fn b64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        let n = (u32::from(chunk[0]) << 16) | (u32::from(second) << 8) | u32::from(third);
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { TABLE[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+fn b64_decode(text: &str) -> Result<Vec<u8>, String> {
+    fn value(byte: u8) -> Result<u32, String> {
+        match byte {
+            b'A'..=b'Z' => Ok(u32::from(byte - b'A')),
+            b'a'..=b'z' => Ok(u32::from(byte - b'a' + 26)),
+            b'0'..=b'9' => Ok(u32::from(byte - b'0' + 52)),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err(format!("invalid base64 byte {byte}")),
+        }
+    }
+    let text = text.trim();
+    // Up to two padding characters are allowed; anything else must be data.
+    let stripped = text.strip_suffix('=').unwrap_or(text);
+    let stripped = stripped.strip_suffix('=').unwrap_or(stripped);
+    if text.len() - stripped.len() != text.chars().filter(|c| *c == '=').count() {
+        return Err("base64 padding only allowed at the end".to_string());
+    }
+    let mut out = Vec::with_capacity(stripped.len() * 3 / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for byte in stripped.bytes() {
+        buffer = (buffer << 6) | value(byte)?;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    if bits >= 6 {
+        return Err("truncated base64 payload".to_string());
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -667,6 +732,7 @@ async fn save_export_file(
     filter_name: String,
     extensions: Vec<String>,
     contents: String,
+    contents_b64: Option<String>,
 ) -> Result<Option<String>, String> {
     let mut dialog = rfd::AsyncFileDialog::new()
         .set_title("Export from postlite")
@@ -678,8 +744,14 @@ async fn save_export_file(
         return Ok(None);
     };
     let path = export_path(handle.path().to_path_buf(), &extensions);
+    // Binary saves arrive base64-encoded (response bodies that are not valid
+    // UTF-8); everything else is written as text exactly as handed over.
+    let payload: Vec<u8> = match contents_b64.as_deref() {
+        Some(b64) => b64_decode(b64)?,
+        None => contents.into_bytes(),
+    };
     let target = path.clone();
-    tauri::async_runtime::spawn_blocking(move || std::fs::write(&target, contents.as_bytes()))
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(&target, payload))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("could not write the export: {e}"))?;
@@ -765,10 +837,12 @@ mod tests {
     }
 
     // Loopback only; the test binary never starts Tauri or loads a workspace.
-    fn serve(response: String) -> (String, thread::JoinHandle<String>) {
+    // Accepts text or raw bytes so binary-body tests can serve exact payloads.
+    fn serve(response: impl Into<Vec<u8>> + Send + 'static) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/", listener.local_addr().unwrap());
         let handle = thread::spawn(move || {
+            let response = response.into();
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
@@ -783,10 +857,60 @@ mod tests {
                 assert_ne!(count, 0, "connection closed before request headers");
                 received.extend_from_slice(&buffer[..count]);
             }
-            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(&response).unwrap();
             String::from_utf8(received).unwrap()
         });
         (url, handle)
+    }
+
+    #[test]
+    fn b64_roundtrip_covers_edge_lengths() {
+        // Deterministic xorshift bytes over every length 0..=16 covers the
+        // chunk-boundary cases (0, 1, 2 mod 3) of the encoder.
+        let mut seed = 0x9E37_79B9u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        for len in 0..=16usize {
+            let data: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+            assert_eq!(b64_decode(&b64_encode(&data)).unwrap(), data);
+        }
+        assert_eq!(b64_encode(b"foobar"), "Zm9vYmFy");
+        assert_eq!(b64_decode("Zm9vYmFy").unwrap(), b"foobar");
+    }
+
+    #[test]
+    fn b64_decode_rejects_bad_payloads() {
+        assert!(b64_decode("A").is_err()); // leftover bits, not a full byte
+        assert!(b64_decode("AB!C").is_err()); // invalid character
+        assert!(b64_decode("AB=CD").is_err()); // padding in the middle
+    }
+
+    #[tokio::test]
+    async fn binary_bodies_carry_base64_and_text_bodies_do_not() {
+        let bytes: Vec<u8> = vec![0x50, 0x4b, 0x03, 0x04, 0xff, 0x00, 0xfe, 0x80, 0x01];
+        let head = b"HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: 9\r\n\r\n";
+        let mut raw = head.to_vec();
+        raw.extend(bytes.iter().copied());
+        let (url, server) = serve(raw);
+        let mut payload = request();
+        payload.url = url;
+        let response = run_request(payload, &Ctx::no_jar()).await;
+        server.join().unwrap();
+        let body_b64 = response.body_b64.expect("binary body must carry base64");
+        assert_eq!(b64_decode(&body_b64).unwrap(), bytes);
+        assert!(response.body.contains('\u{FFFD}')); // the lossy view still renders
+
+        let (url, server) = serve("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 5\r\n\r\nhello".to_string());
+        let mut payload = request();
+        payload.url = url;
+        let response = run_request(payload, &Ctx::no_jar()).await;
+        server.join().unwrap();
+        assert_eq!(response.body, "hello");
+        assert_eq!(response.body_b64, None);
     }
 
     #[test]
@@ -897,7 +1021,7 @@ mod tests {
     async fn disable_cache_replaces_all_existing_values_only_when_enabled() {
         for disable_cache in [false, true] {
             let (url, server) =
-                serve("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".into());
+                serve("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
             let mut payload = request();
             payload.url = url;
             payload.settings = Some(HttpSettings {
@@ -945,7 +1069,7 @@ mod tests {
     async fn redirects_respect_follow_flag_and_zero_limit() {
         for follow_redirects in [false, true] {
             let (url, server) = serve(
-                "HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+                "HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             );
             let mut payload = request();
             payload.url = url;
@@ -1000,7 +1124,7 @@ mod tests {
             }),
         ] {
             let (destination, final_server) = serve(
-                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".into(),
+                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
             );
             let (url, redirect_server) = serve(format!(
                 "HTTP/1.1 302 Found\r\nLocation: {destination}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -1136,7 +1260,7 @@ mod tests {
     #[tokio::test]
     async fn a_manual_proxy_receives_the_request_and_its_credentials() {
         let (proxy_url, proxy_server) = serve(
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".into(),
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
         );
         let mut payload = request();
         // A target that is never resolved: the proxy intercepts it.
@@ -1164,7 +1288,7 @@ mod tests {
     #[tokio::test]
     async fn a_bypassed_host_goes_direct_not_through_the_proxy() {
         let (target_url, target_server) = serve(
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".into(),
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
         );
         let proxy_listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let proxy_url = format!("http://{}/", proxy_listener.local_addr().unwrap());
@@ -1188,7 +1312,7 @@ mod tests {
     #[tokio::test]
     async fn environment_prefers_uppercase_scheme_var_over_lowercase_and_all() {
         let (upper_url, upper_server) = serve(
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".into(),
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
         );
         let lower = TcpListener::bind("127.0.0.1:0").unwrap();
         lower.set_nonblocking(true).unwrap();
@@ -1294,7 +1418,7 @@ mod tests {
     #[tokio::test]
     async fn an_attached_jar_replays_on_the_wire_and_no_jar_sends_nothing() {
         for attach_jar in [false, true] {
-            let (url, server) = serve("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".into());
+            let (url, server) = serve("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
             let mut payload = request();
             payload.url = url;
             let ctx = Ctx {
@@ -1318,7 +1442,7 @@ mod tests {
     async fn a_response_set_cookie_lands_in_the_attached_jar() {
         let jar = memory_jar();
         let (url, server) = serve(
-            "HTTP/1.1 204 No Content\r\nSet-Cookie: theme=dark; Path=/; Max-Age=60\r\nConnection: close\r\n\r\n".into(),
+            "HTTP/1.1 204 No Content\r\nSet-Cookie: theme=dark; Path=/; Max-Age=60\r\nConnection: close\r\n\r\n"
         );
         let mut payload = request();
         payload.url = url;
