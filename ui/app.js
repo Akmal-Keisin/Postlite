@@ -13,6 +13,7 @@ const AUTH_LABELS = {
   apikey: "API key",
   bearer: "Bearer token",
   basic: "Basic auth",
+  oauth2: "OAuth 2.0",
 };
 
 const SECRET_MASK = "••••••••";
@@ -74,6 +75,17 @@ function normAuth(raw, fallbackType) {
     bearer: { token: src.bearer?.token ?? "" },
     basic: { username: src.basic?.username ?? "", password: src.basic?.password ?? "" },
     apikey: { key: src.apikey?.key ?? "", value: src.apikey?.value ?? "", addTo: src.apikey?.addTo ?? "header" },
+    // The client secret never lives here — it is held per auth node in the OS
+    // keyring and read server-side at token fetch (see main.rs oauth2).
+    oauth2: {
+      grantType: src.oauth2?.grantType ?? "client_credentials",
+      authorizeUrl: src.oauth2?.authorizeUrl ?? "",
+      tokenUrl: src.oauth2?.tokenUrl ?? "",
+      clientId: src.oauth2?.clientId ?? "",
+      scope: src.oauth2?.scope ?? "",
+      clientAuthIn: src.oauth2?.clientAuthIn ?? "body",
+      redirectPort: src.oauth2?.redirectPort ?? "",
+    },
   };
 }
 
@@ -358,6 +370,16 @@ function resolveAuth(req, parents) {
   return normAuth(null, "noauth");
 }
 
+// The id of the node whose auth object is in effect — the keyring key for the
+// oauth2 client secret and the cache owner.
+function resolveAuthOwner(req, parents) {
+  if (req.auth.type !== "inherit") return req.id;
+  for (const node of [...parents].reverse()) {
+    if (node.auth && node.auth.type !== "inherit") return node.id;
+  }
+  return req.id;
+}
+
 // Send-time dynamic tokens. They resolve only when the vars are marked as on
 // the wire (executeRequest sets vars.onWire), so generated code, cURL and copy
 // paths built from the same pipeline keep the tokens literal.
@@ -384,6 +406,12 @@ const base64 = (text) => {
 
 function authHeaders(auth, vars) {
   const value = (text) => interpolate(text, vars);
+  if (auth.type === "oauth2") {
+    // Exports and codegen embed the cached token when one exists; the send
+    // path acquires/refreshes before this runs (see executeRequest).
+    const token = oauth2Cache.get(oauth2CacheKey(auth))?.token;
+    return token ? [{ key: "Authorization", value: `Bearer ${token}` }] : [];
+  }
   if (auth.type === "bearer" && value(auth.bearer.token)) {
     return [{ key: "Authorization", value: `Bearer ${value(auth.bearer.token)}` }];
   }
@@ -2293,7 +2321,7 @@ function renderRequest() {
   $("#params-count").textContent = paramsBadge(req) || "";
   $("#headers-count").textContent = req.headers.filter((h) => h.enabled && h.key).length || "";
   renderBody(req);
-  renderAuth($("#req-auth-type"), $("#req-auth-fields"), req.auth, true);
+  renderAuth($("#req-auth-type"), $("#req-auth-fields"), req.auth, true, req.id);
   $("#req-pre").value = req.scripts.pre;
   $("#req-test").value = req.scripts.test;
 }
@@ -2355,7 +2383,7 @@ function renderPathVars(req) {
 }
 
 const authOptions = (includeInherit) =>
-  (includeInherit ? ["inherit", "noauth", "apikey", "bearer", "basic"] : ["noauth", "apikey", "bearer", "basic"])
+  (includeInherit ? ["inherit", "noauth", "apikey", "bearer", "basic", "oauth2"] : ["noauth", "apikey", "bearer", "basic", "oauth2"])
     .map((type) => `<option value="${type}">${AUTH_LABELS[type]}</option>`)
     .join("");
 
@@ -2366,7 +2394,7 @@ const authSecretField = (label, a, k, value) => {
   return `<label class="field"><span>${label}</span><div class="auth-value"><input type="${masked ? "password" : "text"}" data-a="${a}" data-k="${k}" value="${esc(value)}" spellcheck="false" /><button class="icon-btn auth-eye" type="button" data-act="reveal-auth" aria-pressed="false" title="Reveal value" aria-label="Toggle ${label} visibility" ${masked ? "" : "hidden"}>${icon("eye")}</button></div></label>`;
 };
 
-function authFieldsMarkup(auth) {
+function authFieldsMarkup(auth, ownerId) {
   if (auth.type === "bearer")
     return authSecretField("Token", "bearer", "token", auth.bearer.token);
   if (auth.type === "basic")
@@ -2383,15 +2411,65 @@ function authFieldsMarkup(auth) {
           <option value="query"${auth.apikey.addTo === "query" ? " selected" : ""}>query parameter</option>
         </select>
       </label>`;
+  if (auth.type === "oauth2") {
+    const o = auth.oauth2;
+    const isCode = o.grantType === "authorization_code";
+    const port = Number(o.redirectPort) || 0;
+    const redirectUri = `http://127.0.0.1:${port || "<random>"}/callback`;
+    const textField = (label, key, value) =>
+      `<label class="field"><span>${label}</span><input type="text" data-a="oauth2" data-k="${key}" value="${esc(value)}" spellcheck="false" /></label>`;
+    return `
+      <label class="field"><span>Grant</span>
+        <select data-a="oauth2" data-k="grantType">
+          <option value="client_credentials"${o.grantType === "client_credentials" ? " selected" : ""}>client credentials</option>
+          <option value="authorization_code"${isCode ? " selected" : ""}>authorization code (+PKCE)</option>
+        </select>
+      </label>
+      ${isCode ? textField("Authorize URL", "authorizeUrl", o.authorizeUrl) : ""}
+      ${textField("Token URL", "tokenUrl", o.tokenUrl)}
+      ${textField("Client ID", "clientId", o.clientId)}
+      <label class="field"><span>Client secret</span><input type="password" data-oauth-secret value="${esc(oauth2Secrets.get(ownerId) ?? "")}" spellcheck="false" placeholder="stored in the OS keyring" /></label>
+      ${textField("Scope", "scope", o.scope)}
+      <label class="field"><span>Client authentication</span>
+        <select data-a="oauth2" data-k="clientAuthIn">
+          <option value="body"${o.clientAuthIn !== "basic" ? " selected" : ""}>request body</option>
+          <option value="basic"${o.clientAuthIn === "basic" ? " selected" : ""}>HTTP Basic header</option>
+        </select>
+      </label>
+      ${isCode ? `<label class="field"><span>Redirect port (0 = random)</span><input type="text" data-a="oauth2" data-k="redirectPort" value="${esc(o.redirectPort)}" spellcheck="false" /></label>
+      <p class="hint">Redirect URI to register with the provider: <code id="oauth2-redirect">${esc(redirectUri)}</code></p>` : ""}
+      <div class="oauth2-actions">
+        <button type="button" class="tool" data-oauth-get>${isCode ? "Authorize" : "Get token"}</button>
+        <span class="oauth2-status"></span>
+      </div>`;
+  }
   if (auth.type === "inherit")
     return `<p class="hint">Uses the auth configured on the parent folder or collection.</p>`;
   return `<p class="hint">Requests at this level are sent without authorization.</p>`;
 }
 
-function renderAuth(select, host, auth, includeInherit) {
+const oauth2Secrets = new Map(); // nodeId -> last-known secret (display only)
+
+function renderAuth(select, host, auth, includeInherit, ownerId) {
   select.innerHTML = authOptions(includeInherit);
   select.value = auth.type;
-  host.innerHTML = authFieldsMarkup(auth);
+  host.innerHTML = authFieldsMarkup(auth, ownerId);
+  if (auth.type === "oauth2") loadOAuth2SecretInto(host, ownerId);
+}
+
+// The client secret lives in the keyring, not in the auth object — load it
+// into the editor field after the oauth2 markup renders.
+async function loadOAuth2SecretInto(host, ownerId) {
+  if (!ownerId) return;
+  try {
+    const secret = await invoke("oauth2_secret_get", { nodeId: ownerId });
+    if (secret !== null && secret !== undefined) oauth2Secrets.set(ownerId, secret);
+    const field = host.querySelector("[data-oauth-secret]");
+    if (field && secret !== null && secret !== undefined) field.value = secret;
+  } catch (err) {
+    const status = host.querySelector(".oauth2-status");
+    if (status) status.textContent = `oauth2: ${String(err?.message ?? err)}`;
+  }
 }
 
 // A collection/folder shows its settings when selected in the sidebar; an
@@ -2430,7 +2508,7 @@ function renderSettings() {
   $("#settings-kind").textContent = kind;
   $("#settings-title").textContent = node.name;
   if (!isEnv) {
-    renderAuth($("#node-auth-type"), $("#node-auth-fields"), node.auth, kind === "folder");
+    renderAuth($("#node-auth-type"), $("#node-auth-fields"), node.auth, kind === "folder", node.id);
     $("#node-pre").value = node.scripts.pre;
     $("#node-test").value = node.scripts.test;
   }
@@ -2924,6 +3002,86 @@ function exportTarget(req) {
 // Shared send core for manual Send and the collection runner. No tab, button
 // or response-pane side effects; pm.environment write-through inside scripts
 // is intentional and identical to manual sends (see collection-runner spec).
+const oauth2Cache = new Map(); // config identity -> { token, expiresAt, refreshToken, redirectUri, codeVerifier }
+
+const oauth2CacheKey = (auth) =>
+  `${auth.oauth2.grantType}|${auth.oauth2.tokenUrl}|${auth.oauth2.clientId}|${auth.oauth2.scope}`;
+
+async function acquireOAuth2Token(nodeId, auth) {
+  const key = oauth2CacheKey(auth);
+  const o = auth.oauth2;
+  const cached = oauth2Cache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached;
+  // An expired authorization-code token refreshes via its refresh token and
+  // falls back to full re-auth when the refresh grant fails.
+  const refresh = cached?.refreshToken && o.grantType === "authorization_code";
+  const config = {
+    nodeId,
+    grantType: refresh ? "refresh_token" : o.grantType,
+    tokenUrl: o.tokenUrl,
+    clientId: o.clientId,
+    scope: o.scope,
+    clientAuthIn: o.clientAuthIn || "body",
+    redirectUri: cached?.redirectUri ?? "",
+    code: cached?.pendingCode ?? "",
+    codeVerifier: cached?.codeVerifier ?? "",
+    refreshToken: refresh ? cached.refreshToken : "",
+  };
+  const pending = oauth2Pending.get(nodeId);
+  if (!refresh && o.grantType === "authorization_code" && pending?.code) {
+    config.grantType = "authorization_code";
+    config.code = pending.code;
+    config.codeVerifier = pending.verifier;
+    config.redirectUri = pending.redirectUri;
+    oauth2Pending.delete(nodeId);
+  }
+  const token = await invoke("oauth2_token", { config });
+  const entry = {
+    token: token.accessToken,
+    redirectUri: cached?.redirectUri ?? "",
+    codeVerifier: cached?.codeVerifier ?? "",
+    expiresAt: token.expiresIn ? Date.now() + Math.max(0, token.expiresIn - 60) * 1000 : Number.MAX_SAFE_INTEGER,
+    refreshToken: token.refreshToken ?? cached?.refreshToken ?? null,
+  };
+  oauth2Cache.set(key, entry);
+  return entry;
+}
+
+const oauth2Pending = new Map(); // nodeId -> { code, verifier, redirectUri }
+
+const base64urlFromBytes = (bytes) =>
+  btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+// Authorization code + PKCE: bind the loopback listener, open the provider,
+// capture code+state (validated), then exchange with the verifier.
+async function oauth2AuthorizeFlow(nodeId, auth, status) {
+  const o = auth.oauth2;
+  status.textContent = "Binding the loopback port…";
+  const begin = await invoke("oauth2_authorize_begin", { port: Number(o.redirectPort) || 0 });
+  const verifier = base64urlFromBytes(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = base64urlFromBytes(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  const state = base64urlFromBytes(crypto.getRandomValues(new Uint8Array(16)));
+  oauth2Pending.set(nodeId, { verifier, redirectUri: begin.redirectUri });
+  const authorizeUrl = `${o.authorizeUrl}${o.authorizeUrl.includes("?") ? "&" : "?"}response_type=code&client_id=${encodeURIComponent(o.clientId)}&redirect_uri=${encodeURIComponent(begin.redirectUri)}&scope=${encodeURIComponent(o.scope)}&state=${encodeURIComponent(state)}&code_challenge=${challenge}&code_challenge_method=S256`;
+  status.textContent = `Waiting for the redirect on ${begin.redirectUri} …`;
+  await invoke("open_in_browser", { url: authorizeUrl });
+  try {
+    const captured = await invoke("oauth2_authorize_await");
+    const [, returnedState] = captured;
+    if (returnedState !== state) throw new Error("state mismatch — the redirect did not originate from this request");
+    const pending = oauth2Pending.get(nodeId);
+    oauth2Pending.set(nodeId, { ...pending, code: captured[0] });
+    status.textContent = "Exchanging the code…";
+    const entry = await acquireOAuth2Token(nodeId, auth);
+    status.textContent = "Token acquired.";
+    return entry;
+  } catch (err) {
+    oauth2Pending.delete(nodeId);
+    await invoke("oauth2_authorize_cancel").catch(() => {});
+    throw err;
+  }
+}
+
 async function executeRequest(req, data = null) {
   const results = [];
   const limitKB = state.settings.response.maxResponseSizeKB;
@@ -2940,13 +3098,29 @@ async function executeRequest(req, data = null) {
     if (!vars.has(key)) vars.set(key, String(value));
   }
 
+  // OAuth 2.0: acquire or refresh before anything hits the wire; a failure
+  // fails the send with a distinct error and never proceeds unauthenticated.
+  let effectiveAuth = auth;
+  if (auth.type === "oauth2") {
+    try {
+      const entry = await acquireOAuth2Token(resolveAuthOwner(req, parents), auth);
+      effectiveAuth = normAuth({ type: "bearer", bearer: { token: entry.token } }, "noauth");
+    } catch (err) {
+      // The send fails without touching the wire, but the failed entry still
+      // lands in history (roadmap design call).
+      const failure = { response: { error: `oauth2: ${String(err?.message ?? err)}`, elapsed_ms: 0 }, results, limitKB };
+      recordHistory(req, failure.response);
+      return failure;
+    }
+  }
+
   // ancestors run first so a folder can prepare what its requests consume
   const environment = buildEnvironmentApi(parents[0], vars);
   const collectionVariables = buildCollectionVariablesApi(parents[0], vars);
   const prePm = () => buildPm({ vars, request: prepared, results, environment, collectionVariables, data: data ?? null });
   for (const node of parents) runScript(node.scripts?.pre, prePm(), node.name, results);
   runScript(req.scripts.pre, prePm(), req.name, results);
-  finalizePrepared(prepared, auth, vars);
+  finalizePrepared(prepared, effectiveAuth, vars);
 
   const settings = state.settings;
   let response;
@@ -2954,7 +3128,7 @@ async function executeRequest(req, data = null) {
     response = await invoke("http_send", {
       request: {
         method: prepared.method,
-        url: effectiveUrl(prepared, auth, vars),
+        url: effectiveUrl(prepared, effectiveAuth, vars),
         headers: prepared.headers,
         body: prepared.body,
         form: prepared.form,
@@ -4777,15 +4951,49 @@ $("#env-new").addEventListener("click", () => {
   openCreateDialog("environment");
 });
 
-function wireAuthControls(selectSel, fieldsSel, readAuth) {
+function wireAuthControls(selectSel, fieldsSel, readAuth, readOwnerId = null) {
   const select = $(selectSel);
   const host = $(fieldsSel);
   select.addEventListener("change", () => {
     const auth = readAuth();
     if (!auth) return;
     auth.type = select.value;
-    host.innerHTML = authFieldsMarkup(auth);
+    host.innerHTML = authFieldsMarkup(auth, readOwnerId?.());
+    if (auth.type === "oauth2") loadOAuth2SecretInto(host, readOwnerId?.());
     persist();
+  });
+  host.addEventListener("input", (event) => {
+    const el = event.target;
+    if (!el.matches("[data-oauth-secret]")) return;
+    const owner = readOwnerId?.();
+    if (!owner) return;
+    oauth2Secrets.set(owner, el.value);
+    invoke("oauth2_secret_set", { nodeId: owner, secret: el.value }).catch((err) => showError(String(err)));
+  });
+  host.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-oauth-get]");
+    if (!button) return;
+    const owner = readOwnerId?.();
+    const auth = readAuth();
+    if (!auth || auth.type !== "oauth2" || !owner) return;
+    const status = host.querySelector(".oauth2-status");
+    if (!status) return;
+    status.textContent = auth.oauth2.grantType === "authorization_code"
+      ? "Opening the provider… waiting for the redirect."
+      : "Fetching token…";
+    void (async () => {
+      try {
+        const entry = auth.oauth2.grantType === "authorization_code"
+          ? await oauth2AuthorizeFlow(owner, auth, status)
+          : await acquireOAuth2Token(owner, auth);
+        const seconds = entry.expiresAt < Number.MAX_SAFE_INTEGER
+          ? Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000))
+          : null;
+        status.textContent = `Token acquired${seconds ? ` — expires in ${seconds}s` : ""}.`;
+      } catch (err) {
+        status.textContent = `oauth2: ${String(err?.message ?? err)}`;
+      }
+    })();
   });
   const write = (event) => {
     const el = event.target;
@@ -4798,8 +5006,8 @@ function wireAuthControls(selectSel, fieldsSel, readAuth) {
   host.addEventListener("change", write);
 }
 
-wireAuthControls("#req-auth-type", "#req-auth-fields", () => activeReq()?.auth);
-wireAuthControls("#node-auth-type", "#node-auth-fields", () => settingsNode()?.auth);
+wireAuthControls("#req-auth-type", "#req-auth-fields", () => activeReq()?.auth, () => activeReq()?.id);
+wireAuthControls("#node-auth-type", "#node-auth-fields", () => settingsNode()?.auth, () => settingsNode()?.id);
 
 // One reveal affordance for every masked editable surface (header grid rows, Auth fields).
 // Reveal is per-row and not sticky: the next renderRows/renderAuth rebuilds it masked.

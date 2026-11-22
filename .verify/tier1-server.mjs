@@ -28,6 +28,63 @@ const handler = (req, res) => {
     res.end(JSON.stringify({ ok: true, count: items.length, items }));
     return;
   }
+  // OAuth fixtures: /api/oauth/token validates client credentials (basic or
+  // body auth) and issues a token; /api/oauth/authorize redirects to the
+  // loopback capture with code+state; /api/oauth/hits reports how many times
+  // the token endpoint was hit (cache-reuse proof).
+  if (url.pathname === "/api/oauth/hits") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ hits: globalThis.__oauthTokenHits ?? 0 }));
+    return;
+  }
+  if (url.pathname === "/api/oauth/token") {
+    globalThis.__oauthTokenHits = (globalThis.__oauthTokenHits ?? 0) + 1;
+    let raw = "";
+    req.on("data", (c) => { raw += c; });
+    req.on("end", () => {
+      // Both client credentials must be present and correct: basic auth carries
+      // cid:sekrit, body auth carries client_id + client_secret.
+      const basicOk = (req.headers.authorization ?? "") === "Basic " + Buffer.from("cid:sekrit").toString("base64");
+      let bodyId = "";
+      let bodySecret = "";
+      let grant = "";
+      let code = "";
+      for (const pair of raw.split("&")) {
+        const [k, v = ""] = pair.split("=");
+        if (k === "grant_type") grant = decodeURIComponent(v);
+        if (k === "client_id") bodyId = decodeURIComponent(v);
+        if (k === "client_secret") bodySecret = decodeURIComponent(v);
+        if (k === "code") code = decodeURIComponent(v);
+      }
+      const valid = basicOk || (bodyId === "cid" && bodySecret === "sekrit");
+      if (!valid) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid_client" }));
+        return;
+      }
+      if (grant === "authorization_code" && code !== "abc123") {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid_grant" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        access_token: grant === "refresh_token" ? "refreshed-tok" : "runner-token-123",
+        token_type: "Bearer",
+        expires_in: 3600,
+        refresh_token: "ref-9",
+      }));
+    });
+    return;
+  }
+  if (url.pathname === "/api/oauth/authorize") {
+    const target = url.searchParams.get("redirect_uri") ?? "";
+    const state = url.searchParams.get("state") ?? "";
+    const redirect = `${target}${target.includes("?") ? "&" : "?"}code=abc123&state=${encodeURIComponent(state)}`;
+    res.writeHead(302, { location: redirect });
+    res.end();
+    return;
+  }
   if (url.pathname === "/api/token") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ token: "runner-token-123" }));
