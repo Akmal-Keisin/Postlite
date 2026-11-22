@@ -16,6 +16,8 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
   - **Path variables**: `:product_slug`-style segments get their own **Path Variables** table. Values are substituted URL-encoded on send and in generated code / cURL, and round-trip through Postman's `url.variable`.
   - **File fields** round-trip through Postman's `formdata` `type: "file"` + `src`. Generated cURL uses `--form key=@path`.
   - **Responses**: status, latency, size, headers, and a pretty-printed JSON view with syntax highlighting. The body copies in one click.
+  - **Find in response**: `Ctrl+F` opens a find bar over the active body view (Pretty / Raw) with match count, next / prev, and highlight; searching a folded JSON tree expands it first. A new send or view change closes it.
+  - **Save response**: the response head's save button writes the body to a file via the native Save As dialog — text bodies save exactly as received, binary ones byte-faithfully (the send payload carries them base64-encoded). The default name comes from the URL path and Content-Type; a size-capped (truncated) response saves what arrived and says so.
   - **Collapsible JSON**: click any object or array line (or its caret) to fold it into a one-line summary with a key/item count. **Collapse all** / **Expand all** sit above the body. Huge arrays start folded, children render lazily, fold state survives tab switches, and the indent follows the JSON indent preference.
 
 - **Examples**: save any successful response as a named example (bookmark button in the response head).
@@ -35,6 +37,7 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
 - **Collections**: nested folders, create / rename / delete, save the active request into any folder, a filterable tree, expand / collapse, and a draggable sidebar.
   - **Reordering**: drag any collection, folder, or request by its row (a grip appears on hover, and a line marks the insertion point). Or use Alt+Up/Down on a focused row. Order persists at every level and stays correct while the tree is filtered.
   - **Rename**: right-click a request row (or its tab). The new name lands in the tree and every open tab at once.
+  - **Duplicate**: right-click a request, folder, or collection and pick Duplicate — a deep copy with fresh ids lands right after the source as "… copy". Open tabs are untouched.
   - **Tabs**: the tab strip scrolls horizontally when tabs overflow, with a thin scrollbar and wheel support, and keeps the active tab in view.
 
 - **History**: every send — manual or through the runner — lands in a per-workspace **History** panel (the third rail view). Rows carry method, name/URL, status, latency, and a relative time; consecutive identical sends collapse with a run count, and the list is capped at 100 entries. Clicking a row re-opens what was sent: saved requests select their existing tab, unsaved scratch sends restore a snapshot clone, deleted requests say so. The sidebar filter narrows rows, **Clear all** wipes the workspace's history after confirmation, and history survives restarts independent of the "restore last session" setting. History is excluded from backups.
@@ -42,6 +45,8 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
 - **Auth**: none / basic / bearer / API-key, set at request, folder, or collection level, with inheritance.
 
 - **Variables**: `{{token}}` interpolation with collection, folder, and environment scopes.
+  - **Dynamic variables**: `{{$guid}}`, `{{$timestamp}}`, `{{$isoTimestamp}}` and `{{$randomInt}}` (0–1000) resolve at send time only — generated code and cURL keep them literal. The peek overlay shows them with a *dynamic* scope.
+  - **`{{` autocomplete**: typing `{{` in the URL bar or body editor opens a dropdown of every variable in scope (highest-precedence scope chip, secret values masked) plus the dynamic tokens; filter as you type, ↑/↓ + Enter or click to insert, `Esc` closes.
   - Precedence: `collection < environment < folder`.
   - A peek overlay under the URL bar resolves each token and names the scope it came from.
   - Values can be flagged **secret** and are masked in the UI. Raw values are still sent.
@@ -237,6 +242,7 @@ These harnesses use a separate debug build, so they never touch a real workspace
 | `tier2c-dnd-verify.mjs` | drag & drop import, tree reordering | 52 |
 | `runner-verify.mjs` | collection runner: selection, ordering, env chaining, stop semantics, `pm.collectionVariables` | 43 |
 | `history-verify.mjs` | request history: model, recording, panel, click-through, backup exclusion | 24 |
+| `quick-wins-verify.mjs` | dynamic variables, `{{` autocomplete, duplication, response find bar, save response | 26 |
 
 `tier2b-verify` runs its own forward proxy on `127.0.0.1:8890` to prove manual-proxy routing and bypass on the wire. It uses the harness server's `/set` and `/echo` routes to inspect exactly which cookies were sent.
 
