@@ -137,6 +137,108 @@ try {
     return await evaluate(`document.querySelector("#error").textContent.includes("4")`);
   });
 
+  // --- Task 2: Hoppscotch import ------------------------------------------------
+  const hoppscotchDoc = () => [
+    { name: "Hoppscotch collection", folders: [
+      { name: "Hopp folder", folders: [], requests: [
+        { name: "Hopp inner", method: "put", endpoint: "http://127.0.0.1:8100/api/echo",
+          auth: { authType: "basic", username: "hu", password: "hp" },
+          headers: [{ key: "X-H", value: "1", active: false }], params: [{ key: "p", value: "1", active: true }],
+          body: { body: "contentType", contentType: "application/json", raw: '{"h":1}' } },
+      ]}],
+      requests: [
+        { name: "Hopp bearer", method: "GET", endpoint: "http://127.0.0.1:8100/api/echo",
+          auth: { authType: "bearer", token: "hop-tok" }, body: { body: "formURLEncoded", form: [{ key: "k", value: "v", active: true }] } },
+        { name: "Hopp apikey", method: "GET", endpoint: "http://127.0.0.1:8100/api/echo",
+          auth: { authType: "api-key", key: "X-Key", value: "kv", addTo: "query_params" }, body: { body: "formData", form: [{ key: "f", value: "fv" }] } },
+        { name: "Hopp weird", method: "GET", endpoint: "http://127.0.0.1:8100/api/echo",
+          auth: { authType: "aws-signature", accessKey: "a" }, body: { body: "gql" } },
+        { name: "Hopp legacy", method: "GET", endpoint: "http://127.0.0.1:8100/api/echo",
+          auth: { authType: "basic", httpUser: "lu", httpPassword: "lp" }, body: { body: "contentType", contentType: "text/plain", raw: "hello" } },
+      ],
+    },
+  ];
+  const hoppscotchEnvs = () => [
+    { name: "Hopp env rows", variables: [{ key: "alpha", value: "1" }] },
+    { name: "Hopp env map", variables: { beta: "2" } },
+  ];
+  await check('detection distinguishes Hoppscotch collections and keeps Postman first', `(() => {
+    const v = __verify;
+    return v.looksLikeHoppscotchCollections((${JSON.stringify(hoppscotchDoc())})) === true
+      && v.looksLikeHoppscotchEnvironments((${JSON.stringify(hoppscotchEnvs())})) === true;
+  })()`);
+  await check('collections import with nested folders, method, headers, params', async () => {
+    await evaluate(`(async () => {
+      const doc = ${JSON.stringify(hoppscotchDoc())};
+      await __verify.importDroppedFiles([new File([JSON.stringify(doc)], "hoppscotch.json", { type: "application/json" })]);
+      return true;
+    })()`);
+    return await evaluate(`(() => {
+      const v = __verify;
+      const c = v.state.collections.find(c => c.name === "Hoppscotch collection");
+      if (!c) return false;
+      const folder = c.items.find(i => i.kind === "folder" && i.name === "Hopp folder");
+      const inner = folder?.items.find(i => i.name === "Hopp inner");
+      return Boolean(inner) && inner.method === "PUT"
+        && inner.headers[0].key === "X-H" && inner.headers[0].enabled === false
+        && inner.params[0].key === "p" && inner.params[0].enabled === true;
+    })()`);
+  });
+  await check('auth maps basic/bearer/api-key with legacy spellings, unknown inherits', `(() => {
+    const v = __verify;
+    const c = v.state.collections.find(c => c.name === "Hoppscotch collection");
+    const inner = c.items.find(i => i.kind === "folder").items[0];
+    const bearer = c.items.find(i => i.name === "Hopp bearer");
+    const apikey = c.items.find(i => i.name === "Hopp apikey");
+    const weird = c.items.find(i => i.name === "Hopp weird");
+    const legacy = c.items.find(i => i.name === "Hopp legacy");
+    return inner.auth.type === "basic" && inner.auth.basic.username === "hu"
+      && bearer.auth.type === "bearer" && bearer.auth.bearer.token === "hop-tok"
+      && apikey.auth.type === "apikey" && apikey.auth.apikey.addTo === "query"
+      && weird.auth.type === "inherit" && legacy.auth.basic.username === "lu";
+  })()`);
+  await check('bodies map raw, urlencoded and formData; unknown variant skips the body only', `(() => {
+    const v = __verify;
+    const c = v.state.collections.find(c => c.name === "Hoppscotch collection");
+    const inner = c.items.find(i => i.kind === "folder").items[0];
+    const bearer = c.items.find(i => i.name === "Hopp bearer");
+    const apikey = c.items.find(i => i.name === "Hopp apikey");
+    const weird = c.items.find(i => i.name === "Hopp weird");
+    const legacy = c.items.find(i => i.name === "Hopp legacy");
+    return inner.body.mode === "raw" && inner.body.raw === '{"h":1}' && inner.body.contentType === "application/json"
+      && bearer.body.mode === "form-data" && bearer.body.form[0].key === "k"
+      && apikey.body.mode === "form-data" && apikey.body.form[0].key === "f"
+      && weird.body.mode === "none" && legacy.body.mode === "raw" && legacy.body.raw === "hello";
+  })()`);
+  await check('environment files import in both variable shapes', `(() => {
+    const v = __verify;
+    v.state.environments = []; v.render();
+    return (async () => {
+      const doc = ${JSON.stringify(hoppscotchEnvs())};
+      const file = new File([JSON.stringify(doc)], "hoppscotch-env.json", { type: "application/json" });
+      await __verify.importDroppedFiles([file]);
+      const names = v.state.environments.map(e => e.name);
+      const rows = v.state.environments.flatMap(e => e.variables.map(r => r.key + "=" + r.value));
+      return names.join(",") === "Hopp env rows,Hopp env map" && rows.join(",") === "alpha=1,beta=2";
+    })();
+  })()`);
+  await check('the Import menu file input routes Hoppscotch JSON too', async () => {
+    await evaluate(`(() => {
+      __verify.state.collections = []; __verify.render();
+      const doc = ${JSON.stringify(hoppscotchDoc())};
+      const dt = new DataTransfer();
+      dt.items.add(new File([JSON.stringify(doc)], "hoppscotch.json", { type: "application/json" }));
+      const input = document.querySelector("#import-file");
+      input.files = dt.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    })()`);
+    return await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 80));
+      return __verify.state.collections.some(c => c.name === "Hoppscotch collection");
+    })()`);
+  });
+
   console.log(`\n${results.length} checks passed`);
 } catch (err) {
   console.error(`FAIL ${err.message}`);

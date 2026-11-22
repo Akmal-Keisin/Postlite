@@ -5499,7 +5499,7 @@ function routeJsonImport(doc, label, added, failures) {
     added.environments += 1;
     return true;
   }
-  if (looksLikeInsomnia(doc)) {
+  if (doc?._type === "export" && Array.isArray(doc.resources)) {
     if (doc.__export_format !== 4) {
       failures.push(`${label}: Insomnia export format ${doc.__export_format} is unsupported — re-export with format 4`);
       return true;
