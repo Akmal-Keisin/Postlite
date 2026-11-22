@@ -16,7 +16,7 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
   - **Path variables**: `:product_slug`-style segments get their own **Path Variables** table. Values are substituted URL-encoded on send and in generated code / cURL, and round-trip through Postman's `url.variable`.
   - **File fields** round-trip through Postman's `formdata` `type: "file"` + `src`. Generated cURL uses `--form key=@path`.
   - **Responses**: status, latency, size, headers, and a pretty-printed JSON view with syntax highlighting. The body copies in one click.
-  - **Find in response**: `Ctrl+F` opens a find bar over the active body view (Pretty / Raw) with match count, next / prev, and highlight; searching a folded JSON tree expands it first. A new send or view change closes it.
+  - **Find in response**: `Ctrl+F` opens a find bar over the active body view (Pretty / Raw) with match count, next / prev, and highlight; searching a folded JSON tree expands it first. A new send or view change closes it. Matches wrap text runs, so a query crossing a syntax-highlighting boundary may only be findable in Raw view.
   - **Save response**: the response head's save button writes the body to a file via the native Save As dialog — text bodies save exactly as received, binary ones byte-faithfully (the send payload carries them base64-encoded). The default name comes from the URL path and Content-Type; a size-capped (truncated) response saves what arrived and says so.
   - **Collapsible JSON**: click any object or array line (or its caret) to fold it into a one-line summary with a key/item count. **Collapse all** / **Expand all** sit above the body. Huge arrays start folded, children render lazily, fold state survives tab switches, and the indent follows the JSON indent preference.
 
@@ -242,7 +242,7 @@ These harnesses use a separate debug build, so they never touch a real workspace
 | `tier2c-dnd-verify.mjs` | drag & drop import, tree reordering | 52 |
 | `runner-verify.mjs` | collection runner: selection, ordering, env chaining, stop semantics, `pm.collectionVariables` | 43 |
 | `history-verify.mjs` | request history: model, recording, panel, click-through, backup exclusion | 24 |
-| `quick-wins-verify.mjs` | dynamic variables, `{{` autocomplete, duplication, response find bar, save response | 26 |
+| `quick-wins-verify.mjs` | dynamic variables, `{{` autocomplete, duplication, response find bar, save response | 27 |
 
 `tier2b-verify` runs its own forward proxy on `127.0.0.1:8890` to prove manual-proxy routing and bypass on the wire. It uses the harness server's `/set` and `/echo` routes to inspect exactly which cookies were sent.
 

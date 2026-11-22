@@ -231,11 +231,12 @@ try {
     })()`);
   });
   await check('next and prev cycle the current match', async () => {
+    const total = await evaluate(`document.querySelectorAll('#raw mark.res-find-mark').length`);
     await evaluate(`document.querySelector('#res-find-next').click()`);
     const second = await evaluate(`document.querySelector('#res-find-count').textContent`);
     await evaluate(`document.querySelector('#res-find-prev').click()`);
     const back = await evaluate(`document.querySelector('#res-find-count').textContent`);
-    return second === '2 of 31' && back === '1 of 31';
+    return second === '2 of ' + total && back === '1 of ' + total;
   });
   await check('pretty view search expands folds and finds matches', async () => {
     if (!await openFindOn('pretty')) return false;
@@ -313,7 +314,9 @@ try {
       if (!args || !args.contentsB64) return false;
       const bytes = Uint8Array.from(atob(args.contentsB64), c => c.charCodeAt(0));
       const expected = [80, 75, 3, 4, 255, 0, 254, 128, 1];
-      return args.defaultName === 'bin.bin' && bytes.length === 9 && expected.every((b, i) => bytes[i] === b);
+      // Binary saves carry the body once: contents stays empty, base64 holds the bytes.
+      return args.defaultName === 'bin.bin' && args.contents === ''
+        && bytes.length === 9 && expected.every((b, i) => bytes[i] === b);
     })()`);
   });
   await check('truncated saves carry a truncation warning', async () => {
@@ -335,6 +338,13 @@ try {
       await new Promise(r => setTimeout(r, 60));
       return window.__qwSaves.at(-1).defaultName === 'large.txt';
     })()`);
+  });
+  await check('switching response views closes the find bar', async () => {
+    if (!await openFindOn('raw')) return false;
+    await findInput('row-1');
+    await evaluate(`document.querySelector('#res-tabs [data-tab="pretty"]').click()`);
+    return await evaluate(`document.querySelector('#res-find').hidden
+      && document.querySelectorAll('#pretty mark.res-find-mark').length === 0`);
   });
 
   console.log(`\n${results.length} checks passed`);

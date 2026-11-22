@@ -2698,9 +2698,11 @@ async function saveResponse() {
   const mime = type.split(";")[0].trim();
   const ext = RESPONSE_EXTENSIONS.find(([m]) => m === mime)?.[1] ?? "txt";
   const extensions = [...new Set(RESPONSE_EXTENSIONS.map(([, e]) => e))];
+  // Binary bodies travel base64-encoded; the lossy text twin is dead weight
+  // over the IPC, so it stays home.
   const path = await saveExport(
     `${base}.${ext}`,
-    response.body,
+    response.body_b64 ? "" : response.body,
     "Response",
     extensions,
     mime || "application/octet-stream",
@@ -3337,6 +3339,8 @@ function duplicateNode(id) {
   };
   walk(copy);
   copy.name = `${source.name} copy`;
+  // A fresh copy is not yet a favorite, even when its source is.
+  if (copy.favorite === true) copy.favorite = false;
   if (at !== -1) state.collections.splice(at + 1, 0, copy);
   else siblingArray(id).splice(siblingArray(id).indexOf(source) + 1, 0, copy);
   persist();
@@ -4385,6 +4389,9 @@ $("#settings-tabs").addEventListener("click", (event) => {
 $("#res-tabs").addEventListener("click", (event) => {
   const tab = event.target.closest(".tab");
   if (!tab) return;
+  // The panes swap without a renderResponse pass, so the find bar (whose marks
+  // live in the outgoing pane) must close explicitly on a view change.
+  closeResFind();
   activateTab("#res-tabs .tab", "#pretty, #raw, #preview, #res-headers, .tests", tab);
   if (tab.dataset.tab === "preview") renderPreview();
   syncResStage();
@@ -4905,7 +4912,7 @@ function renderVarAc() {
     ${dynamic.length ? `<div class="var-ac-group var-ac-dynamic">${dynamic.map(({ item, i }) => row(item, i)).join("")}</div>` : ""}`;
   varAc.hidden = false;
   const point = caretPoint(varAcEditor);
-  varAc.style.left = `${Math.round(point.left)}px`;
+  varAc.style.left = `${Math.round(Math.min(point.left, window.innerWidth - varAc.offsetWidth - 8))}px`;
   varAc.style.top = `${Math.round(point.top)}px`;
   setVarAcActive(varAcIndex);
 }
@@ -4943,6 +4950,8 @@ function maybeVarAc(event) {
 }
 
 function varAcKeydown(event) {
+  // IME composition commits must reach the editor, not the suggestion list.
+  if (event.isComposing || event.keyCode === 229) return;
   if (varAc.hidden || !varAcItems.length) return;
   if (event.key === "ArrowDown") { event.preventDefault(); setVarAcActive((varAcIndex + 1) % varAcItems.length); }
   else if (event.key === "ArrowUp") { event.preventDefault(); setVarAcActive((varAcIndex - 1 + varAcItems.length) % varAcItems.length); }
@@ -5712,8 +5721,9 @@ document.addEventListener("keydown", (event) => {
   else if (key === "pageup") cycleTab(-1);
   else if (key === "pagedown") cycleTab(1);
   else if (key === "w" && state.activeTabId) closeTab(state.activeTabId);
-  // The settings dialog handles Ctrl+F itself when open (its search field).
-  else if (key === "f" && !$("#app-settings-dialog").open) openResFind();
+  // The settings dialog handles Ctrl+F itself when open; any other open modal
+  // keeps focus too — the find bar is for the response stage only.
+  else if (key === "f" && !document.querySelector("dialog[open]")) openResFind();
 });
 
 await loadWorkspace();
