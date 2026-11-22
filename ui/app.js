@@ -3968,8 +3968,9 @@ function openRunnerDialog(nodeId, opener = null) {
   runnerState.dataName = null;
   runnerState.dataRows = null;
   runnerState.delayMs = 0;
-  $("#runner-data-name").textContent = "No data file";
+  $("#runner-data-name").textContent = "No data file — each request runs once";
   $("#runner-data-clear").hidden = true;
+  $("#runner-data-error").textContent = "";
   $("#runner-data-file").value = "";
   $("#runner-delay").value = 0;
   $("#runner-delay").disabled = false;
@@ -4051,13 +4052,15 @@ $("#runner-data-file").addEventListener("change", async (event) => {
     runnerState.dataName = file.name;
     $("#runner-data-name").textContent = `${file.name} — ${runnerState.dataRows.length} iteration${runnerState.dataRows.length === 1 ? "" : "s"}`;
     $("#runner-data-clear").hidden = false;
+    $("#runner-data-error").textContent = "";
     $("#error").textContent = "";
   } catch (err) {
     runnerState.dataRows = null;
     runnerState.dataName = null;
     $("#runner-data-name").textContent = "No data file — each request runs once";
     $("#runner-data-clear").hidden = true;
-    showError(`data file: ${err.message}`);
+    // showError writes behind the modal — surface the failure in the dialog.
+    $("#runner-data-error").textContent = `Data file: ${err.message}`;
   } finally {
     event.target.value = "";
   }
@@ -4151,6 +4154,7 @@ async function startRunner() {
   renderRunnerResults();
   runnerCoalescing = true;
 
+  try {
   for (let i = 0; i < runnerState.entries.length; i++) {
     const entry = runnerState.entries[i];
     if (runnerState.stopRequested) { entry.status = "skipped"; continue; }
@@ -4175,16 +4179,24 @@ async function startRunner() {
     }
   }
   for (const entry of runnerState.entries) if (entry.status === "pending") entry.status = "skipped";
-  runnerState.active = false;
-  runnerCoalescing = false;
+  } finally {
+    // An unexpected throw must not strand the runner dialog or the flag.
+    runnerCoalescing = false;
+    runnerState.active = false;
+  }
   persist(); // history rows accumulated during the run flush once here
   runnerState.phase = "done";
   runnerState.endReason = runnerState.endReason ?? (runnerState.stopRequested ? "stopped" : "done");
-  $("#runner-sub").textContent = runnerState.endReason === "done"
-    ? `All requests passed${rows ? ` across ${rows.length} iteration${rows.length === 1 ? "" : "s"}` : ""}. Results are view-only — nothing is saved.`
-    : runnerState.endReason === "failed"
-      ? "Stopped at the first failure. Results are view-only — nothing is saved."
-      : "Stopped. Results are view-only — nothing is saved.";
+  // A data-driven run that finished with failures must not read as all-passed:
+  // the completion is "done", but the summary names the failed count.
+  const failedCount = runnerState.entries.filter((e) => e.status === "failed").length;
+  $("#runner-sub").textContent = runnerState.endReason === "failed"
+    ? "Stopped at the first failure. Results are view-only — nothing is saved."
+    : runnerState.endReason === "stopped"
+      ? "Stopped. Results are view-only — nothing is saved."
+      : rows && failedCount
+        ? `Completed ${rows.length} iteration${rows.length === 1 ? "" : "s"} — ${failedCount} failed request${failedCount === 1 ? "" : "s"}. Results are view-only — nothing is saved.`
+        : `All requests passed${rows ? ` across ${rows.length} iteration${rows.length === 1 ? "" : "s"}` : ""}. Results are view-only — nothing is saved.`;
   $("#runner-stop").hidden = true;
   $("#runner-export-json").hidden = false;
   $("#runner-export-junit").hidden = false;
@@ -4309,6 +4321,9 @@ function runnerJunitXml() {
         cases.push(`<testcase name="${esc(t.name)}"><failure message="${message}">${message}</failure></testcase>`);
       }
     }
+    // Stopped runs leave entries unrun — mark them so CI does not read the
+    // suite as clean.
+    if (e.status === "skipped") cases.push(`<testcase name="skipped"><skipped /></testcase>`);
     const label = e.iteration ? `${e.iteration} · ${e.req.name}` : e.req.name;
     return {
       xml: `  <testsuite name="${esc(label)}" tests="${cases.length}" failures="${failures}" time="${((e.response?.elapsed_ms ?? 0) / 1000).toFixed(3)}">\n    ${cases.join("\n    ")}\n  </testsuite>`,

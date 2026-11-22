@@ -97,7 +97,7 @@ try {
     const v = __verify;
     const c = v.state.collections[0];
     const req = c.items[0];
-    req.scripts = { pre: '', test: 'pm.test("data", () => pm.expect(pm.data.get("token")).to.equal("t1"));' };
+    req.scripts = { pre: '', test: 'pm.test("data", () => pm.expect(pm.data.get("token")).to.equal("t1")); pm.test("absent", () => pm.expect(pm.data.get("missing")).to.equal(undefined));' };
     const { results } = await v.executeRequest(req, { token: 't1' });
     return results.every(r => r.passed) && results.some(r => r.name === 'data');
   })()`);
@@ -274,6 +274,61 @@ try {
         // Only the Second suites carry assertions; First/Third have none (tests=0).
         && suites.filter(s => Number(s.getAttribute('tests')) >= 1).length === 2
         && failures.length === 2;
+    })()`);
+  });
+
+  await check('folder scripts edited in the settings pane feed the runner', async () => {
+    await evaluate(`(() => {
+      const c = __verify.state.collections[0];
+      // The settings-pane writer (nodeScript) mutates the collection's scripts;
+      // the runner must execute what those editors saved.
+      for (const item of c.items) item.scripts = { pre: '', test: '' };
+      c.scripts = { pre: 'pm.collectionVariables.set("fromFolder", "folder-set");', test: '' };
+      c.items[0].url = 'http://127.0.0.1:8100/api/echo?ff={{fromFolder}}';
+      __verify.render();
+      return true;
+    })()`);
+    await openRunner(null, 0);
+    await runAndFinish();
+    return await evaluate(`(() => {
+      const s = __verify.runnerState;
+      return s.endReason === 'done' && s.entries[0].response.body.includes('ff=folder-set');
+    })()`);
+  });
+  await check('transport errors export as a JUnit failure testcase', async () => {
+    await evaluate(`(() => {
+      const c = __verify.state.collections[0];
+      for (const item of c.items) item.scripts = { pre: '', test: '' };
+      c.items[0].url = 'http://127.0.0.1:9/dead';
+      __verify.render();
+      return true;
+    })()`);
+    await openRunner(null, 0);
+    // No data file: the transport failure on First stops the run.
+    await runAndFinish();
+    await evaluate(`window.__reportSaves = []; document.querySelector('#runner-export-junit').click()`);
+    return await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 80));
+      const args = window.__reportSaves.filter(a => a.defaultName.endsWith('.xml')).at(-1);
+      if (!args) return false;
+      const doc = new DOMParser().parseFromString(args.contents, 'text/xml');
+      if (doc.querySelector('parsererror')) return false;
+      const transport = [...doc.querySelectorAll('testcase')].find(tc => tc.getAttribute('name') === 'transport');
+      const skipped = [...doc.querySelectorAll('testcase skipped')];
+      return Boolean(transport?.querySelector('failure')) && skipped.length >= 2;
+    })()`);
+  });
+  await check('data-file parse errors surface inside the dialog', async () => {
+    return await evaluate(`(async () => {
+      const doc = { broken: true };
+      const dt = new DataTransfer();
+      dt.items.add(new File([JSON.stringify(doc)], "broken.json", { type: "application/json" }));
+      const input = document.querySelector("#runner-data-file");
+      input.files = dt.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise(r => setTimeout(r, 100));
+      return document.querySelector("#runner-data-error").textContent.length > 0
+        && __verify.runnerState.dataRows === null;
     })()`);
   });
 
