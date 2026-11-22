@@ -71,6 +71,9 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
 
 - **Collection runner**: right-click a collection or folder, pick requests in a checkbox tree, and run them in order through the exact Send pipeline (scripts, auth, environments, cookies).
   - The run stops at the first failed test or transport error. A passing 404 negative test keeps going.
+  - **Data file**: attach a JSON array or CSV (header row names the columns) and every row becomes one iteration — all requests run per iteration, failures continue, and rows surface as the lowest-precedence `data` scope (`pm.data.get(name)`, `{{data.column}}`). Without a data file the stop-at-first-failure contract stands.
+  - **Delay**: an optional pause (ms) between entries, chunked so Stop still lands promptly.
+  - **Report**: finished runs export as JSON or JUnit XML (one suite per entry, one case per assertion) via the native Save As dialog.
   - Live progress, a Stop button, and per-request results with test details and a body preview.
   - Results are view-only. Nothing is saved.
 
@@ -246,6 +249,7 @@ These harnesses use a separate debug build, so they never touch a real workspace
 | `history-verify.mjs` | request history: model, recording, panel, click-through, backup exclusion | 24 |
 | `quick-wins-verify.mjs` | dynamic variables, `{{` autocomplete, duplication, response find bar, save response | 27 |
 | `importers-verify.mjs` | insomnia + hoppscotch import, routing, skipping | 24 |
+| `automation-verify.mjs` | data-driven runner, data scope, delay, report export | 12 |
 
 `tier2b-verify` runs its own forward proxy on `127.0.0.1:8890` to prove manual-proxy routing and bypass on the wire. It uses the harness server's `/set` and `/echo` routes to inspect exactly which cookies were sent.
 

@@ -3974,6 +3974,8 @@ function openRunnerDialog(nodeId, opener = null) {
   $("#runner-delay").value = 0;
   $("#runner-delay").disabled = false;
   $("#runner-data-pick").disabled = false;
+  $("#runner-export-json").hidden = true;
+  $("#runner-export-junit").hidden = true;
   runnerOpener = opener;
   runnerRequests = collectRunnerRequests(node);
   runnerChecked.clear();
@@ -4140,6 +4142,8 @@ async function startRunner() {
   $("#runner-cancel").hidden = true;
   $("#runner-run").hidden = true;
   $("#runner-stop").hidden = false;
+  $("#runner-export-json").hidden = true;
+  $("#runner-export-junit").hidden = true;
   $("#runner-close").hidden = true;
   $("#runner-sub").textContent = rows
     ? `Running ${rows.length} iteration${rows.length === 1 ? "" : "s"} × ${checked.length} request${checked.length === 1 ? "" : "s"}. Failed iterations continue.`
@@ -4182,6 +4186,8 @@ async function startRunner() {
       ? "Stopped at the first failure. Results are view-only — nothing is saved."
       : "Stopped. Results are view-only — nothing is saved.";
   $("#runner-stop").hidden = true;
+  $("#runner-export-json").hidden = false;
+  $("#runner-export-junit").hidden = false;
   $("#runner-close").hidden = false;
   renderRunnerResults();
   $("#runner-close").focus();
@@ -4257,6 +4263,75 @@ function renderRunnerResults() {
       : entry.response.body + (entry.response.truncated ? "\n… (response truncated by size limit)" : "");
   }
 }
+
+/* ------------------------------------------------------------------ runner report */
+
+function runnerReport() {
+  const s = runnerState;
+  const node = locateCollection(s.nodeId) ?? locate(s.nodeId);
+  return {
+    kind: "postlite.runner-report",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    collection: node?.name ?? null,
+    dataFile: s.dataName,
+    delayMs: s.delayMs,
+    endReason: s.endReason,
+    entries: s.entries.map((e) => ({
+      iteration: e.iteration ?? null,
+      request: e.req.name,
+      method: e.req.method,
+      url: e.req.url,
+      status: e.status,
+      httpStatus: e.response?.status ?? null,
+      error: e.response?.error ?? null,
+      elapsedMs: e.response?.elapsed_ms ?? 0,
+      tests: e.results.map((t) => ({ name: t.name, passed: t.passed, message: t.passed ? null : String(t.message ?? "") })),
+    })),
+  };
+}
+
+function runnerJunitXml() {
+  const s = runnerState;
+  const suites = s.entries.map((e) => {
+    const cases = [];
+    let failures = 0;
+    if (e.response?.error) {
+      failures += 1;
+      const message = esc(String(e.response.error));
+      cases.push(`<testcase name="transport"><failure message="${message}">${message}</failure></testcase>`);
+    }
+    for (const t of e.results) {
+      if (t.passed) cases.push(`<testcase name="${esc(t.name)}" />`);
+      else {
+        failures += 1;
+        const message = esc(String(t.message ?? ""));
+        cases.push(`<testcase name="${esc(t.name)}"><failure message="${message}">${message}</failure></testcase>`);
+      }
+    }
+    const label = e.iteration ? `${e.iteration} · ${e.req.name}` : e.req.name;
+    return {
+      xml: `  <testsuite name="${esc(label)}" tests="${cases.length}" failures="${failures}" time="${((e.response?.elapsed_ms ?? 0) / 1000).toFixed(3)}">\n    ${cases.join("\n    ")}\n  </testsuite>`,
+      tests: cases.length,
+      failures,
+    };
+  });
+  const tests = suites.reduce((n, x) => n + x.tests, 0);
+  const totalFailures = suites.reduce((n, x) => n + x.failures, 0);
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="postlite run" tests="${tests}" failures="${totalFailures}">\n${suites.map((x) => x.xml).join("\n")}\n</testsuites>`;
+}
+
+async function exportRunnerReport(format) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  if (format === "json") {
+    await saveExport(`postlite-run.${stamp}.json`, JSON.stringify(runnerReport(), null, 2), "JSON", ["json"], "application/json");
+  } else {
+    await saveExport(`postlite-run.${stamp}.xml`, runnerJunitXml(), "JUnit XML", ["xml"], "text/xml");
+  }
+}
+
+$("#runner-export-json").addEventListener("click", () => void exportRunnerReport("json"));
+$("#runner-export-junit").addEventListener("click", () => void exportRunnerReport("junit"));
 
 $("#runner-results").addEventListener("click", (event) => {
   const head = event.target.closest(".runner-row-head[data-expandable]");

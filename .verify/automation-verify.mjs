@@ -195,6 +195,88 @@ try {
     return history >= 9 && saves < 6;
   });
 
+  // --- Task 3: report export (JSON + JUnit XML) ---------------------------------
+  // The fetch-IPC seam captures save_export_file calls (no native dialogs).
+  await evaluate(`(() => {
+    window.__reportSaves = [];
+    if (!window.__reportSeam) {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = typeof input === 'string' ? input : input.url;
+        if (url.endsWith('/save_export_file')) {
+          const args = JSON.parse(init.body);
+          window.__reportSaves.push(args);
+          return Promise.resolve(new Response(JSON.stringify('C:/exports/' + args.defaultName), { status: 200, headers: { 'content-type': 'application/json', 'Tauri-Response': 'ok' } }));
+        }
+        return originalFetch(input, init);
+      };
+      window.__reportSeam = true;
+    }
+    return true;
+  })()`);
+  await check('export buttons appear only in the done phase', async () => {
+    await openRunner([{ n: "1" }, { n: "2" }], 0);
+    await evaluate(`document.querySelector('#runner-run').click()`);
+    const during = await evaluate(`(() => ({
+      json: document.querySelector('#runner-export-json').hidden,
+      junit: document.querySelector('#runner-export-junit').hidden,
+    }))()`);
+    await evaluate(`new Promise(resolve => {
+      const start = Date.now();
+      const timer = setInterval(() => {
+        if (__verify.runnerState.phase === 'done') { clearInterval(timer); resolve(true); }
+        else if (Date.now() - start > 20000) { clearInterval(timer); resolve(true); }
+      }, 30);
+    })`);
+    const after = await evaluate(`(() => ({
+      json: document.querySelector('#runner-export-json').hidden,
+      junit: document.querySelector('#runner-export-junit').hidden,
+    }))()`);
+    return during.json === true && during.junit === true && after.json === false && after.junit === false;
+  });
+  await check('the JSON report captures the full run', async () => {
+    await evaluate(`window.__reportSaves = []; document.querySelector('#runner-export-json').click()`);
+    return await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 80));
+      const args = window.__reportSaves.filter(a => a.defaultName.endsWith('.json')).at(-1);
+      if (!args) return false;
+      const report = JSON.parse(args.contents);
+      const entries = report.entries ?? [];
+      return report.kind === 'postlite.runner-report'
+        && report.collection === 'Automation suite'
+        && report.dataFile === 'data.json'
+        && entries.length === 6
+        && entries[0].iteration === 1 && entries[3].iteration === 2
+        && entries.every(e => Array.isArray(e.tests));
+    })()`);
+  });
+  await check('the JUnit XML is well-formed with suites and failures', async () => {
+    // Give the run a failing assertion so the report carries <failure> nodes.
+    await evaluate(`(() => {
+      const c = __verify.state.collections[0];
+      for (const item of c.items) item.scripts = { pre: '', test: '' };
+      c.items[1].scripts = { pre: '', test: 'pm.test("boom", () => pm.expect(1).to.equal(2));' };
+      return true;
+    })()`);
+    await openRunner([{ n: "1" }, { n: "2" }], 0);
+    await runAndFinish();
+    await evaluate(`window.__reportSaves = []; document.querySelector('#runner-export-junit').click()`);
+    return await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 80));
+      const args = window.__reportSaves.filter(a => a.defaultName.endsWith('.xml')).at(-1);
+      if (!args) return false;
+      const doc = new DOMParser().parseFromString(args.contents, 'text/xml');
+      if (doc.querySelector('parsererror')) return false;
+      const suites = [...doc.querySelectorAll('testsuite')];
+      const failures = [...doc.querySelectorAll('testcase failure')];
+      return doc.documentElement.tagName === 'testsuites'
+        && suites.length === 6
+        // Only the Second suites carry assertions; First/Third have none (tests=0).
+        && suites.filter(s => Number(s.getAttribute('tests')) >= 1).length === 2
+        && failures.length === 2;
+    })()`);
+  });
+
   console.log(`\n${results.length} checks passed`);
 } catch (err) {
   console.error(`FAIL ${err.message}`);
