@@ -5198,12 +5198,24 @@ $("#import-file").addEventListener("change", async (event) => {
   if (!file) return;
   try {
     const doc = JSON.parse(await file.text());
-    if (!Array.isArray(doc?.item)) throw new Error("not a Postman collection export");
-    const collection = fromPostman(doc);
-    state.collections.push(collection);
-    persist();
-    render();
+    const added = { collections: 0, environments: 0, tabs: 0, settings: 0, skipped: 0 };
+    const failures = [];
+    if (doc?.kind === "postlite.backup" || doc?.kind === "postlite.settings") {
+      failures.push(`${file.name}: backups and settings import by dropping them on the window`);
+    } else if (!routeJsonImport(doc, file.name, added, failures)) {
+      failures.push(`${file.name}: unrecognized JSON (expected a Postman, Insomnia, or Hoppscotch export)`);
+    }
+    if (added.collections || added.environments) {
+      persist();
+      render();
+    }
     $("#error").textContent = "";
+    const parts = [];
+    if (added.collections) parts.push(`${added.collections} collection(s)`);
+    if (added.environments) parts.push(`${added.environments} environment(s)`);
+    if (added.skipped) parts.push(`${added.skipped} request(s) skipped (unsupported auth or body)`);
+    if (parts.length) notify(`Imported ${parts.join(", ")}.`);
+    if (failures.length) showError(`import failed: ${failures.join(" · ")}`);
   } catch (err) {
     showError(`import failed: ${err.message}`);
   } finally {
@@ -5229,6 +5241,293 @@ $("#env-import-file").addEventListener("change", async (event) => {
   event.target.value = "";
 });
 
+/* ------------------------------------------------------------ insomnia import */
+/* Insomnia v4 exports: tolerant reader over the resource list. Anything postlite
+   cannot express (exotic auth, unknown resource types) is skipped and counted,
+   never guessed. */
+
+const INSOMNIA_RESOURCE_TYPES = new Set(["workspace", "folder", "request", "environment"]);
+
+function looksLikeInsomnia(doc) {
+  return doc?._type === "export" && doc.__export_format === 4 && Array.isArray(doc.resources);
+}
+
+// Insomnia auth types map onto postlite's four; exotic types return null and
+// the request imports with inherited auth, counted in the report.
+function insomniaAuth(raw) {
+  const type = String(raw?.type ?? "");
+  if (type === "basic") {
+    return normAuth({ type: "basic", basic: { username: String(raw.username ?? ""), password: String(raw.password ?? "") } }, "noauth");
+  }
+  if (type === "basicAuth") {
+    return normAuth({ type: "basic", basic: { username: String(raw.httpUser ?? raw.username ?? ""), password: String(raw.httpPassword ?? raw.password ?? "") } }, "noauth");
+  }
+  if (type === "bearer" || type === "bearerToken") {
+    const token = String(raw.token ?? "");
+    return token ? normAuth({ type: "bearer", bearer: { token } }, "noauth") : null;
+  }
+  if (type === "oauth2") {
+    const token = String(raw.accessToken ?? "");
+    // An access token is the only usable credential an export carries.
+    return token ? normAuth({ type: "bearer", bearer: { token } }, "noauth") : null;
+  }
+  if (type === "apikey" || type === "api-key") {
+    return normAuth({ type: "apikey", apikey: { key: String(raw.key ?? ""), value: String(raw.value ?? ""), addTo: raw.in === "querystring" ? "query" : "header" } }, "noauth");
+  }
+  return null;
+}
+
+function insomniaBody(raw) {
+  if (!raw || typeof raw !== "object") return normBody();
+  const mime = String(raw.mimeType ?? "");
+  if (/urlencoded|multipart/.test(mime) && Array.isArray(raw.params)) {
+    return normBody({
+      mode: "form-data",
+      contentType: mime,
+      form: raw.params.filter((p) => p && p.name).map((p) => ({
+        key: String(p.name), value: String(p.value ?? ""), enabled: p.disabled !== true,
+        secret: false, description: "", type: p.type === "file" ? "file" : "text",
+      })),
+    });
+  }
+  if (typeof raw.text === "string" && raw.text) {
+    return normBody({ mode: "raw", raw: raw.text, contentType: mime || "application/json", form: [] });
+  }
+  return normBody();
+}
+
+function insomniaRequest(res, skipped) {
+  let url = String(res.url ?? "");
+  if (Array.isArray(res.parameters) && res.parameters.length) {
+    // The table wins: strip the query string so parameters never double.
+    url = url.split("?")[0];
+  }
+  const auth = insomniaAuth(res.authentication);
+  if (!auth && res.authentication && Object.keys(res.authentication).length) skipped.auth += 1;
+  return newRequest({
+    name: String(res.name ?? "Request"),
+    method: String(res.method ?? "GET").toUpperCase(),
+    url,
+    params: (Array.isArray(res.parameters) ? res.parameters : []).filter((p) => p && p.name).map((p) => ({
+      key: String(p.name), value: String(p.value ?? ""), enabled: p.disabled !== true, secret: false, description: "", type: "text",
+    })),
+    headers: (Array.isArray(res.headers) ? res.headers : []).filter((h) => h && h.name).map((h) => ({
+      key: String(h.name), value: String(h.value ?? ""), enabled: h.disabled !== true, secret: false, description: "", type: "text",
+    })),
+    body: insomniaBody(res.body),
+    auth: auth ?? normAuth(null, "inherit"),
+  });
+}
+
+// Nested environment data flattens to dotted keys; only scalars survive.
+function flattenEnvData(data, prefix = "") {
+  const rows = [];
+  for (const [key, value] of Object.entries(data ?? {})) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (value && typeof value === "object" && !Array.isArray(value)) rows.push(...flattenEnvData(value, path));
+    else rows.push({ key: path, value: String(value ?? ""), enabled: true, secret: false, description: "", type: "text" });
+  }
+  return rows;
+}
+
+function insomniaEnvironment(res) {
+  return newEnvironment({ name: String(res.name ?? "Environment"), variables: flattenEnvData(res.data) });
+}
+
+function fromInsomnia(doc) {
+  const skipped = { auth: 0 };
+  const byParent = new Map();
+  for (const res of doc.resources ?? []) {
+    if (!INSOMNIA_RESOURCE_TYPES.has(String(res?._type))) continue;
+    const key = String(res.parentId ?? "");
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(res);
+  }
+  const workspaces = (doc.resources ?? []).filter((r) => r?._type === "workspace");
+  const known = new Set(workspaces.map((w) => String(w._id)));
+  const collections = [];
+  const environments = [];
+  const buildChildren = (parentId, containers) => {
+    for (const res of byParent.get(parentId) ?? []) {
+      if (res._type === "folder") {
+        const folder = newFolder({ name: String(res.name ?? "Folder"), items: [] });
+        containers.push(folder);
+        buildChildren(String(res._id), folder.items);
+      } else if (res._type === "request") {
+        containers.push(insomniaRequest(res, skipped));
+      }
+    }
+  };
+  for (const ws of workspaces) {
+    const collection = newCollection(String(ws.name ?? "Insomnia workspace"), { items: [] });
+    buildChildren(String(ws._id), collection.items);
+    for (const res of byParent.get(String(ws._id)) ?? []) {
+      if (res._type === "environment") {
+        const env = insomniaEnvironment(res);
+        // Bind the workspace's environment like Insomnia would.
+        if (!collection.environmentId) collection.environmentId = env.id;
+        environments.push(env);
+      }
+    }
+    collections.push(collection);
+  }
+  // Dangling parents land at the first workspace's root instead of vanishing.
+  for (const [parentId, resList] of byParent) {
+    if (known.has(parentId)) continue;
+    known.add(parentId);
+    const first = collections[0];
+    if (!first) continue;
+    for (const res of resList) {
+      if (res._type === "request") first.items.push(insomniaRequest(res, skipped));
+      else if (res._type === "folder") {
+        const folder = newFolder({ name: String(res.name ?? "Folder"), items: [] });
+        first.items.push(folder);
+        buildChildren(String(res._id), folder.items);
+      }
+    }
+  }
+  return { collections, environments, skipped };
+}
+
+/* --------------------------------------------------------- hoppscotch import */
+/* Hoppscotch exports carry no version field, so detection and mapping are
+   shape-based across the field spellings seen in the wild. */
+
+function looksLikeHoppscotchCollections(doc) {
+  return Array.isArray(doc) && doc.some((item) => item && typeof item === "object"
+    && (Array.isArray(item.folders) || Array.isArray(item.requests)));
+}
+
+function looksLikeHoppscotchEnvironments(doc) {
+  return Array.isArray(doc) && doc.length > 0 && doc.every((item) => item && typeof item === "object"
+    && !Array.isArray(item.folders) && !Array.isArray(item.requests) && (Array.isArray(item.variables) || (item.variables && typeof item.variables === "object")));
+}
+
+function hoppscotchAuth(raw, skipped) {
+  const type = String(raw?.authType ?? "none");
+  if (type === "basic") {
+    return normAuth({ type: "basic", basic: { username: String(raw.username ?? raw.httpUser ?? ""), password: String(raw.password ?? raw.httpPassword ?? "") } }, "noauth");
+  }
+  const token = String(raw.token ?? raw.bearerToken ?? "");
+  if (type === "bearer" && token) return normAuth({ type: "bearer", bearer: { token } }, "noauth");
+  if (type === "oauth-2" || type === "oauth2") {
+    const access = String(raw.accessToken?.access_token ?? raw.accessToken?.token ?? "");
+    return access ? normAuth({ type: "bearer", bearer: { token: access } }, "noauth") : null;
+  }
+  if (type === "api-key" || type === "apikey") {
+    return normAuth({ type: "apikey", apikey: { key: String(raw.key ?? ""), value: String(raw.value ?? ""), addTo: raw.addTo === "query_params" ? "query" : "header" } }, "noauth");
+  }
+  if (type !== "none") skipped.auth += 1;
+  return null;
+}
+
+function hoppscotchRows(rows) {
+  return (Array.isArray(rows) ? rows : []).filter((r) => r && (r.key || r.name)).map((r) => ({
+    key: String(r.key ?? r.name ?? ""), value: String(r.value ?? ""), enabled: r.active !== false && r.disabled !== true,
+    secret: false, description: "", type: r.type === "file" ? "file" : "text",
+  }));
+}
+
+function hoppscotchBody(raw, skipped) {
+  if (!raw || typeof raw !== "object") return normBody();
+  const kind = String(raw.body ?? raw.contentType ?? "");
+  const form = raw.form ?? raw.params ?? raw.bodyParams;
+  if (/formURLEncoded|urlencoded/i.test(kind) && Array.isArray(form)) {
+    return normBody({ mode: "form-data", contentType: "application/x-www-form-urlencoded", form: hoppscotchRows(form) });
+  }
+  if (/formData|multipart/i.test(kind) && Array.isArray(form)) {
+    return normBody({ mode: "form-data", contentType: "multipart/form-data", form: hoppscotchRows(form) });
+  }
+  const rawText = typeof raw.raw === "string" ? raw.raw : typeof raw.text === "string" ? raw.text : "";
+  if (kind === "contentType" || rawText) {
+    return normBody({ mode: "raw", raw: rawText, contentType: String(raw.contentType ?? "application/json"), form: [] });
+  }
+  if (kind && kind !== "none") skipped.body += 1;
+  return normBody();
+}
+
+function hoppscotchRequest(raw, skipped) {
+  const auth = hoppscotchAuth(raw.auth, skipped);
+  return newRequest({
+    name: String(raw.name ?? "Request"),
+    method: String(raw.method ?? "GET").toUpperCase(),
+    url: String(raw.endpoint ?? raw.url ?? ""),
+    params: hoppscotchRows(raw.params),
+    headers: hoppscotchRows(raw.headers),
+    body: hoppscotchBody(raw.body, skipped),
+    auth: auth ?? normAuth(null, "inherit"),
+  });
+}
+
+function hoppscotchItems(folder, skipped) {
+  const items = [];
+  for (const sub of folder.folders ?? []) {
+    items.push(newFolder({ name: String(sub.name ?? "Folder"), items: hoppscotchItems(sub, skipped) }));
+  }
+  for (const req of folder.requests ?? []) {
+    items.push(hoppscotchRequest(req, skipped));
+  }
+  return items;
+}
+
+function fromHoppscotchCollections(doc) {
+  const skipped = { auth: 0, body: 0 };
+  const collections = (Array.isArray(doc) ? doc : []).filter((c) => c && typeof c === "object").map((c) =>
+    newCollection(String(c.name ?? "Hoppscotch collection"), { items: hoppscotchItems(c, skipped) }));
+  return { collections, skipped };
+}
+
+function fromHoppscotchEnvironments(doc) {
+  return { environments: (Array.isArray(doc) ? doc : []).filter((e) => e && typeof e === "object").map((e) => {
+    const vars = Array.isArray(e.variables)
+      ? hoppscotchRows(e.variables)
+      : flattenEnvData(e.variables);
+    return newEnvironment({ name: String(e.name ?? "Environment"), variables: vars });
+  }) };
+}
+
+/* Shared JSON router for the drop flow and the Import-menu file input: shape
+   detection in Postman-first order, per-format mappers, honest counts. */
+function routeJsonImport(doc, label, added, failures) {
+  if (Array.isArray(doc?.item)) {
+    state.collections.push(fromPostman(doc));
+    added.collections += 1;
+    return true;
+  }
+  if (doc && typeof doc === "object" && !Array.isArray(doc) && Array.isArray(doc.values ?? doc.variables)) {
+    state.environments.push(fromPostmanEnvironment(doc));
+    added.environments += 1;
+    return true;
+  }
+  if (looksLikeInsomnia(doc)) {
+    if (doc.__export_format !== 4) {
+      failures.push(`${label}: Insomnia export format ${doc.__export_format} is unsupported — re-export with format 4`);
+      return true;
+    }
+    const { collections, environments, skipped } = fromInsomnia(doc);
+    state.collections.push(...collections);
+    state.environments.push(...environments);
+    added.collections += collections.length;
+    added.environments += environments.length;
+    added.skipped += skipped.auth;
+    return true;
+  }
+  if (looksLikeHoppscotchCollections(doc)) {
+    const { collections, skipped } = fromHoppscotchCollections(doc);
+    state.collections.push(...collections);
+    added.collections += collections.length;
+    added.skipped += skipped.auth + skipped.body;
+    return true;
+  }
+  if (looksLikeHoppscotchEnvironments(doc)) {
+    const { environments } = fromHoppscotchEnvironments(doc);
+    state.environments.push(...environments);
+    added.environments += environments.length;
+    return true;
+  }
+  return false;
+}
+
 /* ------------------------------------------------------- drag & drop import */
 /* Files dropped anywhere in the window are routed by content, not extension:
    postlite backup opens the restore dialog, settings apply directly, Postman
@@ -5240,7 +5539,7 @@ function looksLikeCurl(text) {
 }
 
 async function importDroppedFiles(files) {
-  const added = { collections: 0, environments: 0, tabs: 0, settings: 0 };
+  const added = { collections: 0, environments: 0, tabs: 0, settings: 0, skipped: 0 };
   const failures = [];
   let backupText = null;
   let structural = false;
@@ -5262,20 +5561,12 @@ async function importDroppedFiles(files) {
         added.settings++;
         continue;
       }
-      if (Array.isArray(doc?.item)) {
-        state.collections.push(fromPostman(doc));
-        added.collections++;
-        structural = true;
-        continue;
-      }
-      if (doc && typeof doc === "object" && !Array.isArray(doc) && Array.isArray(doc.values ?? doc.variables)) {
-        state.environments.push(fromPostmanEnvironment(doc));
-        added.environments++;
+      if (doc !== null && routeJsonImport(doc, file.name, added, failures)) {
         structural = true;
         continue;
       }
       if (doc !== null) {
-        failures.push(`${file.name}: unrecognized JSON (expected a Postman export or a Postlite backup/settings file)`);
+        failures.push(`${file.name}: unrecognized JSON (expected a Postman, Insomnia, or Hoppscotch export, or a Postlite backup/settings file)`);
         continue;
       }
       if (looksLikeCurl(trimmed)) {
@@ -5303,6 +5594,7 @@ async function importDroppedFiles(files) {
   if (added.environments) parts.push(`${added.environments} environment(s)`);
   if (added.tabs) parts.push(`${added.tabs} cURL tab(s)`);
   if (added.settings) parts.push("settings applied");
+  if (added.skipped) parts.push(`${added.skipped} request(s) skipped (unsupported auth or body)`);
   if (backupText !== null) {
     openRestoreDialog(backupText);
     parts.push("backup ready to restore");
