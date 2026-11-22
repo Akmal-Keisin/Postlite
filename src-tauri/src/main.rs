@@ -637,11 +637,17 @@ struct Secrets {
 
 impl Secrets {
     fn store(&self) -> store::EncryptedStore {
-        let keys: Arc<dyn store::KeySource> = match store::KeyringSource::new(&self.identifier, "global") {
+        self.store_named("global")
+    }
+
+    // One encrypted store per name: "global" for proxy credentials, per-node
+    // stores for oauth2 client secrets.
+    fn store_named(&self, name: &str) -> store::EncryptedStore {
+        let keys: Arc<dyn store::KeySource> = match store::KeyringSource::new(&self.identifier, name) {
             Ok(source) => Arc::new(source),
             Err(_) => Arc::new(store::NoSecretStoreKeys),
         };
-        store::EncryptedStore::open(&self.dir, "global", keys)
+        store::EncryptedStore::open(&self.dir, name, keys)
     }
 }
 
@@ -669,6 +675,340 @@ fn proxy_credentials_set(app: AppHandle, username: String, password: String) -> 
 #[tauri::command]
 fn proxy_credentials_get(app: AppHandle) -> Result<Option<ProxyCredentials>, String> {
     load_credentials(&app.state::<Secrets>().store())
+}
+
+/* ------------------------------------------------------------------- oauth2 */
+/* Tokens are acquired through stateless commands; the frontend owns the
+   session cache. The client secret lives in a per-node encrypted store (OS
+   keyring via the store pattern) and is read server-side, so it never
+   round-trips to the frontend or lands in workspace.json. */
+
+#[derive(Deserialize)]
+struct OAuth2Config {
+    #[serde(default)]
+    node_id: String,
+    #[serde(default)]
+    grant_type: String,
+    #[serde(default)]
+    token_url: String,
+    #[serde(default)]
+    client_id: String,
+    #[serde(default)]
+    scope: String,
+    #[serde(default)]
+    client_auth_in: String, // "body" (default) | "basic"
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    redirect_uri: String,
+    #[serde(default)]
+    code_verifier: String,
+    #[serde(default)]
+    refresh_token: String,
+}
+
+#[derive(Serialize)]
+struct TokenOut {
+    access_token: String,
+    token_type: String,
+    expires_in: Option<u64>,
+    refresh_token: Option<String>,
+}
+
+fn sanitize_store_name(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_lowercase()
+}
+
+fn oauth2_store(app: &AppHandle, node_id: &str) -> Result<store::EncryptedStore, String> {
+    let secrets = app.state::<Secrets>();
+    let name = format!("oauth2-{}", sanitize_store_name(node_id));
+    if name.len() <= "oauth2-".len() {
+        return Err("oauth2: node id is empty".to_string());
+    }
+    Ok(secrets.store_named(&name))
+}
+
+fn oauth2_store_secret(app: &AppHandle, node_id: &str, secret: Option<&str>) -> Result<(), String> {
+    let store = oauth2_store(app, node_id)?;
+    match secret {
+        Some(value) if !value.is_empty() => {
+            let bytes = serde_json::json!({ "secret": value });
+            store
+                .save(serde_json::to_vec(&bytes).map_err(|e| e.to_string())?.as_slice())
+                .map_err(|e| e.message())
+        }
+        _ => store.delete().map_err(|e| e.message()),
+    }
+}
+
+fn oauth2_load_secret(app: &AppHandle, node_id: &str) -> Result<Option<String>, String> {
+    let store = oauth2_store(app, node_id)?;
+    match store.load() {
+        Ok(None) => Ok(None),
+        Ok(Some(bytes)) => Ok(serde_json::from_slice::<serde_json::Value>(&bytes)
+            .map_err(|e| format!("saved oauth2 secret could not be read: {e}"))?
+            .get("secret")
+            .and_then(|v| v.as_str())
+            .map(String::from)),
+        Err(e) => Err(e.message()),
+    }
+}
+
+/// The token endpoint POST: form-encoded per RFC 6749, client auth in the body
+/// or as an HTTP Basic header. Errors carry the status and a body excerpt.
+async fn oauth2_token_request(config: &OAuth2Config, client_secret: Option<&str>) -> Result<TokenOut, String> {
+    if config.token_url.is_empty() {
+        return Err("oauth2: token URL is empty".to_string());
+    }
+    let grant = match config.grant_type.as_str() {
+        "client_credentials" => "grant_type=client_credentials".to_string(),
+        "authorization_code" => {
+            if config.code.is_empty() {
+                return Err("oauth2: authorization code is missing".to_string());
+            }
+            let mut pairs = vec![
+                "grant_type=authorization_code".to_string(),
+                format!("code={}", urlencoded(&config.code)),
+            ];
+            if !config.redirect_uri.is_empty() {
+                pairs.push(format!("redirect_uri={}", urlencoded(&config.redirect_uri)));
+            }
+            if !config.code_verifier.is_empty() {
+                pairs.push(format!("code_verifier={}", urlencoded(&config.code_verifier)));
+            }
+            pairs.join("&")
+        }
+        "refresh_token" => {
+            if config.refresh_token.is_empty() {
+                return Err("oauth2: refresh token is missing".to_string());
+            }
+            format!("grant_type=refresh_token&refresh_token={}", urlencoded(&config.refresh_token))
+        }
+        other => return Err(format!("oauth2: unsupported grant type {other}")),
+    };
+    let mut form = grant;
+    if !config.scope.is_empty() {
+        form = format!("{form}&scope={}", urlencoded(&config.scope));
+    }
+    let mut request = reqwest::Client::new().post(&config.token_url);
+    let use_basic = client_secret.is_some() && config.client_auth_in == "basic";
+    if config.grant_type == "client_credentials" || config.grant_type == "refresh_token" {
+        // Credential-bearing grants: the client id (and secret) ride in the
+        // body unless basic auth is configured.
+        if use_basic {
+            request = request.basic_auth(&config.client_id, client_secret);
+        } else {
+            form = format!("{form}&client_id={}", urlencoded(&config.client_id));
+            if let Some(secret) = client_secret {
+                form = format!("{form}&client_secret={}", urlencoded(secret));
+            }
+        }
+    } else if !config.client_id.is_empty() {
+        // The code exchange carries the client id; a confidential client adds
+        // its secret (body or basic per the same toggle).
+        if use_basic {
+            request = request.basic_auth(&config.client_id, client_secret);
+        } else {
+            form = format!("{form}&client_id={}", urlencoded(&config.client_id));
+            if let Some(secret) = client_secret {
+                form = format!("{form}&client_secret={}", urlencoded(secret));
+            }
+        }
+    }
+    request = request
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("accept", "application/json")
+        .body(form);
+    let response = request.send().await.map_err(|e| format!("oauth2: {e}"))?;
+    let status = response.status();
+    let body = response.text().await.map_err(|e| format!("oauth2: {e}"))?;
+    if !status.is_success() {
+        let excerpt: String = body.chars().take(300).collect();
+        return Err(format!("oauth2: token endpoint returned {} — {}", status, excerpt));
+    }
+    let payload: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|_| "oauth2: token endpoint did not return JSON".to_string())?;
+    let access_token = payload
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .ok_or_else(|| "oauth2: token response carried no access_token".to_string())?;
+    Ok(TokenOut {
+        access_token,
+        token_type: payload
+            .get("token_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Bearer")
+            .to_string(),
+        expires_in: payload.get("expires_in").and_then(|v| v.as_u64()),
+        refresh_token: payload
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    })
+}
+
+fn urlencoded(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+#[tauri::command]
+async fn oauth2_token(app: AppHandle, config: OAuth2Config) -> Result<TokenOut, String> {
+    let secret = if config.client_id.is_empty() {
+        None
+    } else {
+        oauth2_load_secret(&app, &config.node_id)?
+    };
+    oauth2_token_request(&config, secret.as_deref()).await
+}
+
+#[tauri::command]
+fn oauth2_secret_set(app: AppHandle, node_id: String, secret: String) -> Result<(), String> {
+    oauth2_store_secret(&app, &node_id, Some(&secret))
+}
+
+#[tauri::command]
+fn oauth2_secret_get(app: AppHandle, node_id: String) -> Result<Option<String>, String> {
+    oauth2_load_secret(&app, &node_id)
+}
+
+#[tauri::command]
+fn oauth2_secret_clear(app: AppHandle, node_id: String) -> Result<(), String> {
+    oauth2_store_secret(&app, &node_id, None)
+}
+
+/* Loopback redirect capture for the authorization-code flow: the listener is
+   bound by oauth2_authorize_begin and consumed once by oauth2_authorize_await. */
+
+struct OAuthCapture {
+    listener: std::sync::Mutex<Option<std::net::TcpListener>>,
+}
+
+impl OAuthCapture {
+    fn take(&self) -> Option<std::net::TcpListener> {
+        self.listener.lock().ok().and_then(|mut guard| guard.take())
+    }
+}
+
+fn parse_capture_query(path: &str) -> Result<(String, String), String> {
+    let query = path.split('?').nth(1).unwrap_or("");
+    let mut code = String::new();
+    let mut state = String::new();
+    for pair in query.split('&') {
+        let mut parts = pair.split('=');
+        let key = parts.next().unwrap_or("");
+        let value = parts.next().unwrap_or("");
+        match key {
+            "code" => code = value.to_string(),
+            "state" => state = value.to_string(),
+            _ => {}
+        }
+    }
+    if code.is_empty() {
+        return Err("oauth2: redirect carried no code".to_string());
+    }
+    Ok((code, state))
+}
+
+fn capture_authorization(listener: &std::net::TcpListener, timeout: Duration) -> Result<(String, String), String> {
+    use std::io::{Read, Write};
+    let (mut stream, _) = listener
+        .accept()
+        .map_err(|e| format!("oauth2: redirect capture failed: {e}"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    let mut received = Vec::new();
+    let mut buffer = [0; 1024];
+    while !received.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+        let count = stream.read(&mut buffer).map_err(|e| format!("oauth2: {e}"))?;
+        if count == 0 {
+            break;
+        }
+        received.extend_from_slice(&buffer[..count]);
+    }
+    let request = String::from_utf8_lossy(&received);
+    let request_line = request.lines().next().unwrap_or("");
+    let path = request_line.split_whitespace().nth(1).unwrap_or("");
+    let (code, state) = parse_capture_query(path)?;
+    let _ = stream.write_all(
+        b"HTTP/1.1 200 OK\r\ncontent-type: text/html\r\nconnection: close\r\n\r\n\
+          <html><body><h3>postlite</h3><p>Authorization captured -  you can close this window.</p></body></html>",
+    );
+    Ok((code, state))
+}
+
+#[derive(serde::Serialize)]
+struct RedirectBegin {
+    redirect_uri: String,
+    port: u16,
+}
+
+#[tauri::command]
+fn oauth2_authorize_begin(app: AppHandle, port: u16) -> Result<RedirectBegin, String> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .map_err(|e| format!("oauth2: could not bind the loopback port: {e}"))?;
+    let bound = listener.local_addr().map_err(|e| e.to_string())?.port();
+    app.manage(OAuthCapture { listener: std::sync::Mutex::new(Some(listener)) });
+    Ok(RedirectBegin {
+        redirect_uri: format!("http://127.0.0.1:{bound}/callback"),
+        port: bound,
+    })
+}
+
+#[tauri::command]
+fn oauth2_authorize_await(app: AppHandle) -> Result<(String, String), String> {
+    let capture = app
+        .try_state::<OAuthCapture>()
+        .ok_or_else(|| "oauth2: no redirect capture is running".to_string())?;
+    let listener = capture
+        .take()
+        .ok_or_else(|| "oauth2: no redirect capture is running".to_string())?;
+    capture_authorization(&listener, Duration::from_secs(120))
+}
+
+#[tauri::command]
+fn oauth2_authorize_cancel(app: AppHandle) -> Result<(), String> {
+    if let Some(capture) = app.try_state::<OAuthCapture>() {
+        if let Ok(mut guard) = capture.listener.lock() {
+            *guard = None;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn open_in_browser(url: String) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("open_in_browser: only http(s) URLs are allowed".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(&url).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(&url).spawn().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // The user picks the destination; a bare typed name gets the filter's extension
@@ -1785,6 +2125,125 @@ mod tests {
         assert!(error.contains("could not read file"), "{error}");
         assert!(error.contains("upload"), "{error}");
     }
+
+    fn oauth2_config(grant_type: &str, client_auth_in: &str) -> OAuth2Config {
+        serde_json::from_value(json!({
+            "node_id": "node1", "grant_type": grant_type, "token_url": "",
+            "client_id": "cid", "scope": "read write", "client_auth_in": client_auth_in,
+        }))
+        .unwrap()
+    }
+
+    fn serve_mirror() -> (String, thread::JoinHandle<()>, std::sync::Arc<std::sync::Mutex<String>>) {
+        let received = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let mirror = received.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).unwrap();
+            *mirror.lock().unwrap() = String::from_utf8_lossy(&buffer[..count]).into_owned();
+            let body = r#"{"access_token":"tok-1","token_type":"Bearer","expires_in":3600,"refresh_token":"ref-1"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK
+content-type: application/json
+content-length: {}
+
+{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (url, server, received)
+    }
+
+    #[tokio::test]
+    async fn client_credentials_body_auth_sends_form_fields() {
+        let (url, server, received) = serve_mirror();
+        let mut config = oauth2_config("client_credentials", "body");
+        config.token_url = url;
+        let token = oauth2_token_request(&config, Some("sekrit")).await.unwrap();
+        server.join().unwrap();
+        let request = received.lock().unwrap().clone();
+        assert!(request.to_ascii_lowercase().contains("content-type: application/x-www-form-urlencoded"), "{request}");
+        assert!(request.contains("grant_type=client_credentials"), "{request}");
+        assert!(request.contains("client_id=cid"), "{request}");
+        assert!(request.contains("client_secret=sekrit"), "{request}");
+        assert!(request.contains("scope=read+write"), "{request}");
+        assert_eq!(token.access_token, "tok-1");
+        assert_eq!(token.expires_in, Some(3600));
+    }
+
+    #[tokio::test]
+    async fn client_credentials_basic_auth_sends_basic_header() {
+        let (url, server, received) = serve_mirror();
+        let mut config = oauth2_config("client_credentials", "basic");
+        config.token_url = url;
+        let token = oauth2_token_request(&config, Some("sekrit")).await.unwrap();
+        server.join().unwrap();
+        let request = received.lock().unwrap().clone();
+        assert!(request.to_ascii_lowercase().contains("authorization: basic y2lkonnla3jpda=="), "{request}");
+        assert!(!request.contains("client_secret="), "{request}");
+        assert_eq!(token.access_token, "tok-1");
+    }
+
+    #[tokio::test]
+    async fn authorization_code_exchange_carries_code_and_verifier() {
+        let (url, server, received) = serve_mirror();
+        let mut config = oauth2_config("authorization_code", "body");
+        config.token_url = url;
+        config.code = "abc123".into();
+        config.redirect_uri = "http://127.0.0.1:9/callback".into();
+        config.code_verifier = "verifier-xyz".into();
+        let token = oauth2_token_request(&config, None).await.unwrap();
+        server.join().unwrap();
+        let request = received.lock().unwrap().clone();
+        assert!(request.contains("grant_type=authorization_code"), "{request}");
+        assert!(request.contains("code=abc123"), "{request}");
+        assert!(request.contains("redirect_uri="), "{request}");
+        assert!(request.contains("code_verifier=verifier-xyz"), "{request}");
+        assert!(request.contains("client_id=cid"), "{request}");
+        assert_eq!(token.refresh_token.as_deref(), Some("ref-1"));
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_errors_surface_with_status() {
+        let (url, server) = serve("HTTP/1.1 401 Unauthorized
+content-length: 14
+
+invalid_client".to_string());
+        let mut config = oauth2_config("client_credentials", "body");
+        config.token_url = url;
+        let error = oauth2_token_request(&config, Some("wrong")).await.err().unwrap();
+        server.join().unwrap();
+        assert!(error.contains("401"), "{error}");
+        assert!(error.contains("invalid_client"), "{error}");
+    }
+
+    #[test]
+    fn per_node_secret_store_roundtrip_is_isolated() {
+        let temp = TempDir::new("oauth2-test");
+        let secrets = Secrets { dir: temp.path().to_path_buf(), identifier: "test".to_string() };
+        let store_a = secrets.store_named("oauth2-abc");
+        let bytes = serde_json::json!({ "secret": "s1" });
+        store_a.save(serde_json::to_vec(&bytes).unwrap().as_slice()).unwrap();
+        let loaded = secrets.store_named("oauth2-abc").load().unwrap().unwrap();
+        let value = serde_json::from_slice::<serde_json::Value>(&loaded).unwrap();
+        assert_eq!(value["secret"], "s1");
+        let store_b = secrets.store_named("oauth2-def");
+        assert!(store_b.load().unwrap().is_none());
+    }
+
+    #[test]
+    fn capture_parses_code_and_state() {
+        assert_eq!(
+            parse_capture_query("/callback?code=abc&state=xyz").unwrap(),
+            ("abc".to_string(), "xyz".to_string())
+        );
+        assert!(parse_capture_query("/callback?error=denied").is_err());
+    }
 }
 
 fn main() {
@@ -1805,6 +2264,14 @@ fn main() {
             cookie_purge,
             cookie_set_persist,
             proxy_credentials_set,
+            oauth2_token,
+            oauth2_secret_set,
+            oauth2_secret_get,
+            oauth2_secret_clear,
+            oauth2_authorize_begin,
+            oauth2_authorize_await,
+            oauth2_authorize_cancel,
+            open_in_browser,
             proxy_credentials_get,
             save_export_file,
             pick_file
