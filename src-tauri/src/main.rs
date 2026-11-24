@@ -684,6 +684,7 @@ fn proxy_credentials_get(app: AppHandle) -> Result<Option<ProxyCredentials>, Str
    round-trips to the frontend or lands in workspace.json. */
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct OAuth2Config {
     #[serde(default)]
     node_id: String,
@@ -708,6 +709,7 @@ struct OAuth2Config {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct TokenOut {
     access_token: String,
     token_type: String,
@@ -715,20 +717,53 @@ struct TokenOut {
     refresh_token: Option<String>,
 }
 
-fn sanitize_store_name(raw: &str) -> String {
-    raw.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_lowercase()
+fn oauth2_store_name(node_id: &str) -> Result<String, String> {
+    if node_id.is_empty() {
+        return Err("oauth2: node id is empty".to_string());
+    }
+    let mut name = String::from("oauth2-v2-");
+    for byte in node_id.as_bytes() {
+        use std::fmt::Write;
+        write!(name, "{byte:02x}").unwrap();
+    }
+    Ok(name)
+}
+
+fn oauth2_legacy_store_name(node_id: &str) -> Option<String> {
+    // Only the identity mapping is safe to migrate; uppercase and punctuation could have collided.
+    if !node_id.is_empty()
+        && node_id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        Some(format!("oauth2-{node_id}"))
+    } else {
+        None
+    }
+}
+
+fn migrate_oauth2_secret(
+    current: &store::EncryptedStore,
+    legacy: Option<&store::EncryptedStore>,
+) -> Result<(), String> {
+    let Some(legacy) = legacy else {
+        return Ok(());
+    };
+    if let Some(bytes) = legacy.load().map_err(|e| e.message())? {
+        if current.load().map_err(|e| e.message())?.is_none() {
+            current.save(&bytes).map_err(|e| e.message())?;
+        }
+        legacy.delete().map_err(|e| e.message())?;
+    }
+    Ok(())
 }
 
 fn oauth2_store(app: &AppHandle, node_id: &str) -> Result<store::EncryptedStore, String> {
     let secrets = app.state::<Secrets>();
-    let name = format!("oauth2-{}", sanitize_store_name(node_id));
-    if name.len() <= "oauth2-".len() {
-        return Err("oauth2: node id is empty".to_string());
-    }
-    Ok(secrets.store_named(&name))
+    let current = secrets.store_named(&oauth2_store_name(node_id)?);
+    let legacy = oauth2_legacy_store_name(node_id).map(|name| secrets.store_named(&name));
+    migrate_oauth2_secret(&current, legacy.as_ref())?;
+    Ok(current)
 }
 
 fn oauth2_store_secret(app: &AppHandle, node_id: &str, secret: Option<&str>) -> Result<(), String> {
@@ -757,9 +792,19 @@ fn oauth2_load_secret(app: &AppHandle, node_id: &str) -> Result<Option<String>, 
     }
 }
 
+const MAX_OAUTH2_TOKEN_RESPONSE_BYTES: usize = 256 * 1024;
+
 /// The token endpoint POST: form-encoded per RFC 6749, client auth in the body
-/// or as an HTTP Basic header. Errors carry the status and a body excerpt.
+/// or as an HTTP Basic header. Redirects are never followed with credentials.
 async fn oauth2_token_request(config: &OAuth2Config, client_secret: Option<&str>) -> Result<TokenOut, String> {
+    oauth2_token_request_with_timeout(config, client_secret, Duration::from_secs(30)).await
+}
+
+async fn oauth2_token_request_with_timeout(
+    config: &OAuth2Config,
+    client_secret: Option<&str>,
+    timeout: Duration,
+) -> Result<TokenOut, String> {
     if config.token_url.is_empty() {
         return Err("oauth2: token URL is empty".to_string());
     }
@@ -793,7 +838,13 @@ async fn oauth2_token_request(config: &OAuth2Config, client_secret: Option<&str>
     if !config.scope.is_empty() {
         form = format!("{form}&scope={}", urlencoded(&config.scope));
     }
-    let mut request = reqwest::Client::new().post(&config.token_url);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(timeout)
+        .build()
+        .map_err(|e| format!("oauth2: could not create the token client: {e}"))?;
+    let mut request = client.post(&config.token_url);
     let use_basic = client_secret.is_some() && config.client_auth_in == "basic";
     if config.grant_type == "client_credentials" || config.grant_type == "refresh_token" {
         // Credential-bearing grants: the client id (and secret) ride in the
@@ -822,18 +873,50 @@ async fn oauth2_token_request(config: &OAuth2Config, client_secret: Option<&str>
         .header("content-type", "application/x-www-form-urlencoded")
         .header("accept", "application/json")
         .body(form);
-    let response = request.send().await.map_err(|e| format!("oauth2: {e}"))?;
+    let mut response = request
+        .send()
+        .await
+        .map_err(|e| {
+            let reason = if e.is_timeout() {
+                "timed out".to_string()
+            } else {
+                e.without_url().to_string()
+            };
+            format!("oauth2: token request failed: {reason}")
+        })?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| format!("oauth2: {e}"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_OAUTH2_TOKEN_RESPONSE_BYTES as u64)
+    {
+        return Err("oauth2: the token response was too large".to_string());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("oauth2: could not read the token response: {}", e.without_url()))?
+    {
+        if bytes.len() + chunk.len() > MAX_OAUTH2_TOKEN_RESPONSE_BYTES {
+            return Err("oauth2: the token response was too large".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let body = String::from_utf8(bytes)
+        .map_err(|_| "oauth2: the token response was not valid UTF-8".to_string())?;
     if !status.is_success() {
-        let excerpt: String = body.chars().take(300).collect();
-        return Err(format!("oauth2: token endpoint returned {} — {}", status, excerpt));
+        return Err(format!(
+            "oauth2: token endpoint returned {} ({})",
+            status,
+            oauth2_error_code(&body)
+        ));
     }
     let payload: serde_json::Value = serde_json::from_str(&body)
         .map_err(|_| "oauth2: token endpoint did not return JSON".to_string())?;
     let access_token = payload
         .get("access_token")
         .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty())
         .map(String::from)
         .ok_or_else(|| "oauth2: token response carried no access_token".to_string())?;
     Ok(TokenOut {
@@ -849,6 +932,27 @@ async fn oauth2_token_request(config: &OAuth2Config, client_secret: Option<&str>
             .and_then(|v| v.as_str())
             .map(String::from),
     })
+}
+
+fn sanitized_oauth2_error_code(code: &str) -> String {
+    if !code.is_empty()
+        && code.len() <= 64
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_'))
+    {
+        code.to_string()
+    } else {
+        "request_failed".to_string()
+    }
+}
+
+fn oauth2_error_code(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("error")?.as_str().map(String::from))
+        .map(|code| sanitized_oauth2_error_code(&code))
+        .unwrap_or_else(|| "request_failed".to_string())
 }
 
 fn urlencoded(text: &str) -> String {
@@ -888,71 +992,229 @@ fn oauth2_secret_clear(app: AppHandle, node_id: String) -> Result<(), String> {
     oauth2_store_secret(&app, &node_id, None)
 }
 
-/* Loopback redirect capture for the authorization-code flow: the listener is
-   bound by oauth2_authorize_begin and consumed once by oauth2_authorize_await. */
+/* Loopback redirect capture for the authorization-code flow: each begin owns
+   an isolated listener and cancellation flag until its await consumes it. */
 
+struct OAuthCaptureSlot {
+    listener: Option<std::net::TcpListener>,
+    cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
 struct OAuthCapture {
-    listener: std::sync::Mutex<Option<std::net::TcpListener>>,
+    slots: Mutex<HashMap<String, OAuthCaptureSlot>>,
 }
 
 impl OAuthCapture {
-    fn take(&self) -> Option<std::net::TcpListener> {
-        self.listener.lock().ok().and_then(|mut guard| guard.take())
+    fn set(&self, listener: std::net::TcpListener) -> Result<String, String> {
+        let mut id = [0u8; 16];
+        rand::fill(&mut id);
+        let capture_id = id.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let slot = OAuthCaptureSlot {
+            listener: Some(listener),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        self.slots
+            .lock()
+            .map_err(|_| "oauth2: capture state was poisoned".to_string())
+            .map(|mut slots| {
+                slots.insert(capture_id.clone(), slot);
+                capture_id
+            })
+    }
+
+    fn take(&self, capture_id: &str) -> Option<(std::net::TcpListener, Arc<AtomicBool>)> {
+        let mut slots = self.slots.lock().ok()?;
+        let slot = slots.get_mut(capture_id)?;
+        let listener = slot.listener.take()?;
+        Some((listener, slot.cancelled.clone()))
+    }
+
+    fn clear(&self, capture_id: &str) {
+        if let Ok(mut slots) = self.slots.lock() {
+            if let Some(slot) = slots.remove(capture_id) {
+                slot.cancelled.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    fn finish(&self, capture_id: &str) {
+        if let Ok(mut slots) = self.slots.lock() {
+            slots.remove(capture_id);
+        }
     }
 }
 
-fn parse_capture_query(path: &str) -> Result<(String, String), String> {
+fn percent_decode(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                let high = *bytes.get(index + 1).ok_or_else(|| "oauth2: incomplete percent escape".to_string())?;
+                let low = *bytes.get(index + 2).ok_or_else(|| "oauth2: incomplete percent escape".to_string())?;
+                let hex = |byte: u8| match byte {
+                    b'0'..=b'9' => Some(byte - b'0'),
+                    b'a'..=b'f' => Some(byte - b'a' + 10),
+                    b'A'..=b'F' => Some(byte - b'A' + 10),
+                    _ => None,
+                };
+                let high = hex(high).ok_or_else(|| "oauth2: invalid percent escape".to_string())?;
+                let low = hex(low).ok_or_else(|| "oauth2: invalid percent escape".to_string())?;
+                decoded.push(high * 16 + low);
+                index += 3;
+            }
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "oauth2: redirect query was not valid UTF-8".to_string())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CapturedRedirect {
+    code: String,
+    state: String,
+    error: Option<String>,
+}
+
+fn parse_capture_query(path: &str) -> Result<Option<CapturedRedirect>, String> {
     let query = path.split('?').nth(1).unwrap_or("");
     let mut code = String::new();
     let mut state = String::new();
+    let mut error = None;
     for pair in query.split('&') {
-        let mut parts = pair.split('=');
-        let key = parts.next().unwrap_or("");
-        let value = parts.next().unwrap_or("");
-        match key {
-            "code" => code = value.to_string(),
-            "state" => state = value.to_string(),
+        let (raw_key, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = percent_decode(raw_key)?;
+        let value = percent_decode(raw_value)?;
+        match key.as_str() {
+            "code" => code = value,
+            "state" => state = value,
+            "error" if !value.is_empty() => error = Some(value),
             _ => {}
         }
     }
-    if code.is_empty() {
-        return Err("oauth2: redirect carried no code".to_string());
+    if code.is_empty() && error.is_none() {
+        return Ok(None);
     }
-    Ok((code, state))
+    Ok(Some(CapturedRedirect { code, state, error }))
 }
 
-fn capture_authorization(listener: &std::net::TcpListener, timeout: Duration) -> Result<(String, String), String> {
-    use std::io::{Read, Write};
-    let (mut stream, _) = listener
-        .accept()
-        .map_err(|e| format!("oauth2: redirect capture failed: {e}"))?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
+const MAX_OAUTH2_REDIRECT_HEADER_BYTES: usize = 16 * 1024;
+const OAUTH2_REDIRECT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn read_capture_request(
+    stream: &mut std::net::TcpStream,
+    deadline: Instant,
+    connection_deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<Option<CapturedRedirect>, String> {
+    use std::io::{ErrorKind, Read};
     let mut received = Vec::new();
     let mut buffer = [0; 1024];
     while !received.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-        let count = stream.read(&mut buffer).map_err(|e| format!("oauth2: {e}"))?;
-        if count == 0 {
-            break;
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("oauth2: authorization was cancelled".to_string());
         }
-        received.extend_from_slice(&buffer[..count]);
+        if Instant::now() >= deadline {
+            return Err("oauth2: timed out waiting for the redirect".to_string());
+        }
+        if Instant::now() >= connection_deadline {
+            return Ok(None);
+        }
+        match stream.read(&mut buffer) {
+            Ok(0) => return Ok(None),
+            Ok(count) => {
+                if received.len() + count > MAX_OAUTH2_REDIRECT_HEADER_BYTES {
+                    return Err("oauth2: the redirect headers were too large".to_string());
+                }
+                received.extend_from_slice(&buffer[..count]);
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::BrokenPipe
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(format!("oauth2: could not read the redirect: {error}")),
+        }
     }
     let request = String::from_utf8_lossy(&received);
     let request_line = request.lines().next().unwrap_or("");
     let path = request_line.split_whitespace().nth(1).unwrap_or("");
-    let (code, state) = parse_capture_query(path)?;
-    let _ = stream.write_all(
-        b"HTTP/1.1 200 OK\r\ncontent-type: text/html\r\nconnection: close\r\n\r\n\
-          <html><body><h3>postlite</h3><p>Authorization captured -  you can close this window.</p></body></html>",
-    );
-    Ok((code, state))
+    Ok(parse_capture_query(path).ok().flatten())
+}
+
+fn capture_authorization(
+    listener: &std::net::TcpListener,
+    timeout: Duration,
+    cancelled: &AtomicBool,
+) -> Result<CapturedRedirect, String> {
+    use std::io::{ErrorKind, Write};
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("oauth2: could not configure the loopback listener: {e}"))?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("oauth2: authorization was cancelled".to_string());
+        }
+        if Instant::now() >= deadline {
+            return Err("oauth2: timed out waiting for the redirect".to_string());
+        }
+        let mut stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("oauth2: redirect capture failed: {error}")),
+        };
+        stream
+            .set_nonblocking(true)
+            .map_err(|e| format!("oauth2: could not configure the redirect socket: {e}"))?;
+        let connection_deadline = (Instant::now() + OAUTH2_REDIRECT_CONNECTION_TIMEOUT).min(deadline);
+        let Some(redirect) = read_capture_request(&mut stream, deadline, connection_deadline, cancelled)? else {
+            continue;
+        };
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("oauth2: authorization was cancelled".to_string());
+        }
+        let message = if redirect.error.is_some() {
+            "Authorization was not completed - you can close this window."
+        } else {
+            "Authorization captured - you can close this window."
+        };
+        let _ = stream.write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\nconnection: close\r\n\r\n\
+                 <html><body><h3>postlite</h3><p>{message}</p></body></html>"
+            )
+            .as_bytes(),
+        );
+        return Ok(redirect);
+    }
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RedirectBegin {
     redirect_uri: String,
     port: u16,
+    capture_id: String,
 }
 
 #[tauri::command]
@@ -960,31 +1222,50 @@ fn oauth2_authorize_begin(app: AppHandle, port: u16) -> Result<RedirectBegin, St
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))
         .map_err(|e| format!("oauth2: could not bind the loopback port: {e}"))?;
     let bound = listener.local_addr().map_err(|e| e.to_string())?.port();
-    app.manage(OAuthCapture { listener: std::sync::Mutex::new(Some(listener)) });
+    let capture_id = app.state::<OAuthCapture>().set(listener)?;
     Ok(RedirectBegin {
         redirect_uri: format!("http://127.0.0.1:{bound}/callback"),
         port: bound,
+        capture_id,
     })
 }
 
 #[tauri::command]
-fn oauth2_authorize_await(app: AppHandle) -> Result<(String, String), String> {
-    let capture = app
-        .try_state::<OAuthCapture>()
-        .ok_or_else(|| "oauth2: no redirect capture is running".to_string())?;
-    let listener = capture
-        .take()
-        .ok_or_else(|| "oauth2: no redirect capture is running".to_string())?;
-    capture_authorization(&listener, Duration::from_secs(120))
+async fn oauth2_authorize_await(
+    app: AppHandle,
+    capture_id: String,
+    expected_state: String,
+) -> Result<(String, String), String> {
+    let capture = app.state::<OAuthCapture>();
+    let Some((listener, cancelled)) = capture.take(&capture_id) else {
+        return Err("oauth2: this redirect capture is no longer running".to_string());
+    };
+    // spawn_blocking: the accept loop must not freeze the main thread while
+    // the webview waits.
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        capture_authorization(&listener, Duration::from_secs(120), &cancelled)
+    })
+    .await
+    .map_err(|e| e.to_string());
+    capture.finish(&capture_id);
+    let redirect = result??;
+    // Defense in depth: the JS flow validates too, but the capture itself
+    // refuses a redirect whose state does not match the request.
+    if redirect.state != expected_state {
+        return Err("oauth2: state mismatch — the redirect did not originate from this request".to_string());
+    }
+    if let Some(error) = redirect.error {
+        return Err(format!(
+            "oauth2: authorization was denied ({})",
+            sanitized_oauth2_error_code(&error)
+        ));
+    }
+    Ok((redirect.code, redirect.state))
 }
 
 #[tauri::command]
-fn oauth2_authorize_cancel(app: AppHandle) -> Result<(), String> {
-    if let Some(capture) = app.try_state::<OAuthCapture>() {
-        if let Ok(mut guard) = capture.listener.lock() {
-            *guard = None;
-        }
-    }
+fn oauth2_authorize_cancel(app: AppHandle, capture_id: String) -> Result<(), String> {
+    app.state::<OAuthCapture>().clear(&capture_id);
     Ok(())
 }
 
@@ -995,8 +1276,14 @@ fn open_in_browser(url: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &url])
+        std::process::Command::new("powershell")
+            .env("POSTLITE_OPEN_URL", &url)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Process -FilePath $env:POSTLITE_OPEN_URL",
+            ])
             .spawn()
             .map_err(|e| e.to_string())?;
     }
@@ -1576,6 +1863,7 @@ mod tests {
         // ALL_PROXY is the fallback when the scheme var is absent.
         let all = fake_env([("all_proxy", "http://all:4")]);
         assert!(resolve_proxy(Some(&settings), None, &all, "http://example.com/").unwrap().proxy.is_some());
+        assert!(resolve_proxy(Some(&settings), None, &empty, "https://example.com/").unwrap().proxy.is_none());
     }
 
     #[test]
@@ -2128,8 +2416,8 @@ mod tests {
 
     fn oauth2_config(grant_type: &str, client_auth_in: &str) -> OAuth2Config {
         serde_json::from_value(json!({
-            "node_id": "node1", "grant_type": grant_type, "token_url": "",
-            "client_id": "cid", "scope": "read write", "client_auth_in": client_auth_in,
+            "nodeId": "node1", "grantType": grant_type, "tokenUrl": "",
+            "clientId": "cid", "scope": "read write", "clientAuthIn": client_auth_in,
         }))
         .unwrap()
     }
@@ -2146,11 +2434,7 @@ mod tests {
             *mirror.lock().unwrap() = String::from_utf8_lossy(&buffer[..count]).into_owned();
             let body = r#"{"access_token":"tok-1","token_type":"Bearer","expires_in":3600,"refresh_token":"ref-1"}"#;
             let response = format!(
-                "HTTP/1.1 200 OK
-content-type: application/json
-content-length: {}
-
-{}",
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
                 body.len(),
                 body
             );
@@ -2209,17 +2493,133 @@ content-length: {}
     }
 
     #[tokio::test]
-    async fn token_endpoint_errors_surface_with_status() {
-        let (url, server) = serve("HTTP/1.1 401 Unauthorized
-content-length: 14
-
-invalid_client".to_string());
+    async fn token_endpoint_errors_surface_status_without_response_details() {
+        let body = r#"{"error":"invalid_client","error_description":"wrong-secret"}"#;
+        let (url, server) = serve(format!(
+            "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        ));
         let mut config = oauth2_config("client_credentials", "body");
         config.token_url = url;
-        let error = oauth2_token_request(&config, Some("wrong")).await.err().unwrap();
+        let error = oauth2_token_request(&config, Some("wrong-secret")).await.err().unwrap();
         server.join().unwrap();
         assert!(error.contains("401"), "{error}");
         assert!(error.contains("invalid_client"), "{error}");
+        assert!(!error.contains("wrong-secret"), "{error}");
+        assert!(!error.contains("error_description"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_errors_do_not_reflect_untrusted_bodies() {
+        let body = "invalid_client: super-secret-token";
+        let (url, server) = serve(format!(
+            "HTTP/1.1 400 Bad Request\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        ));
+        let mut config = oauth2_config("client_credentials", "body");
+        config.token_url = url;
+        let error = oauth2_token_request(&config, Some("super-secret-token")).await.err().unwrap();
+        server.join().unwrap();
+        assert!(error.contains("request_failed"), "{error}");
+        assert!(!error.contains("super-secret-token"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn credential_bearing_token_requests_do_not_follow_redirects() {
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let (url, server) = serve(format!(
+            "HTTP/1.1 302 Found\r\nlocation: http://{}/capture\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            target.local_addr().unwrap()
+        ));
+        let mut config = oauth2_config("client_credentials", "body");
+        config.token_url = url;
+        let error = oauth2_token_request(&config, Some("sekrit")).await.err().unwrap();
+        server.join().unwrap();
+        assert!(error.contains("302"), "{error}");
+        assert!(matches!(
+            target.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+    }
+
+    #[tokio::test]
+    async fn token_requests_have_a_finite_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            thread::sleep(Duration::from_millis(150));
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
+            );
+        });
+        let mut config = oauth2_config("client_credentials", "body");
+        config.token_url = url;
+        let error = oauth2_token_request_with_timeout(&config, Some("sekrit"), Duration::from_millis(30))
+            .await
+            .err()
+            .unwrap();
+        server.join().unwrap();
+        assert!(error.to_ascii_lowercase().contains("timed out"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn token_responses_over_the_size_limit_are_rejected() {
+        let (url, server) = serve(format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            MAX_OAUTH2_TOKEN_RESPONSE_BYTES + 1
+        ));
+        let mut config = oauth2_config("client_credentials", "body");
+        config.token_url = url;
+        let error = oauth2_token_request(&config, Some("sekrit"))
+            .await
+            .err()
+            .unwrap();
+        server.join().unwrap();
+        assert!(error.contains("too large"), "{error}");
+    }
+
+    #[test]
+    fn oauth2_store_names_are_injective_and_legacy_migration_is_unambiguous() {
+        assert_eq!(
+            oauth2_store_name("request:a").unwrap(),
+            format!("oauth2-v2-{}", "request:a".as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>())
+        );
+        assert_ne!(oauth2_store_name("request:a").unwrap(), oauth2_store_name("requestA").unwrap());
+        assert_ne!(oauth2_store_name("request-a").unwrap(), oauth2_store_name("requesta").unwrap());
+        assert!(oauth2_store_name("").is_err());
+        assert_eq!(oauth2_legacy_store_name("node1").as_deref(), Some("oauth2-node1"));
+        assert_eq!(oauth2_legacy_store_name("Node1"), None);
+        assert_eq!(oauth2_legacy_store_name("node:1"), None);
+        assert_eq!(oauth2_legacy_store_name(""), None);
+    }
+
+    #[test]
+    fn oauth2_secret_migration_moves_legacy_bytes_without_overwriting_current_data() {
+        let temp = TempDir::new("oauth2-migration");
+        let old_bytes = br#"{"secret":"old"}"#;
+        let current_bytes = br#"{"secret":"current"}"#;
+        let legacy = store::EncryptedStore::open(
+            temp.path(),
+            "oauth2-node1",
+            store::FakeKeySource::empty(),
+        );
+        let current = store::EncryptedStore::open(
+            temp.path(),
+            &oauth2_store_name("node1").unwrap(),
+            store::FakeKeySource::empty(),
+        );
+        legacy.save(old_bytes).unwrap();
+        migrate_oauth2_secret(&current, Some(&legacy)).unwrap();
+        assert_eq!(current.load().unwrap().as_deref(), Some(old_bytes.as_slice()));
+        assert_eq!(legacy.load().unwrap(), None);
+
+        legacy.save(old_bytes).unwrap();
+        current.save(current_bytes).unwrap();
+        migrate_oauth2_secret(&current, Some(&legacy)).unwrap();
+        assert_eq!(current.load().unwrap().as_deref(), Some(current_bytes.as_slice()));
+        assert_eq!(legacy.load().unwrap(), None);
     }
 
     #[test]
@@ -2240,9 +2640,216 @@ invalid_client".to_string());
     fn capture_parses_code_and_state() {
         assert_eq!(
             parse_capture_query("/callback?code=abc&state=xyz").unwrap(),
-            ("abc".to_string(), "xyz".to_string())
+            Some(CapturedRedirect {
+                code: "abc".to_string(),
+                state: "xyz".to_string(),
+                error: None,
+            })
         );
-        assert!(parse_capture_query("/callback?error=denied").is_err());
+        assert_eq!(
+            parse_capture_query("/callback?code=a%2Bb%20c&state=s%26t%3D1").unwrap(),
+            Some(CapturedRedirect {
+                code: "a+b c".to_string(),
+                state: "s&t=1".to_string(),
+                error: None,
+            })
+        );
+        assert_eq!(
+            parse_capture_query("/callback?error=access_denied&state=xyz").unwrap(),
+            Some(CapturedRedirect {
+                code: String::new(),
+                state: "xyz".to_string(),
+                error: Some("access_denied".to_string()),
+            })
+        );
+        assert_eq!(parse_capture_query("/callback?unrelated=1").unwrap(), None);
+        assert!(parse_capture_query("/callback?code=%ZZ").is_err());
+    }
+
+    #[test]
+    fn capture_returns_a_denial_without_waiting_for_the_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let capture = thread::spawn(move || {
+            capture_authorization(
+                &listener,
+                Duration::from_secs(2),
+                &AtomicBool::new(false),
+            )
+        });
+        let mut client = std::net::TcpStream::connect(address).unwrap();
+        client
+            .write_all(b"GET /callback?error=access_denied&state=xyz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(response.contains("Authorization was not completed"), "{response}");
+        let redirect = capture.join().unwrap().unwrap();
+        assert_eq!(redirect.state, "xyz");
+        assert_eq!(redirect.error.as_deref(), Some("access_denied"));
+        assert!(redirect.code.is_empty());
+    }
+
+    #[test]
+    fn capture_times_out_without_waiting_for_a_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let error = capture_authorization(
+            &listener,
+            Duration::from_millis(40),
+            &AtomicBool::new(false),
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("timed out"), "{error}");
+    }
+
+    #[test]
+    fn capture_cancel_interrupts_the_wait() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let waiter = cancelled.clone();
+        let handle = thread::spawn(move || {
+            capture_authorization(&listener, Duration::from_secs(120), &waiter)
+        });
+        thread::sleep(Duration::from_millis(30));
+        cancelled.store(true, Ordering::SeqCst);
+        let error = handle.join().unwrap().err().unwrap();
+        assert!(error.contains("cancelled"), "{error}");
+    }
+
+    #[test]
+    fn capture_cancel_interrupts_a_partial_header_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let waiter = cancelled.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            let result = capture_authorization(&listener, Duration::from_secs(120), &waiter);
+            tx.send(result).unwrap();
+        });
+        let mut client = std::net::TcpStream::connect(address).unwrap();
+        client
+            .write_all(b"GET /callback?code=abc&state=xyz HTTP/1.1\r\nHost: localhost\r\n")
+            .unwrap();
+        thread::sleep(Duration::from_millis(30));
+        cancelled.store(true, Ordering::SeqCst);
+        let error = rx.recv_timeout(Duration::from_millis(500)).unwrap().err().unwrap();
+        handle.join().unwrap();
+        assert!(error.contains("cancelled"), "{error}");
+    }
+
+    #[test]
+    fn an_idle_partial_connection_does_not_block_the_real_redirect() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let capture = thread::spawn(move || {
+            capture_authorization(
+                &listener,
+                Duration::from_secs(5),
+                &AtomicBool::new(false),
+            )
+        });
+        let mut idle = std::net::TcpStream::connect(address).unwrap();
+        idle.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        idle.write_all(b"GET /callback?code=abc&state=xyz HTTP/1.1\r\n")
+            .unwrap();
+        thread::sleep(Duration::from_millis(50));
+        let mut redirect = std::net::TcpStream::connect(address).unwrap();
+        redirect
+            .write_all(b"GET /callback?code=real&state=state HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        redirect.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        let redirect = capture.join().unwrap().unwrap();
+        assert_eq!(redirect.code, "real");
+        assert_eq!(redirect.state, "state");
+        assert_eq!(redirect.error, None);
+    }
+
+    #[test]
+    fn capture_rejects_oversized_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let capture = thread::spawn(move || {
+            capture_authorization(
+                &listener,
+                Duration::from_secs(2),
+                &AtomicBool::new(false),
+            )
+        });
+        let mut client = std::net::TcpStream::connect(address).unwrap();
+        client
+            .write_all(&vec![b'x'; MAX_OAUTH2_REDIRECT_HEADER_BYTES + 1])
+            .unwrap();
+        let error = capture.join().unwrap().err().unwrap();
+        assert!(error.contains("too large"), "{error}");
+    }
+
+    #[test]
+    fn capture_slots_are_isolated_by_id() {
+        let capture = OAuthCapture::default();
+        let first_id = capture.set(TcpListener::bind("127.0.0.1:0").unwrap()).unwrap();
+        let second_id = capture.set(TcpListener::bind("127.0.0.1:0").unwrap()).unwrap();
+        assert_ne!(first_id, second_id);
+        let (_, first_cancelled) = capture.take(&first_id).unwrap();
+        capture.clear(&first_id);
+        assert!(first_cancelled.load(Ordering::SeqCst));
+        let (_, second_cancelled) = capture.take(&second_id).unwrap();
+        assert!(!second_cancelled.load(Ordering::SeqCst));
+        assert!(capture.take(&second_id).is_none());
+    }
+
+    #[test]
+    fn capture_reads_a_delayed_loopback_redirect() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let capture = thread::spawn(move || {
+            capture_authorization(
+                &listener,
+                Duration::from_secs(2),
+                &AtomicBool::new(false),
+            )
+        });
+        let mut client = std::net::TcpStream::connect(address).unwrap();
+        client
+            .write_all(b"GET /callback?code=a%2Bb&state=xyz HTTP/1.1\r\n")
+            .unwrap();
+        thread::sleep(Duration::from_millis(75));
+        client.write_all(b"Host: localhost\r\n\r\n").unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        let redirect = capture.join().unwrap().unwrap();
+        assert_eq!(redirect.code, "a+b");
+        assert_eq!(redirect.state, "xyz");
+        assert_eq!(redirect.error, None);
+    }
+
+    #[test]
+    fn capture_reads_a_real_loopback_redirect() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let capture = thread::spawn(move || {
+            capture_authorization(
+                &listener,
+                Duration::from_secs(2),
+                &AtomicBool::new(false),
+            )
+        });
+        let mut client = std::net::TcpStream::connect(address).unwrap();
+        client
+            .write_all(b"GET /callback?code=a%2Bb&state=xyz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        let redirect = capture.join().unwrap().unwrap();
+        assert_eq!(redirect.code, "a+b");
+        assert_eq!(redirect.state, "xyz");
+        assert_eq!(redirect.error, None);
     }
 }
 
@@ -2253,6 +2860,7 @@ fn main() {
             let identifier = app.config().identifier.clone();
             app.manage(JarManager::new(data.join("cookies"), identifier.clone()));
             app.manage(Secrets { dir: data.join("secrets"), identifier });
+            app.manage(OAuthCapture::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -4,9 +4,10 @@ import { readFileSync, mkdtempSync, unlinkSync, rmdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const root = resolve(import.meta.dirname, "../ui");
-const exposed = "state,DEFAULT_SETTINGS,normalizeSettings,newRequest,newFolder,newCollection,newEnvironment,newWorkspace,toPostmanCollection,fromPostman,toPostmanEnvironment,fromPostmanEnvironment,exportSettings,importSettings,applyAppSettings,flushWorkspace,persist,workspacePayload,addTab,enterWorkspace,switchWorkspace,deleteEnvironment,deleteWorkspace,responseCopyText,render,renderResponse,renderVarOverlay,send,openAppSettings,exportTarget,openDrawer,closeDrawer,openCurlDialog,renderCodeOutput,importCurlCommand,curlToTab,looksLikeCurl,importDroppedFiles,moveItem,siblingArray,treeDropTarget,endTreeDrag,exportBackup,openRestoreDialog,confirmRestore,applySavedPayload,validateBackup,describePayload,notify,loadCookies,renderCookies,refreshCookiesIfVisible,deleteCookieFilter,refreshProxyControls,loadProxyCredentials,syncCookiePersist,normExamples,normPostmanExample,saveExample,commitExample,openExampleDialog,viewExample,exitExampleView,deleteExample,renderExamples,renderJsonTreeInto,saveInPlace,executeRequest,runnerState,openRunnerDialog,startRunner,stopRunner,renderRunnerResults,normalizeHistory,recordHistory,renderSidebar,renderHistory,timeAgo,clearHistory,DYNAMIC_VARS,interpolate,duplicateNode,saveResponse,openResFind,closeResFind,looksLikeInsomnia,fromInsomnia,looksLikeHoppscotchCollections,looksLikeHoppscotchEnvironments,fromHoppscotchCollections,fromHoppscotchEnvironments,routeJsonImport,parseDataFile";
+const exposed = "state,DEFAULT_SETTINGS,normalizeSettings,newRequest,newFolder,newCollection,newEnvironment,newWorkspace,toPostmanCollection,fromPostman,toPostmanEnvironment,fromPostmanEnvironment,exportSettings,importSettings,applyAppSettings,flushWorkspace,persist,workspacePayload,addTab,enterWorkspace,switchWorkspace,deleteEnvironment,deleteWorkspace,responseCopyText,render,renderResponse,renderVarOverlay,send,openAppSettings,exportTarget,openDrawer,closeDrawer,openCurlDialog,renderCodeOutput,importCurlCommand,curlToTab,looksLikeCurl,importDroppedFiles,moveItem,siblingArray,treeDropTarget,endTreeDrag,exportBackup,openRestoreDialog,confirmRestore,applySavedPayload,validateBackup,describePayload,notify,loadCookies,renderCookies,refreshCookiesIfVisible,deleteCookieFilter,refreshProxyControls,loadProxyCredentials,syncCookiePersist,normExamples,normPostmanExample,saveExample,commitExample,openExampleDialog,viewExample,exitExampleView,deleteExample,renderExamples,renderJsonTreeInto,saveInPlace,executeRequest,runnerState,openRunnerDialog,startRunner,stopRunner,renderRunnerResults,normalizeHistory,recordHistory,renderSidebar,renderHistory,timeAgo,clearHistory,DYNAMIC_VARS,interpolate,duplicateNode,saveResponse,openResFind,closeResFind,looksLikeInsomnia,fromInsomnia,looksLikeHoppscotchCollections,looksLikeHoppscotchEnvironments,fromHoppscotchCollections,fromHoppscotchEnvironments,routeJsonImport,parseDataFile,oauth2Cache,oauth2Pending,oauth2Flows,oauth2UiState,oauth2Secrets,oauth2CacheKey,oauth2ConfigKey,bumpOAuth2Epoch,loadOAuth2SecretInto,writeOAuth2Secret,clearOAuth2Secret,acquireOAuth2Token,oauth2AuthorizeFlow,exchangeOAuth2Paste,cancelOAuth2Flow,forgetOAuth2Owner,forgetOAuth2Owners,oauth2OwnerIds,flushOAuth2Secret,runnerReport";
 // Names that are not implemented yet must not break the whole hook object: a
 // bare shorthand reference would throw a ReferenceError. Resolve each name
 // defensively so unimplemented hooks are simply `undefined` in `__verify`.
@@ -34,7 +35,15 @@ const handler = (req, res) => {
   // the token endpoint was hit (cache-reuse proof).
   if (url.pathname === "/api/oauth/hits") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ hits: globalThis.__oauthTokenHits ?? 0 }));
+    res.end(JSON.stringify({
+      hits: globalThis.__oauthTokenHits ?? 0,
+      refreshHits: globalThis.__oauthRefreshHits ?? 0,
+    }));
+    return;
+  }
+  if (url.pathname === "/api/echo/hits") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ hits: globalThis.__echoHits ?? 0 }));
     return;
   }
   if (url.pathname === "/api/oauth/token") {
@@ -42,6 +51,11 @@ const handler = (req, res) => {
     let raw = "";
     req.on("data", (c) => { raw += c; });
     req.on("end", () => {
+      if (url.searchParams.get("oversized") === "1") {
+        res.writeHead(200, { "content-type": "application/json", "content-length": String(256 * 1024 + 1) });
+        res.end();
+        return;
+      }
       // Both client credentials must be present and correct: basic auth carries
       // cid:sekrit, body auth carries client_id + client_secret.
       const basicOk = (req.headers.authorization ?? "") === "Basic " + Buffer.from("cid:sekrit").toString("base64");
@@ -49,37 +63,71 @@ const handler = (req, res) => {
       let bodySecret = "";
       let grant = "";
       let code = "";
+      let verifier = "";
       for (const pair of raw.split("&")) {
         const [k, v = ""] = pair.split("=");
         if (k === "grant_type") grant = decodeURIComponent(v);
         if (k === "client_id") bodyId = decodeURIComponent(v);
         if (k === "client_secret") bodySecret = decodeURIComponent(v);
         if (k === "code") code = decodeURIComponent(v);
+        if (k === "code_verifier") verifier = decodeURIComponent(v);
       }
-      const valid = basicOk || (bodyId === "cid" && bodySecret === "sekrit");
+      const valid = basicOk || ((bodyId === "cid" || bodyId === "refresh-fails" || bodyId === "zero-expiry" || bodyId === "slow-token") && bodySecret === "sekrit");
       if (!valid) {
         res.writeHead(401, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "invalid_client" }));
+        res.end(JSON.stringify({ error: "invalid_client", error_description: `rejected secret ${bodySecret || "(basic)"}` }));
         return;
+      }
+      if (grant === "refresh_token") {
+        globalThis.__oauthRefreshHits = (globalThis.__oauthRefreshHits ?? 0) + 1;
+        if (bodyId === "refresh-fails") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "refresh_rejected" }));
+          return;
+        }
       }
       if (grant === "authorization_code" && code !== "abc123") {
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "invalid_grant" }));
         return;
       }
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({
-        access_token: grant === "refresh_token" ? "refreshed-tok" : "runner-token-123",
-        token_type: "Bearer",
-        expires_in: 3600,
-        refresh_token: "ref-9",
-      }));
+      if (grant === "authorization_code") {
+        const expected = globalThis.__oauthChallengeByCode?.get(code);
+        const actual = createHash("sha256").update(verifier).digest("base64url");
+        if (!expected || actual !== expected) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid_pkce_verifier" }));
+          return;
+        }
+      }
+      const sendToken = () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          access_token: grant === "refresh_token" ? "refreshed-tok" : bodyId === "zero-expiry" ? "zero-token" : "runner-token-123",
+          token_type: "Bearer",
+          expires_in: bodyId === "zero-expiry" ? 0 : 3600,
+          refresh_token: "ref-9",
+        }));
+      };
+      if (bodyId === "slow-token") setTimeout(sendToken, 350);
+      else sendToken();
     });
+    return;
+  }
+  if (url.pathname === "/api/oauth/challenge") {
+    const challenge = url.searchParams.get("code_challenge") ?? "";
+    globalThis.__oauthChallengeByCode ??= new Map();
+    globalThis.__oauthChallengeByCode.set("abc123", challenge);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
     return;
   }
   if (url.pathname === "/api/oauth/authorize") {
     const target = url.searchParams.get("redirect_uri") ?? "";
     const state = url.searchParams.get("state") ?? "";
+    const challenge = url.searchParams.get("code_challenge") ?? "";
+    globalThis.__oauthChallengeByCode ??= new Map();
+    globalThis.__oauthChallengeByCode.set("abc123", challenge);
     const redirect = `${target}${target.includes("?") ? "&" : "?"}code=abc123&state=${encodeURIComponent(state)}`;
     res.writeHead(302, { location: redirect });
     res.end();
@@ -131,6 +179,7 @@ const handler = (req, res) => {
     req.on("data", c => chunks.push(c));
     req.on("end", () => {
       const legacy = url.pathname === "/api/echo";
+      if (legacy) globalThis.__echoHits = (globalThis.__echoHits ?? 0) + 1;
       const headers = { "content-type": "application/json", "x-verify": "tier1" };
       if (legacy) Object.assign(headers, { "authorization": "synthetic-auth", "set-cookie": "synthetic-cookie=1", "x-api-key": "synthetic-key" });
       res.writeHead(200, headers);
@@ -141,7 +190,7 @@ const handler = (req, res) => {
   const file = { "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/codegen.js": "codegen.js", "/styles.css": "styles.css" }[url.pathname];
   if (!file) { res.writeHead(404); res.end(); return; }
   let source = readFileSync(resolve(root, file), "utf8");
-  if (file === "app.js") source += `\nwindow.__verify = {${hookProperties}};\n`;
+  if (file === "app.js") source += `\nwindow.__verify = {${hookProperties},oauth2SkipBrowser:true};\n`;
   res.writeHead(200, { "content-type": file.endsWith("js") ? "text/javascript" : file.endsWith("css") ? "text/css" : "text/html", "cache-control": "no-store" });
   res.end(source);
 };

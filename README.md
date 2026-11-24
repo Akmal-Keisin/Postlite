@@ -1,6 +1,6 @@
 # Postlite
 
-A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and Rust. It covers the day-to-day request workflow: send HTTP calls, organize them into collections, reuse variables and auth, and move data in and out with Postman's JSON formats. It runs in a small native window instead of a browser tab.
+A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and Rust. It covers the day-to-day request workflow: send HTTP calls, organize them into collections, reuse variables and auth, replay requests from history, run data-driven collections, and move data in and out with Postman, Insomnia, and Hoppscotch JSON formats. It runs in a small native window instead of a browser tab.
 
 > **Not affiliated with Postman.** postlite is an independent project. "Postman" is a trademark of Postman, Inc.; the only relationship is that postlite can import and export Postman's open JSON formats.
 
@@ -10,8 +10,9 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
 
 ### Requests
 
-- **HTTP core**: every standard verb plus `QUERY`, URL query params, headers, and request bodies (none / raw / form-data).
+- **HTTP core**: every standard verb plus `QUERY`, URL query params, headers, and request bodies (none / raw / form-data / urlencoded).
   - **Form-data**: each row has a **Text / File** type. File rows open a native picker and upload the file's bytes as a multipart part (filename and Content-Type guessed from the extension). Text rows send plain fields. Empty File rows are skipped on send.
+  - **URL-encoded**: form rows serialize after variable interpolation as `application/x-www-form-urlencoded`; imports, exports, generated code, and cURL preserve the same semantics.
   - **Description column**: query and form-data rows carry an optional description (Postman's third column). It survives URL-bar edits and round-trips through Postman JSON.
   - **Path variables**: `:product_slug`-style segments get their own **Path Variables** table. Values are substituted URL-encoded on send and in generated code / cURL, and round-trip through Postman's `url.variable`.
   - **File fields** round-trip through Postman's `formdata` `type: "file"` + `src`. Generated cURL uses `--form key=@path`.
@@ -28,7 +29,7 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
   - copies the active request as a runnable `curl` command,
   - generates JavaScript (fetch / axios), PHP (cURL / Guzzle), Python (requests / urllib), or Go (`net/http`),
   - turns a pasted `curl` command back into a request tab.
-  - Output carries resolved variables and inherited auth, so the same secret warning applies. Flags postlite cannot express (`-x`, `--compressed`) are named on import rather than guessed.
+  - Output carries resolved variables and inherited auth, so the same secret warning applies. A cached OAuth2 access token is emitted as a bearer token; the client secret is never included. Flags postlite cannot express (`-x`, `--compressed`) are named on import rather than guessed.
 
 ### Collections, workspaces & variables
 
@@ -42,7 +43,11 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
 
 - **History**: every send — manual or through the runner — lands in a per-workspace **History** panel (the third rail view). Rows carry method, name/URL, status, latency, and a relative time; consecutive identical sends collapse with a run count, and the list is capped at 100 entries. Clicking a row re-opens what was sent: saved requests select their existing tab, unsaved scratch sends restore a snapshot clone, deleted requests say so. The sidebar filter narrows rows, **Clear all** wipes the workspace's history after confirmation, and history survives restarts independent of the "restore last session" setting. History is excluded from backups.
 
-- **Auth**: none / basic / bearer / API-key, set at request, folder, or collection level, with inheritance.
+- **Auth**: none / basic / bearer / API-key / OAuth 2.0, set at request, folder, or collection level, with inheritance.
+  - **OAuth 2.0 — client credentials**: configure the token URL, client ID, client secret, optional scope, and whether client credentials travel in the POST body (default) or an HTTP Basic header. **Get token** acquires a bearer token for later sends.
+  - **OAuth 2.0 — authorization code + PKCE**: configure the authorize URL and token URL, then use **Authorize** to open the system browser and capture the loopback callback on `127.0.0.1`. The Auth tab shows the exact redirect URI to register: a random free port by default, or an optional fixed port for providers that require one. `state` and PKCE are validated, **Cancel** stops the wait, and a code or full callback URL can be pasted manually as a fallback.
+  - **Token lifecycle**: access and refresh tokens live only in a session cache keyed by auth owner and configuration. Stale tokens refresh on demand; a rejected refresh starts authorization again. Reloading the app discards the cache. If token acquisition fails, Send stops with an `oauth2: …` error before touching the network and records a failed history entry.
+  - **Client-secret isolation**: secrets are encrypted per auth node with an OS-held key and read by the Rust token command. They never enter `workspace.json`, backups, exports, generated code, or logs.
 
 - **Variables**: `{{token}}` interpolation with collection, folder, and environment scopes.
   - **Dynamic variables**: `{{$guid}}`, `{{$timestamp}}`, `{{$isoTimestamp}}` and `{{$randomInt}}` (0–1000) resolve at send time only — generated code and cURL keep them literal. The peek overlay shows them with a *dynamic* scope.
@@ -56,7 +61,7 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
 
 ### Automation
 
-- **Scripts**: pre-request and test scripts run in a minimal `pm` sandbox: `pm.request`, `pm.response`, `pm.variables`, `pm.environment`, and `pm.collectionVariables`. Results appear in the response **Tests** tab.
+- **Scripts**: request tabs and collection/folder settings each expose pre-request and test editors. Scripts inherit from collection and folder ancestors and run through the same pipeline for manual sends and runner entries. The minimal `pm` sandbox provides `pm.request`, `pm.response`, `pm.variables`, `pm.environment`, `pm.collectionVariables`, and `pm.data` during data-driven runs. Results appear in the response **Tests** tab.
 
   ```js
   // Writes into the bound environment and persists it, so the next request can use {{token}}
@@ -67,11 +72,14 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
 
   // Session-only; not saved
   pm.variables.set("tmp", "1");
+
+  // Current runner data row; undefined outside a data-driven run
+  const userId = pm.data.get("user_id");
   ```
 
 - **Collection runner**: right-click a collection or folder, pick requests in a checkbox tree, and run them in order through the exact Send pipeline (scripts, auth, environments, cookies).
   - The run stops at the first failed test or transport error. A passing 404 negative test keeps going.
-  - **Data file**: attach a JSON array or CSV (header row names the columns) and every row becomes one iteration — all requests run per iteration, failures continue, and rows surface as the lowest-precedence `data` scope (`pm.data.get(name)`; columns resolve as plain `{{column}}` — Postman's convention — overriding nothing). Without a data file the stop-at-first-failure contract stands.
+  - **Data file**: attach a non-empty JSON array of objects or CSV (header row names the columns; quoted fields and BOM/CRLF are supported). Every row becomes one iteration, with all selected requests run per iteration and results grouped by iteration. Values are strings and form the lowest-precedence `data` scope: `pm.data.get(name)` reads the current row, and columns resolve as plain `{{column}}` (Postman's convention) only when no collection, environment, or folder variable defines that key. Failed iterations continue; without a data file the stop-at-first-failure contract stands.
   - **Delay**: an optional pause (ms) between entries, chunked so Stop still lands promptly.
   - **Report**: finished runs export as JSON or JUnit XML (one suite per entry, one case per assertion) via the native Save As dialog.
   - Live progress, a Stop button, and per-request results with test details and a body preview.
@@ -79,11 +87,13 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
 
 ### Interop
 
-- **Postman**: import and export Collection v2.1, and import / export Environment JSON.
-- **Insomnia**: import format-4 exports — workspaces become collections (folders, requests, auth, bodies), workspace environments import flattened and bind to their collection. Exotic auth types are skipped and counted.
+The **Import** menu and drag-and-drop route detect supported JSON by shape rather than filename. Unsupported auth, bodies, or resources are skipped and counted instead of guessed; no new parser dependency is required.
+
+- **Postman**: import and export Collection v2.1, and import / export Environment JSON. OAuth2 configuration (grant, URLs, client ID, scope, client-auth placement, and fixed redirect URI) round-trips, but client secrets and cached access/refresh tokens do not.
+- **Insomnia**: import format-4 exports — workspaces become collections (nested folders, requests, auth, and bodies), workspace environments import flattened and bind to their collection. Exotic auth types, binary bodies, and unsupported resources are skipped and counted.
+- **Hoppscotch**: import collection exports (an array or a single collection object) and environment JSON. Nested folders, requests, headers, query params, raw / urlencoded / multipart bodies, inherited basic / bearer / API-key auth, and OAuth2 access tokens as bearer auth are mapped. GraphQL requests and unmappable constructs are skipped and counted.
 - **Drag and drop**: drop files anywhere in the window. postlite detects the content and routes it:
-  - Postman collections and environments go to the sidebar,
-  - Insomnia v4 exports and Hoppscotch collections / environment JSON too (skipped resources are counted in the report),
+  - Postman, Insomnia, and Hoppscotch collections / environments go to the sidebar; skipped resources are counted in the import report,
   - postlite backups go to the restore dialog,
   - postlite settings go to preferences,
   - cURL scripts open in a new tab. A script that fails to parse opens in the cURL dialog instead.
@@ -115,10 +125,10 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
   - A search bar (`Ctrl+F`, or `/` while the dialog is open) filters settings live, badges each category with its match count, and jumps to the first hit. `Escape` clears the query before it closes the dialog.
   - Values live in `workspace.json` under `settings`. The whole block can be exported or imported as JSON.
 
-- **Persistence**: collections, tabs, environments, and settings save to a single JSON file in the OS app-data directory.
+- **Persistence**: collections (including variables, auth configuration, scripts, and examples), open tabs, environments and their collection bindings, per-workspace history, and settings save to a single JSON file in the OS app-data directory. Runner selections, data rows, progress, and results are ephemeral.
   - **Import / Export** in Settings can write the whole state to one `postlite.backup` file and read it back. Restore either merges beside your existing workspaces or replaces them. Replace asks twice and restores the backup's preferences.
   - Every export (collection, environment, settings, backup, code snippet) opens the native Save As dialog first. Cancelling writes nothing. The status line reports the path written.
-  - Cookie jars and proxy credentials are deliberately excluded from backups.
+  - History, cookie jars, proxy credentials, OAuth2 client secrets, and OAuth2 access/refresh tokens are deliberately excluded from backups. Backups can still contain configured basic / bearer / API-key credentials and secret variables, so store them securely.
 
 ---
 
@@ -130,7 +140,7 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
 | Backend | Rust: `reqwest` (HTTP), `cookie_store` (jar), `aes-gcm` + `keyring` (encrypted cookies / credentials), `serde` / `serde_json` (workspace file), `rfd` (native Save As) |
 | Frontend | Plain HTML / CSS / JS in `ui/`. No bundler, no npm dependencies. |
 
-Commands exposed to the frontend: `http_send`, `load_workspace`, `save_workspace`, `cookie_list` / `cookie_delete` / `cookie_purge` / `cookie_set_persist`, `proxy_credentials_set` / `proxy_credentials_get`, and `save_export_file`.
+Commands exposed to the frontend: `http_send`, `load_workspace`, `save_workspace`, `cookie_list` / `cookie_delete` / `cookie_purge` / `cookie_set_persist`, `proxy_credentials_set` / `proxy_credentials_get`, `oauth2_token`, `oauth2_secret_set` / `oauth2_secret_get` / `oauth2_secret_clear`, `oauth2_authorize_begin` / `oauth2_authorize_await` / `oauth2_authorize_cancel`, `open_in_browser`, and `save_export_file`.
 
 ---
 
@@ -176,12 +186,13 @@ Everything is stored in one file under the OS app-data directory for identifier 
 | macOS | `~/Library/Application Support/app.postlite.desktop/workspace.json` |
 | Linux | `~/.local/share/app.postlite.desktop/workspace.json` |
 
-The file is plain JSON: `version`, `settings`, `activeWorkspaceId`, and `workspaces`. Each workspace holds `collections`, `environments`, `tabs`, `activeTabId`, and `activeTabIndex`. It is easy to back up or move between machines.
+The file is plain JSON: `version`, `settings`, `activeWorkspaceId`, and `workspaces`. Each workspace holds `collections`, `environments`, `history`, `tabs`, `activeTabId`, and `activeTabIndex`. It is easy to back up or move between machines, but it is not encrypted.
 
 Secrets stay out of that file, in the same directory:
 
 - `cookies/<workspaceId>.bin`: the workspace's persistent cookie jar, AES-256-GCM encrypted. The random key lives in the OS secret store (Windows Credential Manager / macOS Keychain / Linux Secret Service) under `app.postlite.desktop.postlite.store`. If no secret store is available, cookies still work for the session but nothing is saved, and the Cookies drawer says why.
 - `secrets/global.bin`: the manual proxy credentials, encrypted the same way.
+- `secrets/oauth2-v2-<hex-nodeId>.bin`: one encrypted OAuth2 client secret per auth owner, using the same OS-held data key. No access tokens or refresh tokens are persisted.
 
 ---
 
@@ -207,7 +218,7 @@ postlite/
 
 ### Verification harnesses
 
-postlite is verified by driving the real app over the Chrome DevTools Protocol rather than unit tests.
+postlite's UI is verified by driving the real app over the Chrome DevTools Protocol; Rust behavior is covered separately by `cargo test`.
 
 **Manual flow**
 
@@ -235,7 +246,7 @@ These harnesses use a separate debug build, so they never touch a real workspace
 
 | Harness | Covers | Checks |
 | --- | --- | --- |
-| `tier1-verify.mjs` | preferences, settings search, native export, masking | 75 |
+| `tier1-verify.mjs` | smoke, preferences, settings search, native export, masking | 83 |
 | `tier1-edge.mjs` | restart, restore-session, legacy migration | 25 |
 | `tier1-close.mjs` | autosave on window close (closes the app) | — |
 | `tier2a-codegen.mjs` | cURL / code logic (no browser needed) | 20 |
@@ -247,9 +258,10 @@ These harnesses use a separate debug build, so they never touch a real workspace
 | `tier2c-dnd-verify.mjs` | drag & drop import, tree reordering | 52 |
 | `runner-verify.mjs` | collection runner: selection, ordering, env chaining, stop semantics, `pm.collectionVariables` | 43 |
 | `history-verify.mjs` | request history: model, recording, panel, click-through, backup exclusion | 24 |
-| `quick-wins-verify.mjs` | dynamic variables, `{{` autocomplete, duplication, response find bar, save response | 27 |
-| `importers-verify.mjs` | insomnia + hoppscotch import, routing, skipping | 24 |
-| `automation-verify.mjs` | data-driven runner, data scope, delay, report export | 15 |
+| `quick-wins-verify.mjs` | dynamic variables, `{{` autocomplete, duplication, response find bar, save response | 28 |
+| `importers-verify.mjs` | insomnia + hoppscotch import, routing, skipping | 29 |
+| `automation-verify.mjs` | data-driven runner, data scope, delay, report export | 16 |
+| `oauth2-verify.mjs` | client credentials, PKCE loopback / state checks, refresh fallback, manual paste, secret and merge isolation | 33 |
 
 `tier2b-verify` runs its own forward proxy on `127.0.0.1:8890` to prove manual-proxy routing and bypass on the wire. It uses the harness server's `/set` and `/echo` routes to inspect exactly which cookies were sent.
 

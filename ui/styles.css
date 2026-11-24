@@ -2996,6 +2996,10 @@ textarea.script {
   display: block;
 }
 
+#form-wrap.is-urlencoded .c-type {
+  display: none;
+}
+
 /* --------------------------------------------------------------- statusbar */
 
 .statusbar {

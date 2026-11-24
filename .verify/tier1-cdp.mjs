@@ -1,19 +1,49 @@
 import { writeFileSync } from 'node:fs';
-const targets = await (await fetch('http://127.0.0.1:9235/json/list')).json();
-const page = targets.find(t => t.type === 'page' && t.url.startsWith('http://127.0.0.1:8100'));
-if (!page) throw new Error('Isolated verification page not found');
-const socket = new WebSocket(page.webSocketDebuggerUrl);
-await new Promise(resolve => socket.onopen = resolve);
 const pending = new Map();
 let next = 0;
-socket.onmessage = ({ data }) => {
-  const msg = JSON.parse(data);
-  if (!msg.id) return;
-  const item = pending.get(msg.id);
-  if (!item) return;
-  pending.delete(msg.id);
-  msg.error ? item.reject(new Error(msg.error.message)) : item.resolve(msg.result);
-};
+let socket = null;
+
+function wire(s) {
+  s.addEventListener('message', ({ data }) => {
+    const msg = JSON.parse(data);
+    if (!msg.id) return;
+    const item = pending.get(msg.id);
+    if (!item) return;
+    pending.delete(msg.id);
+    msg.error ? item.reject(new Error(msg.error.message)) : item.resolve(msg.result);
+  });
+  return s;
+}
+
+async function connect() {
+  pending.clear();
+  const targets = await (await fetch('http://127.0.0.1:9235/json/list')).json();
+  const page = targets.find(t => t.type === 'page' && t.url.startsWith('http://127.0.0.1:8100'));
+  if (!page) throw new Error('Isolated verification page not found');
+  socket = wire(new WebSocket(page.webSocketDebuggerUrl));
+  await new Promise(resolve => socket.onopen = resolve);
+}
+
+// A dead CDP session (the webview target can be torn down mid-run by long
+// blocking commands) surfaces as a silent hang — reconnect on demand.
+export async function ping(timeoutMs = 3000) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await Promise.race([
+        cmd('Runtime.evaluate', { expression: '1', returnByValue: true }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('cdp ping timeout')), timeoutMs)),
+      ]);
+      return true;
+    } catch (err) {
+      try { socket?.close(); } catch {}
+      await connect();
+    }
+  }
+  throw new Error('cdp: page unreachable after reconnect');
+}
+
+await connect();
+
 export const cmd = (method, params = {}) => new Promise((resolve, reject) => {
   const id = ++next;
   pending.set(id, { resolve, reject });

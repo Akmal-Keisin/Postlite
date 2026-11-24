@@ -188,6 +188,27 @@ try {
       && copy.id !== v.state.collections[0].id
       && copy.name === 'Quick wins suite copy';
   })()`);
+  await check('duplicate favorite collection stays directly after its source', `(() => {
+    const v = __verify;
+    const original = v.state.collections;
+    const source = v.newCollection('Fav source', { favorite: true });
+    const other = v.newCollection('Fav other', { favorite: true });
+    const normal = v.newCollection('Normal', { favorite: false });
+    v.state.collections = [other, source, normal];
+    v.render();
+    document.querySelector('#collections .node[data-id="' + source.id + '"]')
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }));
+    document.querySelector('.ctx-menu:not([hidden]) [data-menu="duplicate"]').click();
+    const rendered = [...document.querySelectorAll('#collections .node[data-kind="collection"]')]
+      .map(row => row.querySelector('.node-name').textContent);
+    const copy = v.state.collections[2];
+    const ok = copy.name === 'Fav source copy' && copy.favorite === true
+      && v.state.collections.map(c => c.name).join(',') === 'Fav other,Fav source,Fav source copy,Normal'
+      && rendered.join(',') === 'Fav other,Fav source,Fav source copy,Normal';
+    v.state.collections = original;
+    v.persist(); v.render();
+    return ok;
+  })()`);
   await check('duplicated request example ids are fresh', `(() => {
     const v = __verify;
     const c = v.state.collections[0];

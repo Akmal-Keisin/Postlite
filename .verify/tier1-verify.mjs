@@ -157,7 +157,7 @@ try {
   await click('#app-settings-close');
   await evaluate(`(async()=>{__verify.state.tabs[0].req.method='GET'; __verify.render(); await __verify.send();})()`);
   await check('real native HTTP success', `__verify.state.tabs[0].response.status===200`);
-  await check('indent and syntax toggle affect JSON rendering', `document.querySelector('#pretty').textContent.includes('\\n    "method"') && !document.querySelector('#pretty span')`);
+  await check('indent and syntax toggle affect JSON rendering', `document.querySelector('#pretty').classList.contains('jt-host') && document.querySelector('#pretty').style.getPropertyValue('--jt-indent')==='32px' && !document.querySelector('#pretty .j-key')`);
   await click('#open-app-settings');
   await set('request.decodeResponse',false);
   await check('decode off skips JSON formatting', `document.querySelector('#pretty').textContent===__verify.state.tabs[0].response.body`);
@@ -168,7 +168,7 @@ try {
   await set('response.showHeaders',true);
   await set('response.showTime',true);
   await set('response.showSize',true);
-  await check('tab indent and syntax highlighting', `document.querySelector('#pretty').textContent.includes('\\n\t"method"') && !!document.querySelector('#pretty .j-key')`);
+  await check('tab indent and syntax highlighting', `document.querySelector('#pretty').style.getPropertyValue('--jt-indent')==='18px' && !!document.querySelector('#pretty .j-key')`);
   await click('#app-settings-close');
   await click('#res-tabs [data-tab="res-headers"]');
   await check('sensitive response headers masked', `!document.querySelector('#res-headers').textContent.includes('synthetic-auth') && document.querySelector('#res-headers').textContent.includes('••••')`);

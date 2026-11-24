@@ -112,10 +112,13 @@ check("curl parse turns form fields into a postlite form body", () => {
   assert.equal(parsed.body, "");
 });
 
-check("curl parse reports file uploads instead of inventing content", () => {
+check("curl parse maps file uploads into file form rows", () => {
   const parsed = codegen.parseCurl("curl https://a.test -F 'doc=@/tmp/report.pdf' -F 'a=b'");
-  assert.deepEqual(parsed.form, [{ key: "a", value: "b" }]);
-  assert.deepEqual(parsed.notes, ["file uploads are not imported"]);
+  assert.deepEqual(parsed.form, [
+    { key: "doc", value: "/tmp/report.pdf", type: "file" },
+    { key: "a", value: "b" },
+  ]);
+  assert.equal(parsed.body, "");
 });
 
 check("curl parse moves data into the query for --get", () => {

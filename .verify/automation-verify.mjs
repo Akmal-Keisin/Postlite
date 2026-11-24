@@ -147,6 +147,27 @@ try {
     const { ms } = await runAndFinish();
     return ms >= 600; // 3 entries with 300 ms gaps between them
   });
+  await check('data controls stay locked during a run and unlock afterward', async () => {
+    await openRunner([{ n: "1" }, { n: "2" }], 200);
+    return await evaluate(`(async () => {
+      document.querySelector('#runner-run').click();
+      const waitFor = async (predicate, timeout = 10000) => {
+        const start = Date.now();
+        while (Date.now() - start < timeout) {
+          if (predicate()) return true;
+          await new Promise(r => setTimeout(r, 20));
+        }
+        return false;
+      };
+      const started = await waitFor(() => __verify.runnerState.active);
+      const locked = document.querySelector('#runner-data-clear').disabled
+        && document.querySelector('#runner-data-pick').disabled
+        && document.querySelector('#runner-delay').disabled;
+      const done = await waitFor(() => !__verify.runnerState.active && __verify.runnerState.phase === 'done');
+      return started && locked && done && !document.querySelector('#runner-data-clear').disabled
+        && __verify.runnerState.dataRows.length === 2;
+    })()`);
+  });
   await check('stop lands promptly during a delay', async () => {
     await openRunner(null, 3000);
     await evaluate(`document.querySelector('#runner-run').click()`);

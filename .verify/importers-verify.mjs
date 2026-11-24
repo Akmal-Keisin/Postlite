@@ -42,7 +42,7 @@ const insomniaDoc = () => ({
     { _id: "req_bearer", _type: "request", parentId: "wrk_1", name: "Bearer req", method: "GET",
       url: "http://127.0.0.1:8100/api/echo", authentication: { type: "bearerToken", token: "b-tok" } },
     { _id: "env_1", _type: "environment", parentId: "wrk_1", name: "Dev",
-      data: { base_url: "http://127.0.0.1:8100", nested: { deep: "v" } } },
+      data: { base_url: "http://127.0.0.1:8100", nested: { deep: "v" }, arr: [1, 2], nil: null, flag: false, count: 0 } },
   ],
 });
 const postmanDoc = () => ({ info: { name: "Postman collection" }, item: [{ name: "P", request: { method: "GET", url: "http://x/" } }] });
@@ -99,9 +99,10 @@ try {
     const c = v.state.collections.find(c => c.name === "Insomnia workspace");
     const form = c.items.find(i => i.name === "Form req");
     const multi = c.items.find(i => i.name === "Multipart req");
-    return form.body.mode === "form-data" && form.body.form[0].key === "a" && form.body.form[0].enabled === true
+    return form.body.mode === "urlencoded" && form.body.contentType === "application/x-www-form-urlencoded"
+      && form.body.form[0].key === "a" && form.body.form[0].enabled === true
       && form.body.form[1].key === "b" && form.body.form[1].enabled === false
-      && multi.body.form[0].type === "file" && multi.body.form[0].value === "C:/x/a.png"
+      && multi.body.mode === "form-data" && multi.body.form[0].type === "file" && multi.body.form[0].value === "C:/x/a.png"
       && multi.body.form[1].type === "text";
   })()`);
   await check('auth maps basic/bearer-from-oauth2, digest skips and is counted', `(() => {
@@ -120,7 +121,56 @@ try {
     const env = v.state.environments.find(e => e.name === "Dev");
     const rows = Object.fromEntries(env.variables.map(r => [r.key, r.value]));
     return Boolean(c.environmentId) && c.environmentId === env.id
-      && rows.base_url === "http://127.0.0.1:8100" && rows["nested.deep"] === "v";
+      && rows.base_url === "http://127.0.0.1:8100" && rows["nested.deep"] === "v"
+      && !Object.hasOwn(rows, "arr") && !Object.hasOwn(rows, "nil")
+      && rows.flag === "false" && rows.count === "0";
+  })()`);
+  await check('urlencoded mode renders editable rows without file types', `(() => {
+    const v = __verify;
+    const c = v.state.collections.find(c => c.name === "Insomnia workspace");
+    const req = v.newRequest({ name: "URL UI", method: "POST", url: "http://127.0.0.1:8100/api/echo",
+      body: { mode: "urlencoded", contentType: "application/x-www-form-urlencoded", form: [{ key: "a", value: "1", enabled: true }] } });
+    c.items.push(req);
+    v.addTab(req); v.render();
+    return document.querySelector('input[name="body-mode"][value="urlencoded"]').checked
+      && document.querySelector("#form-wrap").classList.contains("is-visible")
+      && document.querySelector("#form-wrap").classList.contains("is-urlencoded")
+      && getComputedStyle(document.querySelector("#form-table th.c-type")).display === "none"
+      && document.querySelector("#content-type").value === "application/x-www-form-urlencoded";
+  })()`);
+  await check('urlencoded rows interpolate and reach the wire as form encoding', `(async () => {
+    const v = __verify;
+    const c = v.state.collections.find(c => c.name === "Insomnia workspace");
+    c.variables.push({ key: "word", value: "hello world", enabled: true });
+    const req = v.newRequest({ name: "URL wire", method: "POST", url: "http://127.0.0.1:8100/api/echo",
+      body: { mode: "urlencoded", form: [
+        { key: "a", value: "{{word}}", enabled: true },
+        { key: "b", value: "&x=", enabled: true },
+        { key: "off", value: "no", enabled: false },
+      ] } });
+    c.items.push(req);
+    const { response } = await v.executeRequest(req);
+    const echo = JSON.parse(response.body);
+    return response.status === 200 && echo.headers["content-type"] === "application/x-www-form-urlencoded"
+      && echo.body === "a=hello+world&b=%26x%3D";
+  })()`);
+  await check('Postman urlencoded export/import and code export preserve form semantics', `(() => {
+    const v = __verify;
+    const req = v.newRequest({ name: "URL export", method: "POST", url: "http://127.0.0.1:8100/api/echo",
+      body: { mode: "urlencoded", form: [
+        { key: "a", value: "hello world", enabled: true },
+        { key: "b", value: "&x=", enabled: true },
+        { key: "off", value: "no", enabled: false },
+      ] } });
+    const collection = v.newCollection("URL export", { items: [req] });
+    const doc = v.toPostmanCollection(collection);
+    const imported = v.fromPostman(doc).items[0];
+    const target = v.exportTarget(req);
+    return doc.item[0].request.body.mode === "urlencoded"
+      && doc.item[0].request.body.urlencoded[2].disabled === true
+      && imported.body.mode === "urlencoded" && imported.body.form[2].enabled === false
+      && target.form.length === 0 && target.body === "a=hello+world&b=%26x%3D"
+      && target.headers.some(h => h.key.toLowerCase() === "content-type" && h.value === "application/x-www-form-urlencoded");
   })()`);
   await check('a dangling-parent request lands at the workspace root and the query table wins', `(() => {
     const v = __verify;
@@ -208,7 +258,7 @@ try {
     const weird = c.items.find(i => i.name === "Hopp weird");
     const legacy = c.items.find(i => i.name === "Hopp legacy");
     return inner.body.mode === "raw" && inner.body.raw === '{"h":1}' && inner.body.contentType === "application/json"
-      && bearer.body.mode === "form-data" && bearer.body.form[0].key === "k"
+      && bearer.body.mode === "urlencoded" && bearer.body.form[0].key === "k"
       && apikey.body.mode === "form-data" && apikey.body.form[0].key === "f"
       && weird.body.mode === "none" && legacy.body.mode === "raw" && legacy.body.raw === "hello";
   })()`);
@@ -293,7 +343,7 @@ try {
       return raw.body.mode === "raw" && raw.body.raw === '{"v":1}' && raw.body.contentType === "application/json"
         && none.body.mode === "none"
         && form.body.mode === "form-data" && form.body.form[0].type === "file" && form.body.form[1].type === "text"
-        && urlenc.body.mode === "form-data" && urlenc.body.contentType === "application/x-www-form-urlencoded"
+        && urlenc.body.mode === "urlencoded" && urlenc.body.contentType === "application/x-www-form-urlencoded"
         && urlenc.body.form[0].key === "k";
     })()`);
   });
@@ -392,6 +442,49 @@ try {
     return await evaluate(`(async () => {
       await new Promise(r => setTimeout(r, 80));
       return __verify.state.collections.filter(c => c.name === "Insomnia workspace").length === ${JSON.stringify(before + 1)};
+    })()`);
+  });
+
+  await check('urlencoded export repairs a legacy JSON content type', `(() => {
+    const v = __verify;
+    const req = v.newRequest({ name: "Legacy URL", method: "POST", url: "http://127.0.0.1:8100/api/echo",
+      headers: [{ key: "Content-Type", value: "application/json", enabled: true }],
+      body: { mode: "urlencoded", contentType: "application/json", form: [{ key: "a", value: "1", enabled: true }] } });
+    const doc = v.toPostmanCollection(v.newCollection("Legacy URL", { items: [req] }));
+    const header = doc.item[0].request.header.find(h => h.key.toLowerCase() === "content-type");
+    return header?.value === "application/x-www-form-urlencoded" && header.disabled === false;
+  })()`);
+  await check('unsupported Postman OAuth grants skip inherited requests but preserve overrides and counts', async () => {
+    const doc = { info: { name: "Postman OAuth grants" }, auth: { type: "oauth2", oauth2: [
+      { key: "grant_type", value: "password_credentials" },
+    ] }, item: [
+      { name: "Blocked inherited", request: { method: "GET", url: "http://127.0.0.1:8100/api/echo" } },
+      { name: "Supported override", request: { method: "GET", url: "http://127.0.0.1:8100/api/echo",
+        auth: { type: "oauth2", oauth2: [
+          { key: "grant_type", value: "client_credentials" },
+          { key: "accessTokenUrl", value: "http://127.0.0.1:8100/api/oauth/token" },
+          { key: "clientId", value: "cid" },
+        ] } } },
+      { name: "No auth override", request: { method: "GET", url: "http://127.0.0.1:8100/api/echo", auth: { type: "noauth" } } },
+      { name: "Inherited folder", item: [
+        { name: "Blocked in folder", request: { method: "GET", url: "http://127.0.0.1:8100/api/echo" } },
+      ] },
+    ] };
+    await evaluate(`(async () => {
+      await __verify.importDroppedFiles([new File([JSON.stringify(${JSON.stringify(doc)})], "postman-oauth.json", { type: "application/json" })]);
+      return true;
+    })()`);
+    return await evaluate(`(() => {
+      const v = __verify;
+      const c = v.state.collections.find(c => c.name === "Postman OAuth grants");
+      const folder = c?.items.find(i => i.kind === "folder");
+      const names = (c?.items ?? []).map(i => i.name);
+      return !names.includes("Blocked inherited")
+        && names.includes("Supported override") && names.includes("No auth override")
+        && c.items.find(i => i.name === "Supported override").auth.oauth2.grantType === "client_credentials"
+        && c.items.find(i => i.name === "No auth override").auth.type === "noauth"
+        && folder.items.length === 0
+        && document.querySelector("#tool-note").textContent.includes("2 request(s) skipped");
     })()`);
   });
 

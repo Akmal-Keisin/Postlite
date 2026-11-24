@@ -105,9 +105,9 @@ const normScripts = (raw) => ({ pre: raw?.pre ?? "", test: raw?.test ?? "" });
 function normBody(raw) {
   const mode = raw?.mode ?? "none";
   return {
-    mode: mode === "form-data" || mode === "raw" || mode === "none" ? mode : "raw",
+    mode: mode === "form-data" || mode === "urlencoded" || mode === "raw" || mode === "none" ? mode : "raw",
     raw: raw?.raw ?? "",
-    contentType: raw?.contentType ?? "application/json",
+    contentType: mode === "urlencoded" ? "application/x-www-form-urlencoded" : raw?.contentType ?? "application/json",
     form: normRows(raw?.form),
   };
 }
@@ -309,11 +309,16 @@ function enabledHeaders(req) {
   const headers = req.headers
     .filter((h) => h.enabled && h.key.trim())
     .map((h) => ({ key: h.key.trim(), value: h.value }));
-  // form-data takes its Content-Type (with the multipart boundary) from reqwest.
-  if (req.body.mode === "raw" && req.body.contentType) {
-    if (!headers.some((h) => h.key.toLowerCase() === "content-type")) {
-      headers.push({ key: "Content-Type", value: req.body.contentType });
+  // Multipart takes its Content-Type (with the boundary) from reqwest.
+  if (req.body.mode === "urlencoded") {
+    const contentType = headers.filter((h) => h.key.toLowerCase() === "content-type");
+    if (contentType.length) {
+      for (const header of contentType) header.value = "application/x-www-form-urlencoded";
+    } else {
+      headers.push({ key: "Content-Type", value: "application/x-www-form-urlencoded" });
     }
+  } else if (req.body.mode === "raw" && req.body.contentType && !headers.some((h) => h.key.toLowerCase() === "content-type")) {
+    headers.push({ key: "Content-Type", value: req.body.contentType });
   }
   return headers;
 }
@@ -404,12 +409,12 @@ const base64 = (text) => {
   return btoa(binary);
 };
 
-function authHeaders(auth, vars) {
+function authHeaders(auth, vars, ownerId = "") {
   const value = (text) => interpolate(text, vars);
   if (auth.type === "oauth2") {
     // Exports and codegen embed the cached token when one exists; the send
     // path acquires/refreshes before this runs (see executeRequest).
-    const token = oauth2Cache.get(oauth2CacheKey(auth))?.token;
+    const token = ownerId ? oauth2Cache.get(oauth2CacheKey(ownerId, auth))?.token : null;
     return token ? [{ key: "Authorization", value: `Bearer ${token}` }] : [];
   }
   if (auth.type === "bearer" && value(auth.bearer.token)) {
@@ -767,6 +772,37 @@ function hydrateWorkspace(saved) {
   return ws;
 }
 
+function remapMergedWorkspaceIds(ws, taken) {
+  const nextId = () => {
+    let id;
+    do { id = uid(); } while (taken.has(id));
+    taken.add(id);
+    return id;
+  };
+  const ids = new Map();
+  const remapNode = (node) => {
+    const previous = node.id;
+    node.id = nextId();
+    ids.set(previous, node.id);
+    for (const child of node.items ?? []) remapNode(child);
+  };
+  for (const collection of ws.collections) remapNode(collection);
+  const remapRequestId = (previous) => {
+    if (ids.has(previous)) return ids.get(previous);
+    const id = nextId();
+    ids.set(previous, id);
+    return id;
+  };
+  for (const tab of ws.openTabs) {
+    if (tab.req) tab.req.id = remapRequestId(tab.req.id);
+  }
+  for (const entry of ws.history) {
+    if (entry.ref) entry.ref = ids.get(entry.ref) ?? null;
+    if (entry.snapshot?.id) entry.snapshot.id = remapRequestId(entry.snapshot.id);
+  }
+  return ws;
+}
+
 async function loadWorkspace() {
   migrateSidebarWidth();
   const raw = await invoke("load_workspace");
@@ -871,6 +907,7 @@ async function deleteWorkspace(id) {
   // The jar is keyed by workspace id, so deleting the workspace must delete its cookies too.
   try { await invoke("cookie_purge", { workspaceId: id }); }
   catch (err) { notify(`Cookies for the deleted workspace: ${String(err)}`); }
+  await forgetOAuth2Owners(ws.collections.flatMap(oauth2OwnerIds));
   state.workspaces = state.workspaces.filter((w) => w.id !== id);
   if (!state.workspaces.length) state.workspaces.push(newWorkspace());
   if (!locateWorkspace(state.activeWorkspaceId)) enterWorkspace(state.workspaces[0]);
@@ -1095,6 +1132,13 @@ function saveInPlace(req) {
 
 /* ---------------------------------------------------------------------- import */
 
+function unsupportedPostmanOAuth(raw) {
+  if (raw?.type !== "oauth2") return false;
+  const list = (name) => (Array.isArray(raw[name]) ? raw[name] : []);
+  const grant = list("oauth2").find((entry) => entry.key === "grant_type")?.value;
+  return grant !== "client_credentials" && grant !== "authorization_code";
+}
+
 function fromPostmanAuth(raw) {
   if (!raw || !raw.type) return null;
   if (raw.type === "noauth") return normAuth(null, "noauth");
@@ -1118,6 +1162,29 @@ function fromPostmanAuth(raw) {
       },
       "noauth"
     );
+  if (raw.type === "oauth2") {
+    if (unsupportedPostmanOAuth(raw)) return null;
+    const redirectUri = field("oauth2", "redirect_uri");
+    let redirectPort = "";
+    try {
+      redirectPort = redirectUri ? String(new URL(redirectUri).port || 0) : "";
+    } catch {}
+    return normAuth(
+      {
+        type: "oauth2",
+        oauth2: {
+          grantType: field("oauth2", "grant_type") === "authorization_code" ? "authorization_code" : "client_credentials",
+          authorizeUrl: field("oauth2", "authUrl"),
+          tokenUrl: field("oauth2", "accessTokenUrl"),
+          clientId: field("oauth2", "clientId"),
+          scope: field("oauth2", "scope"),
+          clientAuthIn: field("oauth2", "client_authentication") === "header" ? "basic" : "body",
+          redirectPort,
+        },
+      },
+      "noauth"
+    );
+  }
   return null;
 }
 
@@ -1129,29 +1196,31 @@ function fromPostmanEvents(events) {
 const postmanVars = (rows) =>
   (rows ?? []).map((row) => ({ key: row.key ?? "", value: String(row.value ?? ""), enabled: row.enabled !== false && !row.disabled, secret: row.secret === true || row.type === "secret" }));
 
-function importPostmanItems(items) {
+function importPostmanItems(items, skipped = { auth: 0 }, inheritedUnsupported = false) {
   const out = [];
   for (const item of items ?? []) {
     if (Array.isArray(item.item)) {
+      const blocked = item.auth ? unsupportedPostmanOAuth(item.auth) : inheritedUnsupported;
       out.push(
         newFolder({
           name: item.name ?? "Folder",
-          items: importPostmanItems(item.item),
+          items: importPostmanItems(item.item, skipped, blocked),
           auth: fromPostmanAuth(item.auth) ?? normAuth(null, "inherit"),
           variables: postmanVars(item.variable),
           scripts: fromPostmanEvents(item.event),
         })
       );
     } else if (item.request) {
-      out.push(mapPostmanItem(item));
+      const mapped = mapPostmanItem(item, skipped, inheritedUnsupported);
+      if (mapped) out.push(mapped);
     }
   }
   return out;
 }
 
-function fromPostman(doc) {
+function fromPostman(doc, skipped = { auth: 0 }) {
   return newCollection(doc?.info?.name ?? "Imported collection", {
-    items: importPostmanItems(doc.item),
+    items: importPostmanItems(doc.item, skipped, unsupportedPostmanOAuth(doc?.auth)),
     auth: fromPostmanAuth(doc.auth),
     variables: postmanVars(doc.variable),
     scripts: fromPostmanEvents(doc.event),
@@ -1185,9 +1254,14 @@ function normPostmanExample(raw) {
 }
 
 // Postman keeps events on the item while the payload itself sits under item.request.
-function mapPostmanItem(item) {
+function mapPostmanItem(item, skipped = { auth: 0 }, inheritedUnsupported = false) {
   const raw = item.request;
   const req = typeof raw === "string" ? { method: "GET", url: raw } : raw;
+  const blocked = req.auth ? unsupportedPostmanOAuth(req.auth) : inheritedUnsupported;
+  if (blocked) {
+    skipped.auth += 1;
+    return null;
+  }
   const url = typeof req.url === "string" ? { raw: req.url } : (req.url ?? {});
   const { base, params: fromRaw } = splitUrl(url.raw ?? "");
   const params = (url.query ?? []).map((query) => ({
@@ -1220,10 +1294,14 @@ function mapPostmanItem(item) {
       type: field.type === "file" ? "file" : "text",
     }));
   } else if (req.body?.mode === "urlencoded") {
-    body.mode = "raw";
-    body.raw = (req.body.urlencoded ?? [])
-      .map((field) => `${encodeURIComponent(field.key ?? "")}=${encodeURIComponent(field.value ?? "")}`)
-      .join("&");
+    body.mode = "urlencoded";
+    body.form = (req.body.urlencoded ?? []).map((field) => ({
+      key: field.key ?? "",
+      value: String(field.value ?? ""),
+      enabled: !field.disabled,
+      description: String(field.description ?? ""),
+      type: "text",
+    }));
     body.contentType = "application/x-www-form-urlencoded";
   }
 
@@ -1281,6 +1359,20 @@ function toPostmanEnvironment(env) {
 function toPostmanAuth(auth) {
   if (auth.type === "inherit") return undefined;
   if (auth.type === "noauth") return { type: "noauth" };
+  if (auth.type === "oauth2") {
+    const o = auth.oauth2;
+    const rows = [
+      ["grant_type", o.grantType],
+      ["accessTokenUrl", o.tokenUrl],
+      ["authUrl", o.authorizeUrl],
+      ["clientId", o.clientId],
+      ["scope", o.scope],
+      ["client_authentication", o.clientAuthIn === "basic" ? "header" : "body"],
+    ];
+    const port = Number(o.redirectPort);
+    if (port > 0) rows.push(["redirect_uri", `http://127.0.0.1:${port}/callback`]);
+    return { type: "oauth2", oauth2: rows.map(([key, value]) => ({ key, value, type: "string" })) };
+  }
   const fields = auth.type === "apikey"
     ? { key: auth.apikey.key, value: auth.apikey.value, in: auth.apikey.addTo } : auth[auth.type];
   return { type: auth.type, [auth.type]: Object.entries(fields).map(([key, value]) => ({ key, value, type: "string" })) };
@@ -1329,6 +1421,14 @@ function toPostmanItem(node) {
     } } };
   } else if (node.body.mode === "form-data") {
     request.body = { mode: "formdata", formdata: node.body.form.map((row) => ({ key: row.key, ...(row.type === "file" ? { src: row.value } : { value: row.value }), type: row.type === "file" ? "file" : "text", disabled: !row.enabled, ...(row.description ? { description: row.description } : {}) })) };
+  } else if (node.body.mode === "urlencoded") {
+    const contentTypes = request.header.filter((header) => header.key.toLowerCase() === "content-type");
+    if (contentTypes.length) {
+      for (const header of contentTypes) Object.assign(header, { value: "application/x-www-form-urlencoded", disabled: false });
+    } else {
+      request.header.push({ key: "Content-Type", value: "application/x-www-form-urlencoded", disabled: false });
+    }
+    request.body = { mode: "urlencoded", urlencoded: node.body.form.map((row) => ({ key: row.key, value: row.value, disabled: !row.enabled, ...(row.description ? { description: row.description } : {}) })) };
   }
   const item = { ...common, request };
   if (node.examples?.length) {
@@ -1832,10 +1932,16 @@ function applySavedPayload(saved, mode) {
       : [];
   if (!workspaces.length) throw new Error("The backup holds no workspace data.");
   if (mode === "merge") {
-    const taken = new Set(state.workspaces.map((ws) => ws.id));
+    const taken = new Set(state.workspaces.flatMap((ws) => [
+      ws.id,
+      ...(ws.collections ?? []).flatMap(oauth2OwnerIds),
+    ]));
     for (const ws of workspaces) {
-      if (taken.has(ws.id)) ws.id = uid();
+      if (taken.has(ws.id)) {
+        do { ws.id = uid(); } while (taken.has(ws.id));
+      }
       taken.add(ws.id);
+      remapMergedWorkspaceIds(ws, taken);
       state.workspaces.push(ws);
     }
     return workspaces;
@@ -1885,12 +1991,16 @@ async function confirmRestore() {
     state.settings = normalizeSettings(pendingRestore.payload.settings);
     applyAppSettings();
   }
+  const replacedOwners = mode === "replace"
+    ? [...new Set(state.workspaces.flatMap((ws) => (ws.collections ?? []).flatMap(oauth2OwnerIds)))]
+    : [];
   try {
     applySavedPayload(pendingRestore.payload, mode);
   } catch (err) {
     notify(`Restore failed: ${err.message}`);
     return;
   }
+  if (replacedOwners.length) await forgetOAuth2Owners(replacedOwners);
   enterWorkspace(activeWorkspace());
   pendingRestore = null;
   restoreDialog.close();
@@ -2332,10 +2442,11 @@ function renderBody(req) {
   $("#content-type").disabled = req.body.mode !== "raw";
   $("#body").value = req.body.raw;
   $("#body").disabled = req.body.mode !== "raw";
-  $("#form-wrap").classList.toggle("is-visible", req.body.mode === "form-data");
+  $("#form-wrap").classList.toggle("is-visible", req.body.mode === "form-data" || req.body.mode === "urlencoded");
+  $("#form-wrap").classList.toggle("is-urlencoded", req.body.mode === "urlencoded");
   $("#body").hidden = req.body.mode !== "raw";
   $("#body-empty-hint").hidden = req.body.mode !== "none";
-  renderRows($("#form-table").tBodies[0], req.body.form, { desc: true, types: true });
+  renderRows($("#form-table").tBodies[0], req.body.form, { desc: true, types: req.body.mode === "form-data" });
 }
 
 const fileName = (path) => String(path).split(/[\\/]/).pop() || String(path);
@@ -2437,9 +2548,12 @@ function authFieldsMarkup(auth, ownerId) {
         </select>
       </label>
       ${isCode ? `<label class="field"><span>Redirect port (0 = random)</span><input type="text" data-a="oauth2" data-k="redirectPort" value="${esc(o.redirectPort)}" spellcheck="false" /></label>
-      <p class="hint">Redirect URI to register with the provider: <code id="oauth2-redirect">${esc(redirectUri)}</code></p>` : ""}
+      <p class="hint">Redirect URI to register with the provider: <code id="oauth2-redirect">${esc(redirectUri)}</code></p>
+      <label class="field"><span>Manual authorization code</span><input type="text" data-oauth-paste value="" spellcheck="false" placeholder="Paste a code or the full callback URL" /></label>
+      <button type="button" class="tool" data-oauth-paste-get disabled>Exchange pasted code</button>` : ""}
       <div class="oauth2-actions">
         <button type="button" class="tool" data-oauth-get>${isCode ? "Authorize" : "Get token"}</button>
+        ${isCode ? `<button type="button" class="tool" data-oauth-cancel disabled>Cancel</button>` : ""}
         <span class="oauth2-status"></span>
       </div>`;
   }
@@ -2454,21 +2568,29 @@ function renderAuth(select, host, auth, includeInherit, ownerId) {
   select.innerHTML = authOptions(includeInherit);
   select.value = auth.type;
   host.innerHTML = authFieldsMarkup(auth, ownerId);
-  if (auth.type === "oauth2") loadOAuth2SecretInto(host, ownerId);
+  host.dataset.oauthOwner = ownerId ?? "";
+  if (auth.type === "oauth2") {
+    syncOAuth2Controls(host, ownerId, auth);
+    loadOAuth2SecretInto(host, ownerId);
+  }
 }
 
 // The client secret lives in the keyring, not in the auth object — load it
 // into the editor field after the oauth2 markup renders.
 async function loadOAuth2SecretInto(host, ownerId) {
   if (!ownerId) return;
+  const epoch = oauth2Epoch(ownerId);
   try {
     const secret = await invoke("oauth2_secret_get", { nodeId: ownerId });
+    if (oauth2Epoch(ownerId) !== epoch || host.dataset.oauthOwner !== ownerId) return;
     if (secret !== null && secret !== undefined) oauth2Secrets.set(ownerId, secret);
     const field = host.querySelector("[data-oauth-secret]");
     if (field && secret !== null && secret !== undefined) field.value = secret;
   } catch (err) {
-    const status = host.querySelector(".oauth2-status");
-    if (status) status.textContent = `oauth2: ${String(err?.message ?? err)}`;
+    if (host.dataset.oauthOwner !== ownerId) return;
+    if (!oauth2Flows.has(ownerId) && !oauth2Pending.has(ownerId)) {
+      setOAuth2Status(host.querySelector(".oauth2-status"), `oauth2: ${String(err?.message ?? err)}`, ownerId, "error");
+    }
   }
 }
 
@@ -2933,6 +3055,9 @@ function prepareRequest(req) {
   const parents = parentChain(req.id);
   const vars = collectVars(parents);
   const auth = resolveAuth(req, parents);
+  const formRows = req.body.form
+    .filter((f) => f.enabled !== false && f.key.trim() && (f.type !== "file" || f.value.trim()))
+    .map((f) => ({ key: f.key, value: f.value, type: f.type === "file" ? "file" : "text" }));
   return {
     parents,
     vars,
@@ -2944,12 +3069,8 @@ function prepareRequest(req) {
       pathVars: (req.pathVars ?? []).map((v) => ({ key: v.key, value: v.value })),
       headers: enabledHeaders(req),
       body: req.body.mode === "raw" ? req.body.raw : "",
-      form:
-        req.body.mode === "form-data"
-          ? req.body.form
-              .filter((f) => f.enabled !== false && f.key.trim() && (f.type !== "file" || f.value.trim()))
-              .map((f) => ({ key: f.key, value: f.value, type: f.type === "file" ? "file" : "text" }))
-          : [],
+      form: req.body.mode === "form-data" ? formRows : [],
+      ...(req.body.mode === "urlencoded" ? { urlencoded: formRows.map(({ key, value }) => ({ key, value })) } : {}),
     },
   };
 }
@@ -2965,9 +3086,9 @@ function normalizeUrlPath(url) {
 
 // Auth headers land after the pre-request scripts so a Content-Type set by a
 // script still wins, and every field is interpolated last.
-function finalizePrepared(prepared, auth, vars) {
+function finalizePrepared(prepared, auth, vars, ownerId = "") {
   const userContentType = prepared.headers.some((h) => h.key.toLowerCase() === "content-type");
-  for (const header of authHeaders(auth, vars)) {
+  for (const header of authHeaders(auth, vars, ownerId)) {
     if (userContentType && header.key.toLowerCase() === "content-type") continue;
     prepared.headers.push(header);
   }
@@ -2977,6 +3098,11 @@ function finalizePrepared(prepared, auth, vars) {
   prepared.params = prepared.params.map((p) => ({ key: interpolate(p.key, vars), value: interpolate(p.value, vars) }));
   prepared.headers = prepared.headers.map((h) => ({ key: interpolate(h.key, vars), value: interpolate(h.value, vars) }));
   prepared.form = prepared.form.map((f) => ({ key: interpolate(f.key, vars), value: interpolate(f.value, vars), type: f.type }));
+  if (prepared.urlencoded) {
+    const rows = prepared.urlencoded.map((f) => [interpolate(f.key, vars), interpolate(f.value, vars)]);
+    prepared.body = new URLSearchParams(rows).toString();
+    delete prepared.urlencoded;
+  }
   return prepared;
 }
 
@@ -2987,8 +3113,8 @@ const effectiveUrl = (prepared, auth, vars) =>
 // unchanged, which means the clipboard can carry a live secret (see Settings,
 // Import/Export note).
 function exportTarget(req) {
-  const { prepared, auth, vars } = prepareRequest(req);
-  finalizePrepared(prepared, auth, vars);
+  const { prepared, auth, vars, parents } = prepareRequest(req);
+  finalizePrepared(prepared, auth, vars, resolveAuthOwner(req, parents));
   return {
     method: prepared.method,
     url: effectiveUrl(prepared, auth, vars),
@@ -3002,84 +3128,344 @@ function exportTarget(req) {
 // Shared send core for manual Send and the collection runner. No tab, button
 // or response-pane side effects; pm.environment write-through inside scripts
 // is intentional and identical to manual sends (see collection-runner spec).
-const oauth2Cache = new Map(); // config identity -> { token, expiresAt, refreshToken, redirectUri, codeVerifier }
+const oauth2Cache = new Map(); // owner + config identity -> { token, expiresAt, refreshToken, redirectUri, codeVerifier }
+const oauth2Pending = new Map(); // owner -> active authorization-code exchange
+const oauth2Flows = new Map(); // owner -> in-flight browser authorization
+const oauth2SecretWrites = new Map(); // owner -> last queued keyring write
+const oauth2UiState = new Map(); // owner -> { text, phase }
+const oauth2Epochs = new Map(); // owner -> cancellation generation
 
-const oauth2CacheKey = (auth) =>
-  `${auth.oauth2.grantType}|${auth.oauth2.tokenUrl}|${auth.oauth2.clientId}|${auth.oauth2.scope}`;
+const oauth2CacheKey = (nodeId, auth) =>
+  JSON.stringify([
+    nodeId,
+    auth.oauth2.grantType,
+    auth.oauth2.tokenUrl,
+    auth.oauth2.clientId,
+    auth.oauth2.scope,
+    auth.oauth2.clientAuthIn || "body",
+  ]);
 
-async function acquireOAuth2Token(nodeId, auth) {
-  const key = oauth2CacheKey(auth);
+const oauth2ConfigKey = (nodeId, auth) =>
+  JSON.stringify([
+    nodeId,
+    auth.oauth2.grantType,
+    auth.oauth2.authorizeUrl,
+    auth.oauth2.tokenUrl,
+    auth.oauth2.clientId,
+    auth.oauth2.scope,
+    auth.oauth2.clientAuthIn || "body",
+    auth.oauth2.redirectPort,
+  ]);
+
+const oauth2Epoch = (nodeId) => oauth2Epochs.get(nodeId) ?? 0;
+const bumpOAuth2Epoch = (nodeId) => oauth2Epochs.set(nodeId, oauth2Epoch(nodeId) + 1);
+const oauth2Cancelled = () => Object.assign(new Error("authorization was cancelled"), { oauth2Cancelled: true });
+
+function assertOAuth2Epoch(nodeId, epoch) {
+  if (oauth2Epoch(nodeId) !== epoch) throw oauth2Cancelled();
+}
+
+function writeOAuth2Secret(nodeId, secret) {
+  oauth2Secrets.set(nodeId, secret);
+  const previous = oauth2SecretWrites.get(nodeId) ?? Promise.resolve();
+  const write = previous.catch(() => {}).then(() => invoke("oauth2_secret_set", { nodeId, secret }));
+  oauth2SecretWrites.set(nodeId, write);
+  write.finally(() => {
+    if (oauth2SecretWrites.get(nodeId) === write) oauth2SecretWrites.delete(nodeId);
+  }).catch(() => {});
+  return write;
+}
+
+function clearOAuth2Secret(nodeId) {
+  oauth2Secrets.delete(nodeId);
+  const previous = oauth2SecretWrites.get(nodeId) ?? Promise.resolve();
+  const clear = previous.catch(() => {}).then(() => invoke("oauth2_secret_clear", { nodeId }));
+  oauth2SecretWrites.set(nodeId, clear);
+  clear.finally(() => {
+    if (oauth2SecretWrites.get(nodeId) === clear) oauth2SecretWrites.delete(nodeId);
+  }).catch(() => {});
+  return clear;
+}
+
+async function flushOAuth2Secret(nodeId) {
+  const write = oauth2SecretWrites.get(nodeId);
+  if (write) await write;
+}
+
+async function fetchOAuth2Token(nodeId, auth, options = {}, cached = null, epoch = oauth2Epoch(nodeId)) {
+  const cacheKey = oauth2CacheKey(nodeId, auth);
   const o = auth.oauth2;
-  const cached = oauth2Cache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached;
-  // An expired authorization-code token refreshes via its refresh token and
-  // falls back to full re-auth when the refresh grant fails.
-  const refresh = cached?.refreshToken && o.grantType === "authorization_code";
   const config = {
     nodeId,
-    grantType: refresh ? "refresh_token" : o.grantType,
+    grantType: options.grantType ?? o.grantType,
     tokenUrl: o.tokenUrl,
     clientId: o.clientId,
     scope: o.scope,
     clientAuthIn: o.clientAuthIn || "body",
-    redirectUri: cached?.redirectUri ?? "",
-    code: cached?.pendingCode ?? "",
-    codeVerifier: cached?.codeVerifier ?? "",
-    refreshToken: refresh ? cached.refreshToken : "",
+    redirectUri: options.redirectUri ?? cached?.redirectUri ?? "",
+    code: options.code ?? "",
+    codeVerifier: options.codeVerifier ?? cached?.codeVerifier ?? "",
+    refreshToken: options.refreshToken ?? "",
   };
-  const pending = oauth2Pending.get(nodeId);
-  if (!refresh && o.grantType === "authorization_code" && pending?.code) {
-    config.grantType = "authorization_code";
-    config.code = pending.code;
-    config.codeVerifier = pending.verifier;
-    config.redirectUri = pending.redirectUri;
-    oauth2Pending.delete(nodeId);
-  }
   const token = await invoke("oauth2_token", { config });
+  assertOAuth2Epoch(nodeId, epoch);
+  const expiresAt = token.expiresIn === null || token.expiresIn === undefined
+    ? Number.MAX_SAFE_INTEGER
+    : Date.now() + Math.max(0, token.expiresIn - 60) * 1000;
   const entry = {
     token: token.accessToken,
-    redirectUri: cached?.redirectUri ?? "",
-    codeVerifier: cached?.codeVerifier ?? "",
-    expiresAt: token.expiresIn ? Date.now() + Math.max(0, token.expiresIn - 60) * 1000 : Number.MAX_SAFE_INTEGER,
+    redirectUri: config.redirectUri,
+    codeVerifier: config.codeVerifier,
+    expiresAt,
     refreshToken: token.refreshToken ?? cached?.refreshToken ?? null,
   };
-  oauth2Cache.set(key, entry);
+  oauth2Cache.set(cacheKey, entry);
   return entry;
 }
 
-const oauth2Pending = new Map(); // nodeId -> { code, verifier, redirectUri }
+async function acquireOAuth2Token(nodeId, auth, status = null) {
+  const requestAuth = normAuth(auth, "noauth");
+  const epoch = oauth2Epoch(nodeId);
+  await flushOAuth2Secret(nodeId);
+  assertOAuth2Epoch(nodeId, epoch);
+  const key = oauth2CacheKey(nodeId, requestAuth);
+  const cached = oauth2Cache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached;
+  if (cached?.refreshToken && requestAuth.oauth2.grantType === "authorization_code") {
+    try {
+      const entry = await fetchOAuth2Token(nodeId, requestAuth, { grantType: "refresh_token", refreshToken: cached.refreshToken }, cached, epoch);
+      assertOAuth2Epoch(nodeId, epoch);
+      return entry;
+    } catch (err) {
+      if (err?.oauth2Cancelled) throw err;
+      oauth2Cache.delete(key);
+      if (oauth2Epoch(nodeId) !== epoch) throw oauth2Cancelled();
+      setOAuth2Status(status, "Refresh failed; starting authorization again…", nodeId, "running");
+      return oauth2AuthorizeFlow(nodeId, requestAuth, status);
+    }
+  }
+  const pending = oauth2Pending.get(nodeId);
+  if (requestAuth.oauth2.grantType === "authorization_code") {
+    if (!pending?.code) return oauth2AuthorizeFlow(nodeId, requestAuth, status);
+    return exchangeOAuth2Code(nodeId, requestAuth, pending, cached, epoch);
+  }
+  const entry = await fetchOAuth2Token(nodeId, requestAuth, {}, cached, epoch);
+  assertOAuth2Epoch(nodeId, epoch);
+  return entry;
+}
+
+async function exchangeOAuth2Code(nodeId, auth, pending, cached, epoch) {
+  assertOAuth2Epoch(nodeId, epoch);
+  if (pending.exchange) {
+    const entry = await pending.exchange;
+    assertOAuth2Epoch(nodeId, epoch);
+    return entry;
+  }
+  const code = pending.code ?? "";
+  const verifier = pending.verifier ?? "";
+  const redirectUri = pending.redirectUri ?? cached?.redirectUri ?? "";
+  if (!code) throw new Error("authorization code is missing");
+  const exchange = (async () => {
+    await flushOAuth2Secret(nodeId);
+    assertOAuth2Epoch(nodeId, epoch);
+    if (oauth2Pending.get(nodeId) !== pending) throw oauth2Cancelled();
+    return fetchOAuth2Token(nodeId, auth, { code, codeVerifier: verifier, redirectUri }, cached, epoch);
+  })();
+  pending.exchange = exchange;
+  try {
+    const entry = await exchange;
+    assertOAuth2Epoch(nodeId, epoch);
+    return entry;
+  } finally {
+    if (pending.exchange === exchange) delete pending.exchange;
+  }
+}
 
 const base64urlFromBytes = (bytes) =>
   btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-// Authorization code + PKCE: bind the loopback listener, open the provider,
-// capture code+state (validated), then exchange with the verifier.
-async function oauth2AuthorizeFlow(nodeId, auth, status) {
-  const o = auth.oauth2;
-  status.textContent = "Binding the loopback port…";
-  const begin = await invoke("oauth2_authorize_begin", { port: Number(o.redirectPort) || 0 });
-  const verifier = base64urlFromBytes(crypto.getRandomValues(new Uint8Array(32)));
-  const challenge = base64urlFromBytes(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
-  const state = base64urlFromBytes(crypto.getRandomValues(new Uint8Array(16)));
-  oauth2Pending.set(nodeId, { verifier, redirectUri: begin.redirectUri });
-  const authorizeUrl = `${o.authorizeUrl}${o.authorizeUrl.includes("?") ? "&" : "?"}response_type=code&client_id=${encodeURIComponent(o.clientId)}&redirect_uri=${encodeURIComponent(begin.redirectUri)}&scope=${encodeURIComponent(o.scope)}&state=${encodeURIComponent(state)}&code_challenge=${challenge}&code_challenge_method=S256`;
-  status.textContent = `Waiting for the redirect on ${begin.redirectUri} …`;
-  await invoke("open_in_browser", { url: authorizeUrl });
+function syncOAuth2Controls(host, nodeId) {
+  if (!host || !nodeId) return;
+  const ui = oauth2UiState.get(nodeId);
+  const pending = oauth2Pending.get(nodeId);
+  const active = oauth2Flows.has(nodeId) || Boolean(pending) || ui?.phase === "running" || ui?.phase === "pending";
+  const status = host.querySelector(".oauth2-status");
+  if (status && ui) status.textContent = ui.text;
+  const get = host.querySelector("[data-oauth-get]");
+  const paste = host.querySelector("[data-oauth-paste-get]");
+  const cancel = host.querySelector("[data-oauth-cancel]");
+  if (get) get.disabled = active;
+  if (paste) paste.disabled = !pending?.verifier || Boolean(pending.manualExchange) || Boolean(pending.manualResult) || Boolean(pending.manualError);
+  if (cancel) cancel.disabled = !active;
+}
+
+function syncOAuth2Owner(nodeId) {
+  for (const host of document.querySelectorAll("[data-oauth-owner]")) {
+    if (host.dataset.oauthOwner === nodeId) syncOAuth2Controls(host, nodeId);
+  }
+}
+
+function setOAuth2Status(status, text, nodeId = null, phase = "idle") {
+  if (nodeId) oauth2UiState.set(nodeId, { text, phase });
+  if (status) status.textContent = text;
+  if (nodeId) syncOAuth2Owner(nodeId);
+}
+
+async function cancelOAuth2Capture(captureId) {
+  if (!captureId) return;
+  await invoke("oauth2_authorize_cancel", { captureId }).catch(() => {});
+}
+
+async function cancelOAuth2Flow(nodeId) {
+  const pending = oauth2Pending.get(nodeId);
+  oauth2Pending.delete(nodeId);
+  bumpOAuth2Epoch(nodeId);
+  await cancelOAuth2Capture(pending?.captureId);
+  setOAuth2Status(null, "Authorization cancelled.", nodeId, "cancelled");
+}
+
+async function oauth2AuthorizeFlow(nodeId, auth, status = null) {
+  const active = oauth2Flows.get(nodeId);
+  if (active) return active;
+  auth = normAuth(auth, "noauth");
+  const epoch = oauth2Epoch(nodeId);
+  let captureId = "";
+  let pending = null;
+  const run = (async () => {
+    const o = auth.oauth2;
+    if (!o.authorizeUrl.trim()) throw new Error("authorize URL is empty");
+    try {
+      setOAuth2Status(status, "Binding the loopback port…", nodeId, "running");
+      const begin = await invoke("oauth2_authorize_begin", { port: Number(o.redirectPort) || 0 });
+      captureId = begin.captureId;
+      assertOAuth2Epoch(nodeId, epoch);
+      const verifier = base64urlFromBytes(crypto.getRandomValues(new Uint8Array(32)));
+      const challenge = base64urlFromBytes(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+      const expectedState = base64urlFromBytes(crypto.getRandomValues(new Uint8Array(16)));
+      assertOAuth2Epoch(nodeId, epoch);
+      pending = { verifier, redirectUri: begin.redirectUri, expectedState, captureId };
+      oauth2Pending.set(nodeId, pending);
+      const authorize = new URL(o.authorizeUrl);
+      authorize.searchParams.set("response_type", "code");
+      authorize.searchParams.set("client_id", o.clientId);
+      authorize.searchParams.set("redirect_uri", begin.redirectUri);
+      authorize.searchParams.set("scope", o.scope);
+      authorize.searchParams.set("state", expectedState);
+      authorize.searchParams.set("code_challenge", challenge);
+      authorize.searchParams.set("code_challenge_method", "S256");
+      const authorizeUrl = authorize.toString();
+      window.__oauth2AuthorizeUrl = authorizeUrl;
+      window.__oauth2ExpectedState = expectedState;
+      setOAuth2Status(status, `Waiting for the redirect on ${begin.redirectUri} …`, nodeId, "pending");
+      if (!window.__verify?.oauth2SkipBrowser) await invoke("open_in_browser", { url: authorizeUrl });
+      const [code, returnedState] = await invoke("oauth2_authorize_await", { captureId, expectedState });
+      assertOAuth2Epoch(nodeId, epoch);
+      if (returnedState !== expectedState) throw new Error("state mismatch — the redirect did not originate from this request");
+      if (oauth2Pending.get(nodeId) !== pending) throw oauth2Cancelled();
+      pending.code = code;
+      setOAuth2Status(status, "Exchanging the code…", nodeId, "pending");
+      const entry = await exchangeOAuth2Code(nodeId, auth, pending, null, epoch);
+      assertOAuth2Epoch(nodeId, epoch);
+      if (oauth2Pending.get(nodeId) !== pending) throw oauth2Cancelled();
+      oauth2Pending.delete(nodeId);
+      setOAuth2Status(status, "Token acquired.", nodeId, "acquired");
+      return entry;
+    } catch (err) {
+      const current = oauth2Pending.get(nodeId);
+      if (oauth2Epoch(nodeId) !== epoch) {
+        if (current === pending) oauth2Pending.delete(nodeId);
+        await cancelOAuth2Capture(captureId);
+        throw oauth2Cancelled();
+      }
+      if (current?.manualResult) {
+        oauth2Pending.delete(nodeId);
+        setOAuth2Status(status, "Token acquired.", nodeId, "acquired");
+        return current.manualResult;
+      }
+      if (current?.manualError) {
+        oauth2Pending.delete(nodeId);
+        throw current.manualError;
+      }
+      if (current === pending) oauth2Pending.delete(nodeId);
+      await cancelOAuth2Capture(captureId);
+      throw err;
+    } finally {
+      syncOAuth2Owner(nodeId);
+    }
+  })();
+  oauth2Flows.set(nodeId, run);
+  syncOAuth2Owner(nodeId);
   try {
-    const captured = await invoke("oauth2_authorize_await");
-    const [, returnedState] = captured;
-    if (returnedState !== state) throw new Error("state mismatch — the redirect did not originate from this request");
-    const pending = oauth2Pending.get(nodeId);
-    oauth2Pending.set(nodeId, { ...pending, code: captured[0] });
-    status.textContent = "Exchanging the code…";
-    const entry = await acquireOAuth2Token(nodeId, auth);
-    status.textContent = "Token acquired.";
+    return await run;
+  } finally {
+    if (oauth2Flows.get(nodeId) === run) oauth2Flows.delete(nodeId);
+    syncOAuth2Owner(nodeId);
+  }
+}
+
+async function exchangeOAuth2Paste(nodeId, auth, status, raw) {
+  const pending = oauth2Pending.get(nodeId);
+  if (!pending?.verifier) throw new Error("start Authorize before pasting a code");
+  auth = normAuth(auth, "noauth");
+  const epoch = oauth2Epoch(nodeId);
+  let code = String(raw).trim();
+  if (/^https?:\/\//i.test(code)) {
+    const redirect = new URL(code);
+    const expected = new URL(pending.redirectUri);
+    if (redirect.origin !== expected.origin || redirect.pathname !== expected.pathname) {
+      throw new Error("callback URL does not match the loopback redirect");
+    }
+    code = redirect.searchParams.get("code") ?? "";
+    if (redirect.searchParams.get("state") !== pending.expectedState) {
+      throw new Error("state mismatch — the pasted redirect did not originate from this request");
+    }
+  }
+  if (!code) throw new Error("authorization code is missing");
+  pending.code = code;
+  const exchange = (async () => {
+    setOAuth2Status(status, "Exchanging the pasted code…", nodeId, "pending");
+    return exchangeOAuth2Code(nodeId, auth, pending, null, epoch);
+  })();
+  pending.manualExchange = exchange;
+  try {
+    const entry = await exchange;
+    if (oauth2Pending.get(nodeId) === pending) {
+      pending.manualResult = entry;
+      await cancelOAuth2Capture(pending.captureId);
+      setOAuth2Status(status, "Token acquired.", nodeId, "acquired");
+    }
     return entry;
   } catch (err) {
-    oauth2Pending.delete(nodeId);
-    await invoke("oauth2_authorize_cancel").catch(() => {});
+    if (oauth2Pending.get(nodeId) === pending) pending.manualError = err;
+    await cancelOAuth2Capture(pending.captureId);
     throw err;
   }
+}
+
+function oauth2OwnerIds(node) {
+  if (!node) return [];
+  return [node.id, ...(node.items ?? []).flatMap(oauth2OwnerIds)];
+}
+
+async function forgetOAuth2Owner(nodeId) {
+  const pending = oauth2Pending.get(nodeId);
+  oauth2Pending.delete(nodeId);
+  bumpOAuth2Epoch(nodeId);
+  oauth2UiState.delete(nodeId);
+  oauth2Secrets.delete(nodeId);
+  for (const key of oauth2Cache.keys()) {
+    try {
+      if (JSON.parse(key)[0] === nodeId) oauth2Cache.delete(key);
+    } catch {}
+  }
+  await cancelOAuth2Capture(pending?.captureId);
+  await clearOAuth2Secret(nodeId);
+}
+
+async function forgetOAuth2Owners(nodeIds) {
+  await Promise.all(nodeIds.map((nodeId) => forgetOAuth2Owner(nodeId).catch((err) => {
+    notify(`Could not clear OAuth2 credentials for a deleted node: ${String(err?.message ?? err)}`);
+  })));
 }
 
 async function executeRequest(req, data = null) {
@@ -3418,12 +3804,15 @@ $("#collections").addEventListener("click", async (event) => {
     return;
   }
   if (action === "delete") {
-    if (!await confirmDeletion(kind, nodeFor({ kind, id })?.name ?? kind)) return;
+    const target = nodeFor({ kind, id });
+    if (!await confirmDeletion(kind, target?.name ?? kind)) return;
+    const ownerIds = oauth2OwnerIds(target);
     if (kind === "collection") state.collections = state.collections.filter((c) => c.id !== id);
     else {
       removeFromTree(containerItems(cid), id);
       if (kind === "folder") state.expanded.delete(id);
     }
+    await forgetOAuth2Owners(ownerIds);
     if (state.selected?.id === id) state.selected = null;
     persist();
     render();
@@ -3523,8 +3912,6 @@ function duplicateNode(id) {
   };
   walk(copy);
   copy.name = `${source.name} copy`;
-  // A fresh copy is not yet a favorite, even when its source is.
-  if (copy.favorite === true) copy.favorite = false;
   if (at !== -1) state.collections.splice(at + 1, 0, copy);
   else siblingArray(id).splice(siblingArray(id).indexOf(source) + 1, 0, copy);
   persist();
@@ -4314,7 +4701,7 @@ async function startRunner() {
     checked.map((req) => ({ req, data: rows ? data : null, iteration: rows ? i + 1 : null, status: "pending", response: null, results: [] })));
   $("#runner-tree").hidden = true;
   $("#runner-data-row").hidden = false;
-  for (const id of ["#runner-data-pick", "#runner-delay"]) $(id).disabled = true;
+  for (const id of ["#runner-data-pick", "#runner-data-clear", "#runner-delay"]) $(id).disabled = true;
   $("#runner-results").hidden = false;
   $("#runner-cancel").hidden = true;
   $("#runner-run").hidden = true;
@@ -4372,6 +4759,9 @@ async function startRunner() {
         ? `Completed ${rows.length} iteration${rows.length === 1 ? "" : "s"} — ${failedCount} failed request${failedCount === 1 ? "" : "s"}. Results are view-only — nothing is saved.`
         : `All requests passed${rows ? ` across ${rows.length} iteration${rows.length === 1 ? "" : "s"}` : ""}. Results are view-only — nothing is saved.`;
   $("#runner-stop").hidden = true;
+  $("#runner-data-pick").disabled = false;
+  $("#runner-data-clear").disabled = false;
+  $("#runner-delay").disabled = false;
   $("#runner-export-json").hidden = false;
   $("#runner-export-junit").hidden = false;
   $("#runner-close").hidden = false;
@@ -4837,7 +5227,7 @@ for (const [sel, key] of [
       return;
     }
     rows.splice(index, 1);
-    renderRows($(sel).tBodies[0], rows, { check: true, mask: key === "headers" ? headerMasked : null, desc: key === "params" || key === "form", types: key === "form" });
+    renderRows($(sel).tBodies[0], rows, { check: true, mask: key === "headers" ? headerMasked : null, desc: key === "params" || key === "form", types: key === "form" && activeReq().body.mode === "form-data" });
     persist();
   });
 }
@@ -4865,7 +5255,7 @@ $$("[data-add]").forEach((button) =>
     const rows = rowTarget(button.dataset.add);
     if (!rows) return;
     rows.push({ key: "", value: "", enabled: true });
-    renderRows($(`#${button.dataset.add}-table`).tBodies[0], rows, { check: true, mask: button.dataset.add === "headers" ? headerMasked : null, desc: button.dataset.add === "params" || button.dataset.add === "form", types: button.dataset.add === "form" });
+    renderRows($(`#${button.dataset.add}-table`).tBodies[0], rows, { check: true, mask: button.dataset.add === "headers" ? headerMasked : null, desc: button.dataset.add === "params" || button.dataset.add === "form", types: button.dataset.add === "form" && activeReq().body.mode === "form-data" });
     persist();
   })
 );
@@ -4954,52 +5344,108 @@ $("#env-new").addEventListener("click", () => {
 function wireAuthControls(selectSel, fieldsSel, readAuth, readOwnerId = null) {
   const select = $(selectSel);
   const host = $(fieldsSel);
+  const ownerId = () => host.dataset.oauthOwner || readOwnerId?.() || "";
+  const authForOwner = () => {
+    const owner = ownerId();
+    if (!owner || owner === readOwnerId?.()) return readAuth();
+    return locate(owner)?.auth ?? null;
+  };
   select.addEventListener("change", () => {
     const auth = readAuth();
     if (!auth) return;
+    const owner = readOwnerId?.();
+    const leavingOAuth2 = auth.type === "oauth2" && (oauth2Flows.has(owner) || oauth2Pending.has(owner));
     auth.type = select.value;
-    host.innerHTML = authFieldsMarkup(auth, readOwnerId?.());
-    if (auth.type === "oauth2") loadOAuth2SecretInto(host, readOwnerId?.());
+    if (leavingOAuth2) void cancelOAuth2Flow(owner);
+    host.innerHTML = authFieldsMarkup(auth, owner);
+    host.dataset.oauthOwner = owner ?? "";
+    if (auth.type === "oauth2") {
+      syncOAuth2Controls(host, owner);
+      loadOAuth2SecretInto(host, owner);
+    }
     persist();
   });
   host.addEventListener("input", (event) => {
     const el = event.target;
     if (!el.matches("[data-oauth-secret]")) return;
-    const owner = readOwnerId?.();
+    const owner = ownerId();
     if (!owner) return;
-    oauth2Secrets.set(owner, el.value);
-    invoke("oauth2_secret_set", { nodeId: owner, secret: el.value }).catch((err) => showError(String(err)));
+    void writeOAuth2Secret(owner, el.value).catch((err) => showError(String(err)));
   });
   host.addEventListener("click", (event) => {
     const button = event.target.closest("[data-oauth-get]");
-    if (!button) return;
-    const owner = readOwnerId?.();
-    const auth = readAuth();
+    const pasteButton = event.target.closest("[data-oauth-paste-get]");
+    const cancelButton = event.target.closest("[data-oauth-cancel]");
+    if (!button && !pasteButton && !cancelButton) return;
+    const owner = ownerId();
+    if (cancelButton) {
+      if (owner) void cancelOAuth2Flow(owner);
+      return;
+    }
+    const auth = authForOwner();
     if (!auth || auth.type !== "oauth2" || !owner) return;
     const status = host.querySelector(".oauth2-status");
     if (!status) return;
-    status.textContent = auth.oauth2.grantType === "authorization_code"
-      ? "Opening the provider… waiting for the redirect."
-      : "Fetching token…";
     void (async () => {
       try {
+        if (pasteButton) {
+          const input = host.querySelector("[data-oauth-paste]");
+          const entry = await exchangeOAuth2Paste(owner, auth, status, input?.value ?? "");
+          const seconds = entry.expiresAt < Number.MAX_SAFE_INTEGER
+            ? Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000))
+            : null;
+          setOAuth2Status(status, `Token acquired${seconds ? ` — expires in ${seconds}s` : ""}.`, owner, "acquired");
+          return;
+        }
+        setOAuth2Status(status, auth.oauth2.grantType === "authorization_code"
+          ? "Opening the provider… waiting for the redirect."
+          : "Fetching token…", owner, "running");
         const entry = auth.oauth2.grantType === "authorization_code"
           ? await oauth2AuthorizeFlow(owner, auth, status)
-          : await acquireOAuth2Token(owner, auth);
+          : await acquireOAuth2Token(owner, auth, status);
         const seconds = entry.expiresAt < Number.MAX_SAFE_INTEGER
           ? Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000))
           : null;
-        status.textContent = `Token acquired${seconds ? ` — expires in ${seconds}s` : ""}.`;
+        setOAuth2Status(status, `Token acquired${seconds ? ` — expires in ${seconds}s` : ""}.`, owner, "acquired");
       } catch (err) {
-        status.textContent = `oauth2: ${String(err?.message ?? err)}`;
+        if (err?.oauth2Cancelled) {
+          syncOAuth2Owner(owner);
+          return;
+        }
+        setOAuth2Status(status, `oauth2: ${String(err?.message ?? err)}`, owner, "error");
+      } finally {
+        syncOAuth2Owner(owner);
       }
     })();
   });
   const write = (event) => {
     const el = event.target;
-    const auth = el.dataset.a ? readAuth() : null;
+    if (!el.dataset.a) return;
+    const owner = ownerId();
+    const auth = authForOwner();
     if (!auth) return;
+    const before = auth.type === "oauth2" && owner ? oauth2ConfigKey(owner, auth) : null;
     auth[el.dataset.a][el.dataset.k] = el.value;
+    const after = auth.type === "oauth2" && owner ? oauth2ConfigKey(owner, auth) : null;
+    if (before !== after && before !== null) {
+      if (oauth2Flows.has(owner) || oauth2Pending.has(owner)) {
+        void cancelOAuth2Flow(owner);
+      } else if (oauth2UiState.get(owner)?.phase === "running") {
+        bumpOAuth2Epoch(owner);
+        setOAuth2Status(null, "Configuration changed; fetch a new token.", owner, "cancelled");
+      }
+    }
+    if (el.dataset.a === "oauth2" && el.dataset.k === "grantType") {
+      host.innerHTML = authFieldsMarkup(auth, owner);
+      host.dataset.oauthOwner = owner ?? "";
+      syncOAuth2Controls(host, owner);
+      if (owner) loadOAuth2SecretInto(host, owner);
+    }
+    if (el.dataset.a === "oauth2" && el.dataset.k === "redirectPort") {
+      const port = Number(el.value) || 0;
+      const redirect = host.querySelector("#oauth2-redirect");
+      if (redirect) redirect.textContent = `http://127.0.0.1:${port || "<random>"}/callback`;
+    }
     persist(el.tagName === "SELECT");
   };
   host.addEventListener("input", write);
@@ -5060,7 +5506,9 @@ $("#url").addEventListener("change", (event) => {
 
 $$('input[name="body-mode"]').forEach((radio) =>
   radio.addEventListener("change", () => {
-    activeReq().body.mode = radio.value;
+    const body = activeReq().body;
+    body.mode = radio.value;
+    if (body.mode === "urlencoded") body.contentType = "application/x-www-form-urlencoded";
     renderBody(activeReq());
     persist();
   })
@@ -5708,7 +6156,7 @@ function insomniaBody(raw, skipped) {
   const mime = String(raw.mimeType ?? "");
   if (/urlencoded|multipart/.test(mime) && Array.isArray(raw.params)) {
     return normBody({
-      mode: "form-data",
+      mode: /urlencoded/i.test(mime) ? "urlencoded" : "form-data",
       contentType: mime,
       form: raw.params.filter((p) => p && p.name).map((p) => ({
         key: String(p.name), value: String(p.value ?? ""), enabled: p.disabled !== true,
@@ -5753,8 +6201,12 @@ function flattenEnvData(data, prefix = "") {
   const rows = [];
   for (const [key, value] of Object.entries(data ?? {})) {
     const path = prefix ? `${prefix}.${key}` : key;
-    if (value && typeof value === "object" && !Array.isArray(value)) rows.push(...flattenEnvData(value, path));
-    else rows.push({ key: path, value: String(value ?? ""), enabled: true, secret: false, description: "", type: "text" });
+    if (value && typeof value === "object") {
+      if (!Array.isArray(value)) rows.push(...flattenEnvData(value, path));
+      continue;
+    }
+    if (value === null || value === undefined) continue;
+    rows.push({ key: path, value: String(value), enabled: true, secret: false, description: "", type: "text" });
   }
   return rows;
 }
@@ -5919,7 +6371,7 @@ function hoppscotchBody(raw, skipped) {
   if (Array.isArray(raw.body)) {
     const multipart = raw.contentType === "multipart/form-data" || raw.body.some((r) => r?.isFile);
     return normBody({
-      mode: "form-data",
+      mode: multipart ? "form-data" : "urlencoded",
       contentType: multipart ? "multipart/form-data" : "application/x-www-form-urlencoded",
       form: hoppscotchRows(raw.body),
     });
@@ -5936,7 +6388,7 @@ function hoppscotchBody(raw, skipped) {
   const kind = String(raw.body ?? raw.contentType ?? "");
   const form = raw.form ?? raw.params ?? raw.bodyParams;
   if (/formURLEncoded|urlencoded/i.test(kind) && Array.isArray(form)) {
-    return normBody({ mode: "form-data", contentType: "application/x-www-form-urlencoded", form: hoppscotchRows(form) });
+    return normBody({ mode: "urlencoded", contentType: "application/x-www-form-urlencoded", form: hoppscotchRows(form) });
   }
   if (/formData|multipart/i.test(kind) && Array.isArray(form)) {
     return normBody({ mode: "form-data", contentType: "multipart/form-data", form: hoppscotchRows(form) });
@@ -6011,8 +6463,10 @@ function fromHoppscotchEnvironments(doc) {
    detection in Postman-first order, per-format mappers, honest counts. */
 function routeJsonImport(doc, label, added, failures) {
   if (Array.isArray(doc?.item)) {
-    state.collections.push(fromPostman(doc));
+    const skipped = { auth: 0 };
+    state.collections.push(fromPostman(doc, skipped));
     added.collections += 1;
+    added.skipped += skipped.auth;
     return true;
   }
   if (doc && typeof doc === "object" && !Array.isArray(doc) && Array.isArray(doc.values ?? doc.variables)) {

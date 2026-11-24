@@ -271,6 +271,7 @@
             <div class="body-mode">
               <label><input type="radio" name="body-mode" value="none" /> none</label>
               <label><input type="radio" name="body-mode" value="form-data" /> form-data</label>
+              <label><input type="radio" name="body-mode" value="urlencoded" /> urlencoded</label>
               <label><input type="radio" name="body-mode" value="raw" /> raw</label>
               <select id="content-type" aria-label="Body content type">
                 <option value="">text</option>
@@ -289,7 +290,7 @@
               </table>
               <button class="link" data-add="form">+ Add field</button>
             </div>
-            <p class="hint" id="body-empty-hint" hidden>This request has no body. Switch to form-data or raw to add one.</p>
+            <p class="hint" id="body-empty-hint" hidden>This request has no body. Switch to form-data, urlencoded, or raw to add one.</p>
             <textarea id="body" spellcheck="false" aria-label="Raw request body"></textarea>
           </div>
 
