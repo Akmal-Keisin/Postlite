@@ -311,10 +311,17 @@ try {
     return true;
   })()`);
   const sendTo = (url) => evaluate(`(async () => {
+    const hello = __verify.state.tabs.find(tab => tab.req.name === 'Hello');
+    if (__verify.state.activeTabId !== hello.id) {
+      __verify.state.activeTabId = hello.id;
+      __verify.state.selected = null;
+      __verify.render();
+    }
     __verify.state.collections[0].items[0].url = ${JSON.stringify('http://127.0.0.1:8100')} + ${JSON.stringify(url)};
     await __verify.send();
     return true;
   })()`);
+  const fixtureB64 = async (path) => Buffer.from(await (await fetch(`http://127.0.0.1:8100${path}`)).arrayBuffer()).toString('base64');
   const clickSave = () => evaluate(`(() => { window.__qwSaves = []; document.querySelector('#save-res').click(); return true })()`);
   await check('text response saves its exact body with a derived name', async () => {
     await sendTo('/api/echo?n=1');
@@ -338,6 +345,249 @@ try {
       // Binary saves carry the body once: contents stays empty, base64 holds the bytes.
       return args.defaultName === 'bin.bin' && args.contents === ''
         && bytes.length === 9 && expected.every((b, i) => bytes[i] === b);
+    })()`);
+  });
+  await check('PDF responses use the native preview with byte-faithful content', async () => {
+    const expected = await fixtureB64('/api/pdf');
+    await sendTo('/api/pdf');
+    return await evaluate(`(async () => {
+      const frame = document.querySelector('#html-preview');
+      const pdf = document.querySelector('#pdf-preview');
+      const pretty = document.querySelector('#res-tabs [data-tab="pretty"]');
+      const raw = document.querySelector('#res-tabs [data-tab="raw"]');
+      if (!frame || !pdf || !frame.hidden || pdf.hidden || !pdf.data.startsWith('blob:')) return false;
+      const blob = await fetch(pdf.data);
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const binary = atob(${JSON.stringify(expected)});
+      return document.querySelector('#preview').classList.contains('is-active')
+        && pretty.hidden && raw.hidden
+        && document.querySelector('#raw').textContent === ''
+        && document.querySelector('#pretty').textContent === ''
+        && pdf.getAttribute('type') === 'application/pdf'
+        && blob.headers.get('content-type') === 'application/pdf'
+        && bytes.length === binary.length
+        && Array.from(binary).every((c, i) => c.charCodeAt(0) === bytes[i])
+        && Boolean(__verify.state.tabs[0].response.body_b64);
+    })()`);
+  });
+  await check('PDF magic is detected from base64 when the server mislabels the content type', async () => {
+    const expected = await fixtureB64('/api/pdf');
+    await sendTo('/api/pdf-mislabeled');
+    await evaluate(`(() => {
+      const tab = __verify.state.tabs[0];
+      tab.response = { ...tab.response, body: '' };
+      __verify.renderResponse();
+      return true;
+    })()`);
+    return await evaluate(`(async () => {
+      const frame = document.querySelector('#html-preview');
+      const pdf = document.querySelector('#pdf-preview');
+      const response = __verify.state.tabs[0].response;
+      if (!frame || !pdf || !frame.hidden || pdf.hidden || !pdf.data.startsWith('blob:') || !response.body_b64) return false;
+      const bytes = new Uint8Array(await (await fetch(pdf.data)).arrayBuffer());
+      const binary = atob(${JSON.stringify(expected)});
+      return document.querySelector('#preview').classList.contains('is-active')
+        && document.querySelector('#res-tabs [data-tab="pretty"]').hidden
+        && document.querySelector('#res-tabs [data-tab="raw"]').hidden
+        && bytes.length === binary.length && Array.from(binary).every((c, i) => c.charCodeAt(0) === bytes[i]);
+    })()`);
+  });
+  await check('saved PDF examples preserve exact bytes in preview and storage', async () => {
+    const expected = await fixtureB64('/api/pdf');
+    await sendTo('/api/pdf');
+    await evaluate(`(() => {
+      const tab = __verify.state.tabs[0];
+      __verify.commitExample('PDF example');
+      const example = tab.req.examples.find((item) => item.name === 'PDF example');
+      tab.exampleView = example.id;
+      __verify.renderResponse();
+      return true;
+    })()`);
+    await settle();
+    return await evaluate(`(async () => {
+      const tab = __verify.state.tabs[0];
+      const example = tab.req.examples.find((item) => item.name === 'PDF example');
+      const pdf = document.querySelector('#pdf-preview');
+      if (!example || example.bodyB64 !== ${JSON.stringify(expected)} || pdf.hidden || !pdf.data.startsWith('blob:')) return false;
+      const bytes = new Uint8Array(await (await fetch(pdf.data)).arrayBuffer());
+      const binary = atob(${JSON.stringify(expected)});
+      const raw = await __TAURI__.core.invoke('load_workspace');
+      const stored = JSON.parse(raw).workspaces[0].collections[0].items[0];
+      const storedExample = stored.examples.find((item) => item.name === 'PDF example');
+      return bytes.length === binary.length
+        && Array.from(binary).every((c, i) => c.charCodeAt(0) === bytes[i])
+        && storedExample.bodyB64 === ${JSON.stringify(expected)};
+    })()`);
+  });
+  await check('valid UTF-8 PDF responses reconstruct their exact text bytes', async () => {
+    const expected = await fixtureB64('/api/pdf-utf8');
+    await sendTo('/api/pdf-utf8');
+    return await evaluate(`(async () => {
+      const response = __verify.state.tabs[0].response;
+      const pdf = document.querySelector('#pdf-preview');
+      if (response.body_b64 || pdf.hidden || !pdf.data.startsWith('blob:')) return false;
+      const bytes = new Uint8Array(await (await fetch(pdf.data)).arrayBuffer());
+      const binary = atob(${JSON.stringify(expected)});
+      return bytes.length === binary.length && Array.from(binary).every((c, i) => c.charCodeAt(0) === bytes[i]);
+    })()`);
+  });
+  await check('unavailable PDF viewers expose a working Save fallback', async () => {
+    await sendTo('/api/pdf');
+    await evaluate(`(() => {
+      const pdf = document.querySelector('#pdf-preview');
+      pdf.type = 'application/x-postlite-unsupported';
+      pdf.data = pdf.data;
+      return true;
+    })()`);
+    const visible = await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 100));
+      const fallback = document.querySelector('#pdf-preview .preview-fallback');
+      if (!fallback || fallback.getBoundingClientRect().height === 0) return false;
+      document.querySelector('#pdf-preview-save').click();
+      return true;
+    })()`);
+    if (!visible) return false;
+    return await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 60));
+      const args = window.__qwSaves.at(-1);
+      return Boolean(args) && args.defaultName.endsWith('.pdf')
+        && args.contentsB64 === __verify.state.tabs[0].response.body_b64;
+    })()`);
+  });
+  await check('replacing a response revokes its PDF blob URL', async () => {
+    const previousUrl = await evaluate(`(() => {
+      window.__pdfReplaceNode = document.querySelector('#pdf-preview');
+      return window.__pdfReplaceNode?.data;
+    })()`);
+    await evaluate(`(() => {
+      window.__revokedUrls = [];
+      const original = URL.revokeObjectURL.bind(URL);
+      URL.revokeObjectURL = (url) => { window.__revokedUrls.push(url); original(url); };
+      return true;
+    })()`);
+    await sendTo('/api/echo?preview=replace');
+    const replaced = await evaluate(`(async () => {
+      await new Promise(resolve => setTimeout(resolve, 160));
+      const pdf = document.querySelector('#pdf-preview');
+      const pretty = document.querySelector('#res-tabs [data-tab="pretty"]');
+      const raw = document.querySelector('#res-tabs [data-tab="raw"]');
+      return Boolean(pdf?.hidden && window.__revokedUrls.includes(${JSON.stringify(previousUrl)}))
+        && !pretty.hidden && !raw.hidden
+        && document.querySelector('#res-tabs .tab.is-active')?.dataset.tab === __verify.state.settings.response.defaultView;
+    })()`);
+    if (!replaced) return false;
+    await sendTo('/api/pdf');
+    return await evaluate(`(async () => {
+      const pdf = document.querySelector('#pdf-preview');
+      if (pdf === window.__pdfReplaceNode || window.__pdfReplaceNode.isConnected || pdf.hidden
+        || pdf.data === ${JSON.stringify(previousUrl)} || !window.__revokedUrls.includes(${JSON.stringify(previousUrl)})) return false;
+      const blob = await fetch(pdf.data);
+      return blob.ok && blob.headers.get('content-type') === 'application/pdf';
+    })()`);
+  });
+  await check('switching request tabs defers PDF teardown and reuses a quick return', async () => {
+    await evaluate(`(() => {
+      const other = __verify.addTab(__verify.newRequest({ name: 'Other request', url: 'http://127.0.0.1:8100/api/echo?n=2' }));
+      window.__pdfOtherTabId = other.id;
+      const first = __verify.state.tabs.find(tab => tab.req.name === 'Hello');
+      [...document.querySelectorAll('#tabbar .tab-item')]
+        .find(button => button.textContent.includes(first.req.name)).click();
+      return true;
+    })()`);
+    await sendTo('/api/pdf');
+    const switched = await evaluate(`(() => {
+      const pdf = document.querySelector('#pdf-preview');
+      window.__pdfSwitchUrl = pdf.data;
+      window.__pdfSwitchNode = pdf;
+      window.__revokedUrls = [];
+      const original = URL.revokeObjectURL.bind(URL);
+      URL.revokeObjectURL = (url) => { window.__revokedUrls.push(url); original(url); };
+      const started = performance.now();
+      [...document.querySelectorAll('#tabbar .tab-item')]
+        .find(button => button.textContent.includes('Other request')).click();
+      const current = document.querySelector('#pdf-preview');
+      return {
+        active: __verify.state.activeTabId === window.__pdfOtherTabId,
+        kept: current === window.__pdfSwitchNode && window.__pdfSwitchNode.isConnected,
+        hidden: current.hidden && current.hasAttribute('data'),
+        deferred: window.__revokedUrls.length === 0,
+        elapsed: performance.now() - started,
+      };
+    })()`);
+    if (!switched.active || !switched.kept || !switched.hidden || !switched.deferred || switched.elapsed >= 100) return false;
+    const returned = await evaluate(`(() => {
+      [...document.querySelectorAll('#tabbar .tab-item')]
+        .find(button => button.textContent.includes('Hello')).click();
+      const pdf = document.querySelector('#pdf-preview');
+      return pdf === window.__pdfSwitchNode && !pdf.hidden && pdf.data === window.__pdfSwitchUrl
+        && window.__revokedUrls.length === 0;
+    })()`);
+    if (!returned) return false;
+    await evaluate(`(() => {
+      [...document.querySelectorAll('#tabbar .tab-item')]
+        .find(button => button.textContent.includes('Other request')).click();
+      return true;
+    })()`);
+    return await evaluate(`(async () => {
+      await new Promise(resolve => setTimeout(resolve, 160));
+      const pdf = document.querySelector('#pdf-preview');
+      return pdf !== window.__pdfSwitchNode && !window.__pdfSwitchNode.isConnected
+        && window.__revokedUrls.includes(window.__pdfSwitchUrl)
+        && !pdf.hasAttribute('data')
+        && !document.querySelector('#res-tabs [data-tab="pretty"]').hidden
+        && !document.querySelector('#res-tabs [data-tab="raw"]').hidden
+        && window.__runtimeErrors.length === 0;
+    })()`);
+  });
+  await check('pagehide immediately detaches the PDF viewer and revokes its blob', async () => {
+    await sendTo('/api/pdf');
+    return await evaluate(`(() => {
+      const pdf = document.querySelector('#pdf-preview');
+      window.__pagehidePdfNode = pdf;
+      window.__pagehidePdfUrl = pdf.data;
+      window.__revokedUrls = [];
+      const original = URL.revokeObjectURL.bind(URL);
+      URL.revokeObjectURL = (url) => { window.__revokedUrls.push(url); original(url); };
+      window.dispatchEvent(new PageTransitionEvent('pagehide'));
+      const current = document.querySelector('#pdf-preview');
+      return current !== pdf && !pdf.isConnected && current.hidden && !current.hasAttribute('data')
+        && window.__revokedUrls.includes(window.__pagehidePdfUrl);
+    })()`);
+  });
+  await check('a truncated PDF explains why it cannot be previewed', async () => {
+    await sendTo('/api/pdf');
+    await evaluate(`(() => {
+      const tab = __verify.state.tabs[0];
+      tab.response = { ...tab.response, truncated: true };
+      __verify.renderResponse();
+      return true;
+    })()`);
+    return await evaluate(`(() => {
+      const frame = document.querySelector('#html-preview');
+      const pdf = document.querySelector('#pdf-preview');
+      return Boolean(frame && pdf && !frame.hidden && pdf.hidden && frame.srcdoc.toLowerCase().includes('truncated')
+        && document.querySelector('#preview').classList.contains('is-active')
+        && document.querySelector('#res-tabs [data-tab="pretty"]').hidden
+        && document.querySelector('#res-tabs [data-tab="raw"]').hidden);
+    })()`);
+  });
+  await check('HTML preview keeps its sandboxed iframe behavior', async () => {
+    await sendTo('/api/echo?preview=html');
+    await evaluate(`(() => {
+      const response = __verify.state.tabs[0].response;
+      response.headers = [{ key: 'Content-Type', value: 'text/html; charset=utf-8' }];
+      response.body = '<script>parent.__previewEscaped = true<\/script><b>safe HTML</b>';
+      __verify.renderResponse();
+      document.querySelector('#res-tabs [data-tab="preview"]').click();
+      return true;
+    })()`);
+    return await evaluate(`(() => {
+      const frame = document.querySelector('#html-preview');
+      const pdf = document.querySelector('#pdf-preview');
+      return Boolean(frame && pdf && !frame.hidden && pdf.hidden
+        && frame.getAttribute('sandbox') === ''
+        && frame.srcdoc.includes('<b>safe HTML</b>')
+        && !window.__previewEscaped);
     })()`);
   });
   await check('truncated saves carry a truncation warning', async () => {

@@ -128,6 +128,7 @@ function normExamples(raw) {
         .filter((h) => h && typeof h.key === "string")
         .map((h) => ({ key: h.key, value: String(h.value ?? "") })),
       body: typeof item.body === "string" ? item.body : "",
+      bodyB64: typeof item.bodyB64 === "string" ? item.bodyB64 : null,
       elapsedMs: Number.isFinite(Number(item.elapsedMs)) ? Number(item.elapsedMs) : 0,
       sizeBytes: Number.isFinite(Number(item.sizeBytes)) ? Number(item.sizeBytes) : 0,
       truncated: item.truncated === true,
@@ -2861,6 +2862,7 @@ function effectiveResponse() {
       status_text: example.statusText,
       headers: example.headers,
       body: example.body,
+      body_b64: example.bodyB64,
       elapsed_ms: example.elapsedMs,
       size_bytes: example.sizeBytes,
       truncated: example.truncated,
@@ -2930,25 +2932,96 @@ function syncResStage() {
   if (response?.error) $("#res-failed-msg").textContent = response.error.replace(/^Error:\s*/, "");
 }
 
-/* Preview tab: renders an HTML body in a fully sandboxed iframe — no scripts,
-   forms, or same-origin access, so untrusted markup stays inert. Rendering is
-   lazy (only while the tab is visible) and the iframe only reloads when a
-   different response object arrives. */
-const previewEmptyDoc = '<!doctype html><body style="font:12px system-ui,sans-serif;color:#595959;margin:14px">Preview is available for HTML responses.</body>';
+// HTML stays sandboxed; PDFs delegate parsing to the WebView's native document viewer.
+const previewEmptyDoc = '<!doctype html><body style="font:12px system-ui,sans-serif;color:#595959;margin:14px">Preview is available for HTML and PDF responses.</body>';
+const previewPdfTruncatedDoc = '<!doctype html><body style="font:12px system-ui,sans-serif;color:#595959;margin:14px">This PDF was truncated by the response size limit and cannot be previewed. Increase the limit and send again, or save the received bytes.</body>';
 
 const previewable = (response) =>
   response.headers.some((h) => /(?:^|[\s:;])(?:text\/html|application\/xhtml\+xml)\b/i.test(`${h.key}: ${h.value}`));
 
-let lastPreviewResponse; // response object currently loaded into the preview iframe
+const responseIsPdf = (response) => {
+  if (!response || response.error) return false;
+  const type = (response.headers ?? []).find((h) => h.key.toLowerCase() === "content-type")?.value ?? "";
+  if (type.split(";")[0].trim().toLowerCase() === "application/pdf") return true;
+  if (response.body?.startsWith("%PDF-")) return true;
+  if (!response.body_b64) return false;
+  try { return atob(response.body_b64.slice(0, 8)).startsWith("%PDF-"); } catch { return false; }
+};
+
+const responseBodyBytes = (response) => {
+  if (!response.body_b64) return new TextEncoder().encode(response.body ?? "");
+  const binary = atob(response.body_b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+};
+
+let lastPreviewResponse; // response object currently loaded into the preview pane
+let pdfPreviewUrl;
+let pdfPreviewResponse;
+let pdfPreviewCleanup;
+
+// WebView2 can block while destroying a PDF plugin, so teardown stays out of tab-switch handlers.
+function clearPdfPreview(immediate = false) {
+  const pdf = $("#pdf-preview");
+  pdf.hidden = true;
+  const url = pdfPreviewUrl;
+  if (!url) return;
+  if (!immediate) {
+    if (pdfPreviewCleanup !== null) return;
+    pdfPreviewCleanup = setTimeout(() => clearPdfPreview(true), 120);
+    return;
+  }
+  clearTimeout(pdfPreviewCleanup);
+  pdfPreviewCleanup = null;
+  pdfPreviewUrl = null;
+  pdfPreviewResponse = null;
+  if (pdf.hasAttribute("data")) {
+    const replacement = pdf.cloneNode(true);
+    replacement.type = "application/pdf";
+    replacement.hidden = true;
+    replacement.removeAttribute("data");
+    pdf.replaceWith(replacement);
+  }
+  URL.revokeObjectURL(url);
+}
 
 function renderPreview() {
-  const frame = $("#preview");
+  const frame = $("#html-preview");
   const response = effectiveResponse();
   if (response === lastPreviewResponse) return;
   lastPreviewResponse = response;
+  if (responseIsPdf(response) && !response.truncated && pdfPreviewResponse === response && pdfPreviewUrl) {
+    clearTimeout(pdfPreviewCleanup);
+    pdfPreviewCleanup = null;
+    const pdf = $("#pdf-preview");
+    frame.srcdoc = "";
+    frame.hidden = true;
+    pdf.hidden = false;
+    return;
+  }
+  clearPdfPreview();
+  frame.hidden = false;
   if (!response || response.error) frame.srcdoc = "";
-  else frame.srcdoc = previewable(response) ? response.body : previewEmptyDoc;
+  else if (responseIsPdf(response)) {
+    if (response.truncated) frame.srcdoc = previewPdfTruncatedDoc;
+    else {
+      clearPdfPreview(true);
+      const pdf = $("#pdf-preview");
+      pdfPreviewUrl = URL.createObjectURL(new Blob([responseBodyBytes(response)], { type: "application/pdf" }));
+      pdfPreviewResponse = response;
+      pdf.data = pdfPreviewUrl;
+      frame.srcdoc = "";
+      frame.hidden = true;
+      pdf.hidden = false;
+    }
+  } else frame.srcdoc = previewable(response) ? response.body : previewEmptyDoc;
 }
+
+$("#preview").addEventListener("click", (event) => {
+  if (event.target.closest("#pdf-preview-save")) saveResponse();
+});
+window.addEventListener("pagehide", () => clearPdfPreview(true));
 
 function renderResponse() {
   // The panes re-render below, destroying any search marks — reset the find
@@ -2962,13 +3035,22 @@ function renderResponse() {
   $("#size").hidden = !state.settings.response.showSize;
   $("#response-limit").hidden = !response?.truncated;
   $("#response-limit").textContent = response?.truncated ? `Response truncated, shown up to ${response.limitKB ?? state.settings.response.maxResponseSizeKB} KB.` : "";
+  const pdfResponse = responseIsPdf(response);
+  $("#res-tabs [data-tab=\"pretty\"]").hidden = pdfResponse;
+  $("#res-tabs [data-tab=\"raw\"]").hidden = pdfResponse;
   if (response !== lastRenderedResponse) {
-    activateTab("#res-tabs .tab", "#pretty, #raw, #preview, #res-headers, .tests", $(`#res-tabs [data-tab="${state.settings.response.defaultView}"]`));
+    clearPdfPreview();
+    lastPreviewResponse = null;
+    const initialView = pdfResponse ? "preview" : state.settings.response.defaultView;
+    activateTab("#res-tabs .tab", "#pretty, #raw, #preview, #res-headers, .tests", $(`#res-tabs [data-tab="${initialView}"]`));
     lastRenderedResponse = response;
     const res = $("#res-pane");
     res.classList.remove("flash");
     void res.offsetWidth;
     res.classList.add("flash");
+  }
+  if (pdfResponse && ["pretty", "raw"].includes($("#res-tabs .tab.is-active")?.dataset.tab)) {
+    activateTab("#res-tabs .tab", "#pretty, #raw, #preview, #res-headers, .tests", $("#res-tabs [data-tab=\"preview\"]"));
   }
   if (!response) {
     pill.className = "pill";
@@ -3010,8 +3092,13 @@ function renderResponse() {
   pill.textContent = `${response.status} ${response.status_text}`;
   $("#time").textContent = `${response.elapsed_ms} ms`;
   $("#size").textContent = formatSize(response.size_bytes);
-  $("#raw").textContent = response.body;
-  renderPretty(response);
+  if (pdfResponse) {
+    $("#raw").textContent = "";
+    renderPretty(null);
+  } else {
+    $("#raw").textContent = response.body;
+    renderPretty(response);
+  }
   $("#res-headers-count").textContent = response.headers.length;
   $("#res-headers table").tBodies[0].innerHTML = response.headers
     .map((h) => `<tr><td>${esc(h.key)}</td><td>${esc(shownHeader(h))}</td></tr>`)
@@ -3646,6 +3733,7 @@ function commitExample(name) {
     statusText: r.status_text,
     headers: r.headers,
     body: r.body,
+    bodyB64: r.body_b64,
     elapsedMs: r.elapsed_ms,
     sizeBytes: r.size_bytes,
     truncated: r.truncated,
@@ -4684,7 +4772,7 @@ runnerDialog.addEventListener("close", () => {
   if (runnerOpener) { runnerOpener.focus(); runnerOpener = null; }
 });
 
-const runnerFailed = (entry) => Boolean(entry.response?.error) || entry.results.some((r) => !r.passed);
+const runnerFailed = (entry) => Boolean(entry.response?.error) || entry.response?.status >= 500 || entry.results.some((r) => !r.passed);
 
 async function startRunner() {
   if (runnerState.active || runnerState.phase !== "select") return;
@@ -4812,6 +4900,9 @@ function renderRunnerResults() {
       : entry.response.error ? `Error · ${entry.response.elapsed_ms ?? 0} ms`
       : `${entry.response.status} · ${entry.response.elapsed_ms} ms · ${passed}/${entry.results.length} tests`;
     const finished = entry.status === "passed" || entry.status === "failed";
+    const metaTone = entry.response?.error ? "err"
+      : entry.response?.status >= 500 ? "fail"
+      : entry.response?.status >= 400 ? "warn" : "";
     const expanded = runnerExpanded.has(i);
     // Finished rows are real buttons (keyboard-operable); the rest are inert.
     const head = finished
@@ -4823,7 +4914,7 @@ function renderRunnerResults() {
         <span class="runner-mark ${mark[0]}" aria-hidden="true">${mark[1]}</span>
         <span class="method ${esc(req.method)}">${esc(req.method)}</span>
         <span class="runner-name">${esc(req.name)}</span>
-        <span class="runner-meta">${esc(meta)}</span>
+        <span class="runner-meta${metaTone ? ` ${metaTone}` : ""}">${esc(meta)}</span>
       ${headClose}
       <div class="runner-detail" ${expanded ? "" : "hidden"}></div>
     </div>`);
@@ -4876,6 +4967,10 @@ function runnerJunitXml() {
       failures += 1;
       const message = esc(String(e.response.error));
       cases.push(`<testcase name="transport"><failure message="${message}">${message}</failure></testcase>`);
+    } else if (e.response?.status >= 500) {
+      failures += 1;
+      const message = esc(`HTTP ${e.response.status}${e.response.status_text ? ` ${e.response.status_text}` : ""}`);
+      cases.push(`<testcase name="http_status"><failure message="${message}">${message}</failure></testcase>`);
     }
     for (const t of e.results) {
       if (t.passed) cases.push(`<testcase name="${esc(t.name)}" />`);

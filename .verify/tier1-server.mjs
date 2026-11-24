@@ -7,6 +7,28 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
 const root = resolve(import.meta.dirname, "../ui");
+const buildPdfFixture = (header) => {
+  const stream = "BT /F1 18 Tf 40 110 Td (Postlite PDF preview) Tj ET\n";
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 320 180] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(stream, "binary")} >>\nstream\n${stream}endstream`,
+  ];
+  let pdf = Buffer.from(header, "binary");
+  const offsets = [];
+  objects.forEach((object, index) => {
+    offsets.push(pdf.length);
+    pdf = Buffer.concat([pdf, Buffer.from(`${index + 1} 0 obj\n${object}\nendobj\n`, "binary")]);
+  });
+  const xref = pdf.length;
+  const rows = offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  const trailer = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${rows}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.concat([pdf, Buffer.from(trailer, "binary")]);
+};
+const pdfFixture = buildPdfFixture("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+const pdfUtf8Fixture = buildPdfFixture("%PDF-1.4\n%ASCII\n");
 const exposed = "state,DEFAULT_SETTINGS,normalizeSettings,newRequest,newFolder,newCollection,newEnvironment,newWorkspace,toPostmanCollection,fromPostman,toPostmanEnvironment,fromPostmanEnvironment,exportSettings,importSettings,applyAppSettings,flushWorkspace,persist,workspacePayload,addTab,enterWorkspace,switchWorkspace,deleteEnvironment,deleteWorkspace,responseCopyText,render,renderResponse,renderVarOverlay,send,openAppSettings,exportTarget,openDrawer,closeDrawer,openCurlDialog,renderCodeOutput,importCurlCommand,curlToTab,looksLikeCurl,importDroppedFiles,moveItem,siblingArray,treeDropTarget,endTreeDrag,exportBackup,openRestoreDialog,confirmRestore,applySavedPayload,validateBackup,describePayload,notify,loadCookies,renderCookies,refreshCookiesIfVisible,deleteCookieFilter,refreshProxyControls,loadProxyCredentials,syncCookiePersist,normExamples,normPostmanExample,saveExample,commitExample,openExampleDialog,viewExample,exitExampleView,deleteExample,renderExamples,renderJsonTreeInto,saveInPlace,executeRequest,runnerState,openRunnerDialog,startRunner,stopRunner,renderRunnerResults,normalizeHistory,recordHistory,renderSidebar,renderHistory,timeAgo,clearHistory,DYNAMIC_VARS,interpolate,duplicateNode,saveResponse,openResFind,closeResFind,looksLikeInsomnia,fromInsomnia,looksLikeHoppscotchCollections,looksLikeHoppscotchEnvironments,fromHoppscotchCollections,fromHoppscotchEnvironments,routeJsonImport,parseDataFile,oauth2Cache,oauth2Pending,oauth2Flows,oauth2UiState,oauth2Secrets,oauth2CacheKey,oauth2ConfigKey,bumpOAuth2Epoch,loadOAuth2SecretInto,writeOAuth2Secret,clearOAuth2Secret,acquireOAuth2Token,oauth2AuthorizeFlow,exchangeOAuth2Paste,cancelOAuth2Flow,forgetOAuth2Owner,forgetOAuth2Owners,oauth2OwnerIds,flushOAuth2Secret,runnerReport";
 // Names that are not implemented yet must not break the whole hook object: a
 // bare shorthand reference would throw a ReferenceError. Resolve each name
@@ -143,9 +165,24 @@ const handler = (req, res) => {
     res.end(JSON.stringify({ error: "missing" }));
     return;
   }
+  if (url.pathname === "/api/server-error") {
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ api_status: 0, api_message: "Terjadi kesalahan sistem" }));
+    return;
+  }
   if (url.pathname === "/api/large") { res.end("x".repeat(4096)); return; }
   // Binary fixture: ZIP-ish magic plus bytes that are invalid UTF-8, for the
   // byte-faithful save path (body_b64).
+  if (url.pathname === "/api/pdf" || url.pathname === "/api/pdf-mislabeled" || url.pathname === "/api/pdf-utf8") {
+    const mislabeled = url.pathname === "/api/pdf-mislabeled";
+    const body = url.pathname === "/api/pdf-utf8" ? pdfUtf8Fixture : pdfFixture;
+    res.writeHead(200, {
+      "content-type": mislabeled ? "application/octet-stream" : "application/pdf; version=1.7",
+      "content-length": String(body.length),
+    });
+    res.end(body);
+    return;
+  }
   if (url.pathname === "/api/bin") {
     res.writeHead(200, { "content-type": "application/octet-stream", "content-length": "9" });
     res.end(Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xff, 0x00, 0xfe, 0x80, 0x01]));

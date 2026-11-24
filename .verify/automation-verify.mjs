@@ -339,6 +339,28 @@ try {
       return Boolean(transport?.querySelector('failure')) && skipped.length >= 2;
     })()`);
   });
+  await check('HTTP 500 responses export as a JUnit failure testcase', async () => {
+    await evaluate(`(() => {
+      const c = __verify.state.collections[0];
+      for (const item of c.items) item.scripts = { pre: '', test: '' };
+      c.items[0].url = 'http://127.0.0.1:8100/api/server-error';
+      __verify.render();
+      return true;
+    })()`);
+    await openRunner(null, 0);
+    await runAndFinish();
+    await evaluate(`window.__reportSaves = []; document.querySelector('#runner-export-junit').click()`);
+    return await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 80));
+      const args = window.__reportSaves.filter(a => a.defaultName.endsWith('.xml')).at(-1);
+      if (!args) return false;
+      const doc = new DOMParser().parseFromString(args.contents, 'text/xml');
+      if (doc.querySelector('parsererror')) return false;
+      const http = [...doc.querySelectorAll('testcase')].find(tc => tc.getAttribute('name') === 'http_status');
+      const skipped = [...doc.querySelectorAll('testcase skipped')];
+      return Boolean(http?.querySelector('failure')) && http.textContent.includes('500') && skipped.length >= 2;
+    })()`);
+  });
   await check('data-file parse errors surface inside the dialog', async () => {
     return await evaluate(`(async () => {
       const doc = { broken: true };

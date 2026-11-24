@@ -17,6 +17,7 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
   - **Path variables**: `:product_slug`-style segments get their own **Path Variables** table. Values are substituted URL-encoded on send and in generated code / cURL, and round-trip through Postman's `url.variable`.
   - **File fields** round-trip through Postman's `formdata` `type: "file"` + `src`. Generated cURL uses `--form key=@path`.
   - **Responses**: status, latency, size, headers, and a pretty-printed JSON view with syntax highlighting. The body copies in one click.
+  - **Response preview**: HTML renders in a sandboxed frame and PDF responses open directly in Preview with Pretty/Raw hidden, using the native WebView2 viewer and the original bytes. Truncated PDFs explain the size limit instead of showing a broken document.
   - **Find in response**: `Ctrl+F` opens a find bar over the active body view (Pretty / Raw) with match count, next / prev, and highlight; searching a folded JSON tree expands it first. A new send or view change closes it. Matches wrap text runs, so a query crossing a syntax-highlighting boundary may only be findable in Raw view.
   - **Save response**: the response head's save button writes the body to a file via the native Save As dialog — text bodies save exactly as received, binary ones byte-faithfully (the send payload carries them base64-encoded). The default name comes from the URL path and Content-Type; a size-capped (truncated) response saves what arrived and says so.
   - **Collapsible JSON**: click any object or array line (or its caret) to fold it into a one-line summary with a key/item count. **Collapse all** / **Expand all** sit above the body. Huge arrays start folded, children render lazily, fold state survives tab switches, and the indent follows the JSON indent preference.
@@ -78,10 +79,10 @@ A lightweight desktop HTTP client built with [Tauri v2](https://tauri.app) and R
   ```
 
 - **Collection runner**: right-click a collection or folder, pick requests in a checkbox tree, and run them in order through the exact Send pipeline (scripts, auth, environments, cookies).
-  - The run stops at the first failed test or transport error. A passing 404 negative test keeps going.
+  - The run stops at the first failed test, transport error, or HTTP 5xx response. A 4xx negative test whose assertions pass keeps going.
   - **Data file**: attach a non-empty JSON array of objects or CSV (header row names the columns; quoted fields and BOM/CRLF are supported). Every row becomes one iteration, with all selected requests run per iteration and results grouped by iteration. Values are strings and form the lowest-precedence `data` scope: `pm.data.get(name)` reads the current row, and columns resolve as plain `{{column}}` (Postman's convention) only when no collection, environment, or folder variable defines that key. Failed iterations continue; without a data file the stop-at-first-failure contract stands.
   - **Delay**: an optional pause (ms) between entries, chunked so Stop still lands promptly.
-  - **Report**: finished runs export as JSON or JUnit XML (one suite per entry, one case per assertion) via the native Save As dialog.
+  - **Report**: finished runs export as JSON or JUnit XML (one suite per entry, with assertion cases plus transport-error and HTTP 5xx failure cases) via the native Save As dialog.
   - Live progress, a Stop button, and per-request results with test details and a body preview.
   - Results are view-only. Nothing is saved.
 
@@ -256,11 +257,11 @@ These harnesses use a separate debug build, so they never touch a real workspace
 | `tier2b-verify.mjs --after-restart` | session gone, persistent cookies back | 5 |
 | `tier2b-verify.mjs --no-secret` | nothing written; drawer explains (relaunch with `POSTLITE_FORCE_NO_SECRET_STORE=1`) | 20 |
 | `tier2c-dnd-verify.mjs` | drag & drop import, tree reordering | 52 |
-| `runner-verify.mjs` | collection runner: selection, ordering, env chaining, stop semantics, `pm.collectionVariables` | 43 |
+| `runner-verify.mjs` | collection runner: selection, ordering, env chaining, stop semantics, `pm.collectionVariables` | 45 |
 | `history-verify.mjs` | request history: model, recording, panel, click-through, backup exclusion | 24 |
-| `quick-wins-verify.mjs` | dynamic variables, `{{` autocomplete, duplication, response find bar, save response | 28 |
+| `quick-wins-verify.mjs` | dynamic variables, `{{` autocomplete, duplication, response find bar, save response, HTML/PDF preview | 38 |
 | `importers-verify.mjs` | insomnia + hoppscotch import, routing, skipping | 29 |
-| `automation-verify.mjs` | data-driven runner, data scope, delay, report export | 16 |
+| `automation-verify.mjs` | data-driven runner, data scope, delay, report export | 17 |
 | `oauth2-verify.mjs` | client credentials, PKCE loopback / state checks, refresh fallback, manual paste, secret and merge isolation | 33 |
 
 `tier2b-verify` runs its own forward proxy on `127.0.0.1:8890` to prove manual-proxy routing and bypass on the wire. It uses the harness server's `/set` and `/echo` routes to inspect exactly which cookies were sent.

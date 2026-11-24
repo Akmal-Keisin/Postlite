@@ -262,6 +262,25 @@ try {
   await evaluate(`document.querySelector('#runner-close').click()`);
 
   await runSpecs([
+    { name: 'Server error', url: 'http://127.0.0.1:8100/api/server-error' },
+    { name: 'Never', url: E },
+  ]);
+  await startAndWait();
+  await check('an HTTP 500 without tests stops the run and marks the row failed',
+    `(() => {
+      const s = __verify.runnerState;
+      return s.entries[0].status === 'failed' && s.entries[0].response.status === 500 && s.entries[0].results.length === 0 && s.entries[1].status === 'skipped' && s.endReason === 'failed';
+    })()`);
+  await check('HTTP 500 rows use failure styling for the mark and status metadata',
+    `(() => {
+      const row = document.querySelector('#runner-results .runner-row');
+      return row.querySelector('.runner-mark').classList.contains('fail')
+        && row.querySelector('.runner-meta').classList.contains('fail')
+        && row.querySelector('.runner-meta').textContent.includes('500');
+    })()`);
+  await evaluate(`document.querySelector('#runner-close').click()`);
+
+  await runSpecs([
     { name: 'Negative', url: 'http://127.0.0.1:8100/api/not-found', test: 'pm.test("is 404", () => pm.expect(pm.response.code).to.equal(404));' },
     { name: 'Continues', url: E },
   ]);
