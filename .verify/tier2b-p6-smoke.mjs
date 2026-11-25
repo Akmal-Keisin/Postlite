@@ -33,7 +33,7 @@ try {
   await evaluate(`(() => { const v=__verify; v.addTab(v.newRequest({ method:'POST', url:'http://127.0.0.1:8100/api/echo', headers:[{key:'Content-Type',value:'application/json',enabled:true}], body:{mode:'raw',raw:'{"name":"rina"}',contentType:'application/json'} })); return true; })()`);
 
   await check('old Code UI is gone', `!document.querySelector('#code-btn') && !document.querySelector('#code-menu') && !document.querySelector('#code-dialog')`);
-  await check('two drawer links at right of req-tabs', `(() => { const tabs=document.querySelector('#req-tabs'); const links=[...tabs.querySelectorAll('.drawer-link')]; return links.length===2 && links[0].id==='cookies-link' && links[1].id==='code-link' && tabs.querySelector('.tabs-spacer')!==null; })()`);
+  await check('Cookies and Code are in the request header', `(() => { const links=[...document.querySelectorAll('.request-head .drawer-link')]; return links.length===2 && links[0].id==='cookies-link' && links[1].id==='code-link'; })()`);
   await check('drawer starts closed', `!document.querySelector('#drawer').open && !document.querySelector('.main').classList.contains('drawer-open')`);
 
   // --- Code link opens the drawer ---

@@ -50,16 +50,15 @@ await cmd("Page.enable");
 await cmd("Runtime.enable");
 await evaluate(`new Promise((resolve, reject) => { const start = Date.now(); const timer = setInterval(() => { if (window.__TAURI__ && document.querySelector('#res-pane')) { clearInterval(timer); resolve(true); } else if (Date.now() - start > 10000) { clearInterval(timer); reject(new Error('app startup failed')); } }, 50); })`);
 
-const markers = await evaluate(`(() => ({ empty: !!document.querySelector('#res-empty'), pulse: !!document.querySelector('.res-pulse path'), failedMsg: !!document.querySelector('#res-failed-msg'), dots: getComputedStyle(document.querySelector('.res-empty')).backgroundImage.includes('radial-gradient'), brandCase: getComputedStyle(document.querySelector('.brand-tag')).textTransform }))()`);
-check("embedded UI has response stage markup", markers.empty && markers.pulse && markers.failedMsg, JSON.stringify(markers));
-check("embedded CSS has dot grid + sentence case", markers.dots && markers.brandCase === "none");
+const markers = await evaluate(`(() => ({ empty: !!document.querySelector('#res-empty'), idleIcon: !!document.querySelector('.res-idle-icon use'), failedMsg: !!document.querySelector('#res-failed-msg'), layout: !!document.querySelector('.main > .urlbar #response-layout'), dots: getComputedStyle(document.querySelector('#workspace-empty')).backgroundImage.includes('radial-gradient') }))()`);
+check("embedded UI has response stage markup", markers.empty && markers.idleIcon && markers.failedMsg, JSON.stringify(markers));
+check("embedded UI has the layout switch and empty-workspace grid", markers.layout && markers.dots);
 
-let s = await stage();
-check("idle stage on fresh workspace", s.cls.includes("is-empty") && s.empty === "grid" && s.pretty === "none", JSON.stringify(s));
-await shot("buildcheck-idle.png");
-
-await evaluate(`document.querySelector('[data-act="new-tab"]').click()`);
+await evaluate(`document.querySelector('#workspace-empty [data-act="new-tab"]').click()`);
 check("new tab opens request pane", await evaluate(`document.querySelectorAll('#tabbar .tab-item').length === 1`));
+let s = await stage();
+check("idle stage on a new request", s.cls.includes("is-empty") && s.empty === "grid" && s.pretty === "none", JSON.stringify(s));
+await shot("buildcheck-idle.png");
 
 await sendTo("http://127.0.0.1:8099/buildcheck");
 await waitStage(`!r.classList.contains('is-empty') && !r.classList.contains('is-failed') && document.querySelector('#status').textContent !== '—'`);

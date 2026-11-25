@@ -19,13 +19,14 @@ const AUTH_LABELS = {
 const SECRET_MASK = "••••••••";
 
 const DEFAULT_SETTINGS = {
-  general: { theme: "dark", accent: "ember", autoSave: true, autoSaveIntervalMs: 350, confirmBeforeDelete: true, restoreLastSession: true },
+  general: { appearance: "workbench", theme: "dark", accent: "ember", autoSave: true, autoSaveIntervalMs: 350, confirmBeforeDelete: true, restoreLastSession: true },
   request: { defaultMethod: "GET", requestTimeoutMs: 60000, followRedirects: true, maxRedirects: 10, sslVerify: true, disableCache: false, decodeResponse: true, persistCookies: true, proxy: { mode: "direct", url: "", bypass: "" } },
   response: { defaultView: "pretty", syntaxHighlight: true, jsonIndent: 2, wordWrap: true, showHeaders: true, showTime: true, showSize: true, maxResponseSizeKB: 2000 },
   privacy: { maskSensitiveHeaders: true, maskSecretVariables: true },
   sidebarWidth: 276,
 };
 const SETTING_OPTIONS = {
+  appearance: ["workbench", "terminal", "studio", "ledger"],
   theme: ["light", "dark", "system"],
   accent: ["ember", "ocean", "mint", "violet", "rose", "amber", "teal", "magenta"],
   defaultMethod: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "QUERY"],
@@ -3679,12 +3680,14 @@ async function send() {
   }
   const button = $("#send");
   button.disabled = true;
+  button.setAttribute("aria-busy", "true");
   button.textContent = "Sending";
   let outcome;
   try {
     outcome = await executeRequest(req);
   } finally {
     button.disabled = false;
+    button.removeAttribute("aria-busy");
     button.textContent = "Send";
   }
   tab.response = { ...outcome.response, results: outcome.results, limitKB: outcome.limitKB };
@@ -6078,90 +6081,151 @@ window.addEventListener("resize", () => {
   if (current > sidebarMax()) applySidebarWidth(current, true);
 });
 
-/* ---------------------------------------------------------- response resize */
-// Dragging the bar between request and response changes the response height,
-// the same way the sidebar edge changes the sidebar width.
+/* ---------------------------------------------------------- workbench layout */
+
 const mainEl = $(".main");
+const addressBar = $(".urlbar");
 const resPane = $("#res-pane");
 const resResizer = $("#res-resizer");
-const RESPONSE_KEY = "postlite.responseHeight";
-const RESPONSE_MIN = 120;
-const REQUEST_MIN = 160;
-const RESPONSE_DEFAULT = () => mainEl.clientHeight * 0.4;
-let resResizing = false;
-let resDragStartY = 0;
-let resDragStartH = 0;
+const layoutSwitch = $("#response-layout");
+const LAYOUT_KEY = "postlite.responseLayout";
+const SPLIT_MIN_WIDTH = 840;
+const COMPACT_BAR_WIDTH = 520;
+const DIVIDER_SIZE = 8;
+const stackedAxis = {
+  key: "postlite.responseHeight", property: "--res-h", dimension: "height",
+  pointer: "clientY", min: 120, requestMin: 120, cursor: "resizing-y",
+  grow: "ArrowUp", shrink: "ArrowDown", orientation: "horizontal",
+};
+const splitAxis = {
+  key: "postlite.responseWidth", property: "--res-w", dimension: "width",
+  pointer: "clientX", min: 380, requestMin: 400, cursor: "resizing-response-x",
+  grow: "ArrowLeft", shrink: "ArrowRight", orientation: "vertical",
+};
+let prefersSplit = false;
+let responseAxis = stackedAxis;
+let responseDrag = null;
+try {
+  prefersSplit = localStorage.getItem(LAYOUT_KEY) === "split";
+  for (const axis of [stackedAxis, splitAxis]) {
+    axis.preferred = Number.parseInt(localStorage.getItem(axis.key), 10) || 0;
+  }
+} catch {}
 
-const responseMax = () => Math.max(RESPONSE_MIN, mainEl.clientHeight - 38 - 6 - REQUEST_MIN);
-
-function applyResponseHeight(height, save = false) {
-  const h = Math.round(Math.min(responseMax(), Math.max(RESPONSE_MIN, height)));
-  mainEl.style.setProperty("--res-h", `${h}px`);
-  resResizer.setAttribute("aria-valuenow", String(h));
-  resResizer.setAttribute("aria-valuemax", String(responseMax()));
-  if (save) { try { localStorage.setItem(RESPONSE_KEY, String(h)); } catch {} }
-  return h;
+function responseLimits(axis) {
+  const split = axis === splitAxis;
+  const space = split
+    ? addressBar.clientWidth
+    : mainEl.clientHeight - $("#tabbar").offsetHeight - addressBar.offsetHeight;
+  return {
+    max: Math.max(axis.min, space - DIVIDER_SIZE - axis.requestMin),
+    initial: space * (split ? 0.48 : 0.5),
+  };
 }
 
-function resetResponseHeight() {
-  try { localStorage.removeItem(RESPONSE_KEY); } catch {}
-  applyResponseHeight(RESPONSE_DEFAULT());
+function sizeResponse(size, save = false) {
+  const axis = responseAxis;
+  const { max, initial } = responseLimits(axis);
+  const pixels = Math.round(Math.min(max, Math.max(axis.min, size ?? (axis.preferred || initial))));
+  mainEl.style.setProperty(axis.property, `${pixels}px`);
+  resResizer.setAttribute("aria-valuemin", String(axis.min));
+  resResizer.setAttribute("aria-valuemax", String(max));
+  resResizer.setAttribute("aria-valuenow", String(pixels));
+  if (save) {
+    axis.preferred = pixels;
+    try { localStorage.setItem(axis.key, String(pixels)); } catch {}
+  }
 }
 
-let storedResponse = NaN;
-try { storedResponse = Number.parseInt(localStorage.getItem(RESPONSE_KEY) ?? "", 10); } catch {}
-applyResponseHeight(Number.isFinite(storedResponse) ? storedResponse : RESPONSE_DEFAULT());
+function resetResponseSize() {
+  responseAxis.preferred = 0;
+  try { localStorage.removeItem(responseAxis.key); } catch {}
+  sizeResponse();
+}
+
+function clearResponseDrag() {
+  if (!responseDrag) return;
+  const { axis, pointerId } = responseDrag;
+  responseDrag = null;
+  document.body.classList.remove(axis.cursor);
+  if (resResizer.hasPointerCapture(pointerId)) resResizer.releasePointerCapture(pointerId);
+}
+
+function syncWorkbenchLayout() {
+  const width = addressBar.clientWidth;
+  const available = width >= SPLIT_MIN_WIDTH;
+  const split = prefersSplit && available;
+  const nextAxis = split ? splitAxis : stackedAxis;
+  if (nextAxis !== responseAxis) clearResponseDrag();
+  responseAxis = nextAxis;
+  mainEl.classList.toggle("is-split", split);
+  mainEl.classList.toggle("is-compact", width > 0 && width < COMPACT_BAR_WIDTH);
+  layoutSwitch.disabled = !available;
+  layoutSwitch.setAttribute("aria-pressed", String(split));
+  layoutSwitch.title = available
+    ? split ? "Stack request and response" : "Show request and response side by side"
+    : "Widen the workbench to use side-by-side panes";
+  resResizer.setAttribute("aria-orientation", responseAxis.orientation);
+  if (!responseDrag && width) sizeResponse();
+}
+
+layoutSwitch.addEventListener("click", () => {
+  prefersSplit = !prefersSplit;
+  try { localStorage.setItem(LAYOUT_KEY, prefersSplit ? "split" : "stacked"); } catch {}
+  syncWorkbenchLayout();
+});
+
+const observeWorkbench = new ResizeObserver(syncWorkbenchLayout);
+observeWorkbench.observe(mainEl);
+observeWorkbench.observe(addressBar);
+syncWorkbenchLayout();
 
 resResizer.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0) return;
-  resResizing = true;
-  resDragStartY = event.clientY;
-  resDragStartH = resPane.getBoundingClientRect().height;
+  if (event.button !== 0 || responseDrag) return;
+  const axis = responseAxis;
+  responseDrag = {
+    axis, pointerId: event.pointerId, start: event[axis.pointer],
+    size: resPane.getBoundingClientRect()[axis.dimension],
+  };
   resResizer.setPointerCapture(event.pointerId);
   resResizer.focus({ preventScroll: true });
-  document.body.classList.add("resizing-y");
+  document.body.classList.add(axis.cursor);
 });
 
-resResizer.addEventListener("pointermove", (event) => {
-  if (!resResizing) return;
-  applyResponseHeight(resDragStartH + resDragStartY - event.clientY);
+document.addEventListener("pointermove", (event) => {
+  if (responseDrag?.pointerId !== event.pointerId) return;
+  const { axis, start, size } = responseDrag;
+  sizeResponse(size + start - event[axis.pointer]);
 });
 
-function endResponseResize(event) {
-  if (!resResizing) return;
-  resResizing = false;
-  document.body.classList.remove("resizing-y");
-  if (resResizer.hasPointerCapture(event.pointerId)) resResizer.releasePointerCapture(event.pointerId);
-  applyResponseHeight(parseFloat(mainEl.style.getPropertyValue("--res-h")), true);
+document.addEventListener("pointerup", (event) => {
+  if (responseDrag?.pointerId !== event.pointerId) return;
+  const { axis, start, size } = responseDrag;
+  clearResponseDrag();
+  sizeResponse(size + start - event[axis.pointer], true);
+});
+
+function cancelResponseDrag(event) {
+  if (responseDrag?.pointerId !== event.pointerId) return;
+  clearResponseDrag();
+  sizeResponse();
 }
-resResizer.addEventListener("pointerup", endResponseResize);
-resResizer.addEventListener("pointercancel", endResponseResize);
-resResizer.addEventListener("dblclick", resetResponseHeight);
+document.addEventListener("pointercancel", cancelResponseDrag);
+resResizer.addEventListener("lostpointercapture", cancelResponseDrag);
+resResizer.addEventListener("dblclick", resetResponseSize);
 
 resResizer.addEventListener("keydown", (event) => {
-  const current = Math.round(resPane.getBoundingClientRect().height);
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  const axis = responseAxis;
   const step = event.shiftKey ? 48 : 16;
-  if (event.key === "ArrowUp") {
-    event.preventDefault();
-    applyResponseHeight(current + step, true);
-  } else if (event.key === "ArrowDown") {
-    event.preventDefault();
-    applyResponseHeight(current - step, true);
-  } else if (event.key === "Home") {
-    event.preventDefault();
-    applyResponseHeight(RESPONSE_MIN, true);
-  } else if (event.key === "End") {
-    event.preventDefault();
-    applyResponseHeight(responseMax(), true);
-  } else if (event.key === "Enter") {
-    event.preventDefault();
-    resetResponseHeight();
-  }
-});
-
-window.addEventListener("resize", () => {
-  const current = parseFloat(mainEl.style.getPropertyValue("--res-h"));
-  if (Number.isFinite(current)) applyResponseHeight(current);
+  const current = resPane.getBoundingClientRect()[axis.dimension];
+  if (event.key === axis.grow) sizeResponse(current + step, true);
+  else if (event.key === axis.shrink) sizeResponse(current - step, true);
+  else if (event.key === "Home") sizeResponse(axis.min, true);
+  else if (event.key === "End") sizeResponse(responseLimits(axis).max, true);
+  else if (event.key === "Enter") resetResponseSize();
+  else return;
+  event.preventDefault();
 });
 
 $("#import-btn").addEventListener("click", () => $("#import-file").click());
@@ -6730,6 +6794,12 @@ const THEME_HELP = {
   system: "Follows your operating system's appearance.",
 };
 
+function applyAppearance() {
+  const { appearance } = state.settings.general;
+  document.documentElement.dataset.appearance = appearance;
+  try { localStorage.setItem("postlite.appearance", appearance); } catch {}
+}
+
 function applyTheme() {
   const theme = state.settings.general.theme;
   const resolved = theme === "system" ? (systemTheme.matches ? "dark" : "light") : theme;
@@ -6780,6 +6850,7 @@ function refreshPreferenceControls() {
 }
 
 function applyAppSettings() {
+  applyAppearance();
   applyTheme();
   applyAccent();
   applySidebarWidth(state.settings.sidebarWidth);
@@ -6924,7 +6995,8 @@ appSettingsDialog.addEventListener("change", (event) => {
   for (const part of path.slice(0, -1)) node = node[part];
   node[key] = value;
   state.settings = normalizeSettings(state.settings);
-  applyAppSettings();
+  if (control.dataset.setting === "general.appearance") applyAppearance();
+  else applyAppSettings();
   persist();
   $("#preferences-message").textContent = "Preference applied.";
 });

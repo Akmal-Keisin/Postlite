@@ -1,13 +1,15 @@
 <!doctype html>
-<html lang="en" data-theme="dark" data-accent="ember">
+<html lang="en" data-appearance="workbench" data-theme="dark" data-accent="ember">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Postlite</title>
     <script>
-      // Apply the saved theme and accent before first paint, so a customized
-      // appearance never flashes the defaults.
+      // Apply the saved appearance, theme, and accent before first paint.
       try {
+        var savedAppearance = localStorage.getItem("postlite.appearance");
+        if (["workbench", "terminal", "studio", "ledger"].includes(savedAppearance))
+          document.documentElement.dataset.appearance = savedAppearance;
         var savedTheme = localStorage.getItem("postlite.theme");
         document.documentElement.dataset.theme =
           savedTheme === "light" || savedTheme === "dark"
@@ -55,14 +57,13 @@
     <header class="topbar">
       <div class="brand">
         <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="1.5" y="1.5" width="21" height="21" rx="6.5" style="fill: var(--accent)" />
+          <rect x="1.5" y="1.5" width="21" height="21" rx="5" style="fill: var(--accent)" />
           <path d="M5.4 12h3l1.7-4 2.6 8 1.7-4h4.2" fill="none" style="stroke: var(--primary-fg)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
         <h1 class="brand-name">Postlite</h1>
       </div>
-      <div class="topbar-actions">
-        <span class="kbd-hint"><kbd>Ctrl</kbd>+<kbd>&#8629;</kbd> send</span>
-        <span class="ws-bar" id="ws-bar">
+      <div class="topbar-context">
+        <div class="ws-bar" id="ws-bar">
           <button id="ws-button" class="ws-button" aria-expanded="false" aria-controls="ws-pop" title="Switch workspace">
             <svg class="ic" aria-hidden="true"><use href="#i-grid" /></svg>
             <span id="ws-button-label">&hellip;</span>
@@ -75,8 +76,8 @@
               New workspace
             </button>
           </div>
-        </span>
-        <span class="env-bar" id="env-bar" hidden title="Environment bound to the active request's collection">
+        </div>
+        <div class="env-bar" id="env-bar" hidden title="Environment bound to the active request's collection">
           <button id="env-button" class="ws-button env-button" aria-expanded="false" aria-controls="env-pop" title="Bind an environment to the active request's collection">
             <svg class="ic" aria-hidden="true"><use href="#i-globe" /></svg>
             <span id="env-button-label">&hellip;</span>
@@ -89,7 +90,9 @@
               New environment
             </button>
           </div>
-        </span>
+        </div>
+      </div>
+      <div class="topbar-actions">
         <button id="import-btn" class="tool outlined" title="Import a Postman collection JSON, or drop files anywhere in the window">
           <svg class="ic" aria-hidden="true"><use href="#i-import" /></svg>
           Import
@@ -198,39 +201,48 @@
           </div>
         </section>
 
-        <section class="req" id="req-pane">
-          <div class="urlbar">
-            <div class="urlbox">
-              <select id="method" aria-label="HTTP method">
-                <option value="GET">GET</option>
-                <option value="POST">POST</option>
-                <option value="PUT">PUT</option>
-                <option value="PATCH">PATCH</option>
-                <option value="DELETE">DELETE</option>
-                <option value="HEAD">HEAD</option>
-                <option value="OPTIONS">OPTIONS</option>
-                <option value="QUERY">QUERY</option>
-              </select>
-              <input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="https://api.example.com/users" aria-label="Request URL" />
-              <button id="var-peek" class="var-peek" hidden aria-expanded="false" aria-controls="var-overlay" title="Show variable values" aria-label="Show variable values">
-                <svg class="ic" aria-hidden="true"><use href="#i-braces" /></svg>
-                <span class="var-count">0</span>
-              </button>
-            </div>
-            <button id="send" class="primary" title="Send request (Ctrl+Enter)" disabled>Send</button>
-            <button id="save" class="tool outlined" title="Save request (Ctrl+S)" disabled>Save</button>
-            <div class="var-overlay" id="var-overlay" hidden role="region" aria-label="Variables used in URL"></div>
+        <div class="urlbar">
+          <div class="urlbox">
+            <select id="method" aria-label="HTTP method">
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="PATCH">PATCH</option>
+              <option value="DELETE">DELETE</option>
+              <option value="HEAD">HEAD</option>
+              <option value="OPTIONS">OPTIONS</option>
+              <option value="QUERY">QUERY</option>
+            </select>
+            <input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="https://api.example.com/users" aria-label="Request URL" />
+            <button id="var-peek" class="var-peek" hidden aria-expanded="false" aria-controls="var-overlay" title="Show variable values" aria-label="Show variable values">
+              <svg class="ic" aria-hidden="true"><use href="#i-braces" /></svg>
+              <span class="var-count">0</span>
+            </button>
           </div>
+          <button id="send" class="primary" title="Send request (Ctrl+Enter)" disabled>Send</button>
+          <button id="save" class="tool outlined" title="Save request (Ctrl+S)" disabled>Save</button>
+          <button id="response-layout" class="tool layout-switch" type="button" aria-pressed="false"
+            aria-label="Side by side" aria-controls="req-pane res-pane" title="Show request and response side by side">
+            <span class="layout-switch-icon" aria-hidden="true"></span>
+            Side by side
+          </button>
+          <div class="var-overlay" id="var-overlay" hidden role="region" aria-label="Variables used in URL"></div>
+        </div>
 
+        <section class="req" id="req-pane" aria-labelledby="request-title">
+          <div class="request-head">
+            <h2 id="request-title">Request</h2>
+            <div class="request-actions">
+              <button class="drawer-link" id="cookies-link" type="button" data-drawer="cookies" aria-controls="drawer" aria-expanded="false" title="Cookies this workspace has stored">Cookies</button>
+              <button class="drawer-link" id="code-link" type="button" data-drawer="code" aria-controls="drawer" aria-expanded="false" title="Copy as cURL, generate code, or import a cURL command">Code</button>
+            </div>
+          </div>
           <nav class="tabs" id="req-tabs" aria-label="Request sections">
             <button class="tab is-active" aria-current="true" data-tab="params">Params <span class="count" id="params-count"></span></button>
             <button class="tab" data-tab="auth">Auth</button>
             <button class="tab" data-tab="headers">Headers <span class="count" id="headers-count"></span></button>
             <button class="tab" data-tab="body">Body</button>
             <button class="tab" data-tab="scripts">Scripts</button>
-            <span class="tabs-spacer" aria-hidden="true"></span>
-            <button class="drawer-link" id="cookies-link" type="button" data-drawer="cookies" aria-controls="drawer" aria-expanded="false" title="Cookies this workspace has stored">Cookies</button>
-            <button class="drawer-link" id="code-link" type="button" data-drawer="code" aria-controls="drawer" aria-expanded="false" title="Copy as cURL, generate code, or import a cURL command">Code</button>
           </nav>
 
           <div role="tabpanel" class="pane is-active" data-pane="params">
@@ -346,32 +358,36 @@
           title="Drag to resize · double-click to reset"
         ></div>
 
-        <section class="res" id="res-pane">
+        <section class="res" id="res-pane" aria-labelledby="response-title">
           <div class="res-head">
-            <span class="res-title">Response</span>
-            <span id="status" class="pill" role="status" aria-live="polite" aria-atomic="true">No response</span>
-            <span id="time" class="metric"></span>
-            <span id="size" class="metric"></span>
-            <span id="error" class="error" role="alert"></span>
-            <button id="copy-res" class="icon-btn" hidden title="Copy response body or selected headers" aria-label="Copy response body or selected headers">
-              <svg class="ic" aria-hidden="true"><use href="#i-copy" /></svg>
-            </button>
-            <button id="save-res" class="icon-btn" hidden title="Save response body to file" aria-label="Save response body to file">
-              <svg class="ic" aria-hidden="true"><use href="#i-export" /></svg>
-            </button>
-            <button id="save-example" class="icon-btn" disabled title="Save response as example" aria-label="Save response as example">
-              <svg class="ic" aria-hidden="true"><use href="#i-bookmark" /></svg>
-            </button>
-            <span id="examples-bar" class="examples-bar">
-              <button id="examples-btn" class="tool outlined" hidden aria-expanded="false" aria-controls="examples-pop" title="Saved examples">
-                <svg class="ic" aria-hidden="true"><use href="#i-stack" /></svg>
-                Examples <span id="examples-count" class="count"></span>
+            <h2 class="res-title" id="response-title">Response</h2>
+            <div class="response-meta">
+              <span id="status" class="pill" role="status" aria-live="polite" aria-atomic="true">No response</span>
+              <span id="time" class="metric"></span>
+              <span id="size" class="metric"></span>
+              <span id="error" class="error" role="alert"></span>
+            </div>
+            <div class="response-actions">
+              <button id="copy-res" class="icon-btn" hidden title="Copy response body or selected headers" aria-label="Copy response body or selected headers">
+                <svg class="ic" aria-hidden="true"><use href="#i-copy" /></svg>
               </button>
-              <div id="examples-pop" class="examples-pop" role="group" aria-label="Saved examples" hidden>
-                <div class="examples-pop-head">Saved examples</div>
-                <div id="examples-list"></div>
+              <button id="save-res" class="icon-btn" hidden title="Save response body to file" aria-label="Save response body to file">
+                <svg class="ic" aria-hidden="true"><use href="#i-export" /></svg>
+              </button>
+              <button id="save-example" class="icon-btn" disabled title="Save response as example" aria-label="Save response as example">
+                <svg class="ic" aria-hidden="true"><use href="#i-bookmark" /></svg>
+              </button>
+              <div id="examples-bar" class="examples-bar">
+                <button id="examples-btn" class="tool outlined" hidden aria-expanded="false" aria-controls="examples-pop" title="Saved examples">
+                  <svg class="ic" aria-hidden="true"><use href="#i-stack" /></svg>
+                  Examples <span id="examples-count" class="count"></span>
+                </button>
+                <div id="examples-pop" class="examples-pop" role="group" aria-label="Saved examples" hidden>
+                  <div class="examples-pop-head">Saved examples</div>
+                  <div id="examples-list"></div>
+                </div>
               </div>
-            </span>
+            </div>
           </div>
           <div id="example-banner" class="example-banner" hidden>
             <svg class="ic" aria-hidden="true"><use href="#i-bookmark" /></svg>
@@ -387,15 +403,7 @@
           </nav>
           <div class="res-empty" id="res-empty">
             <div class="res-idle">
-              <svg class="res-pulse" viewBox="0 0 132 36" aria-hidden="true">
-                <defs>
-                  <linearGradient id="lg-pulse" x1="0" y1="0" x2="1" y2="0">
-                    <stop offset="0" stop-color="#ff8352" />
-                    <stop offset="1" stop-color="#ff6b35" />
-                  </linearGradient>
-                </defs>
-                <path d="M6 18h34l9-11 14 22 9-11h54" fill="none" stroke="url(#lg-pulse)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
+              <svg class="ic res-idle-icon" aria-hidden="true"><use href="#i-braces" /></svg>
               <b>No response yet</b>
               <span>Send a request: status, timing, and body land here.</span>
               <span class="res-idle-kbd"><kbd>Ctrl</kbd>+<kbd>&#8629;</kbd> to send</span>
@@ -569,6 +577,34 @@
 
           <section id="pref-appearance" role="tabpanel" class="pane" data-pane="pref-appearance" aria-labelledby="pref-appearance-title">
             <h3 id="pref-appearance-title">Appearance</h3>
+            <div class="preferences-row stacked">
+              <div class="preferences-copy">
+                <span class="preferences-label" id="pref-workbench-style-label">Workbench style</span>
+                <p id="pref-workbench-style-help">Choose the typography, spacing, and shapes used across the app.</p>
+              </div>
+              <div class="appearance-choices" role="radiogroup" aria-labelledby="pref-workbench-style-label" aria-describedby="pref-workbench-style-help">
+                <label class="appearance-choice workbench-choice">
+                  <input id="pref-appearance-workbench" type="radio" name="pref-appearance" value="workbench" data-setting="general.appearance" aria-labelledby="appearance-name-workbench" aria-describedby="appearance-detail-workbench" checked />
+                  <span class="appearance-name" id="appearance-name-workbench">Workbench</span>
+                  <span class="appearance-detail" id="appearance-detail-workbench">Warm surfaces and balanced spacing.</span>
+                </label>
+                <label class="appearance-choice terminal-choice">
+                  <input id="pref-appearance-terminal" type="radio" name="pref-appearance" value="terminal" data-setting="general.appearance" aria-labelledby="appearance-name-terminal" aria-describedby="appearance-detail-terminal" />
+                  <span class="appearance-name" id="appearance-name-terminal">Terminal</span>
+                  <span class="appearance-detail" id="appearance-detail-terminal">Compact rows, square edges, and monospace type.</span>
+                </label>
+                <label class="appearance-choice studio-choice">
+                  <input id="pref-appearance-studio" type="radio" name="pref-appearance" value="studio" data-setting="general.appearance" aria-labelledby="appearance-name-studio" aria-describedby="appearance-detail-studio" />
+                  <span class="appearance-name" id="appearance-name-studio">Studio</span>
+                  <span class="appearance-detail" id="appearance-detail-studio">Soft panels, larger controls, and more breathing room.</span>
+                </label>
+                <label class="appearance-choice ledger-choice">
+                  <input id="pref-appearance-ledger" type="radio" name="pref-appearance" value="ledger" data-setting="general.appearance" aria-labelledby="appearance-name-ledger" aria-describedby="appearance-detail-ledger" />
+                  <span class="appearance-name" id="appearance-name-ledger">Ledger</span>
+                  <span class="appearance-detail" id="appearance-detail-ledger">Serif headings and ruled sections for easy scanning.</span>
+                </label>
+              </div>
+            </div>
             <div class="preferences-row">
               <div class="preferences-copy">
                 <label for="pref-theme">Theme</label>

@@ -87,8 +87,8 @@ try {
   await click('#app-settings-tabs [data-tab="pref-appearance"]');
   await click('#pref-accent-ocean');
   await check('accent preset applies and persists', `document.documentElement.dataset.accent==='ocean' && __verify.state.settings.general.accent==='ocean' && localStorage.getItem('postlite.accent')==='ocean' && getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()==='#38bdf8'`);
-  await check('primary button outline follows accent', `(() => { const cs=getComputedStyle(document.querySelector('#send')); return cs.color==='rgb(56, 189, 248)' && cs.borderTopColor==='rgb(56, 189, 248)' && cs.backgroundColor==='rgba(0, 0, 0, 0)'; })()`);
-  await check('swatches preview their own preset hue', `getComputedStyle(document.querySelector('#pref-accent-rose + .accent-dot')).backgroundColor==='rgb(251, 113, 133)' && getComputedStyle(document.querySelector('#pref-accent-ember + .accent-dot')).backgroundColor==='rgb(255, 107, 53)'`);
+  await check('primary button fill follows accent', `(() => { const cs=getComputedStyle(document.querySelector('#send')); return cs.backgroundColor==='rgb(56, 189, 248)' && cs.borderTopColor==='rgb(56, 189, 248)' && cs.color!==cs.backgroundColor; })()`);
+  await check('swatches preview their own preset hue', `getComputedStyle(document.querySelector('#pref-accent-rose + .accent-dot')).backgroundColor==='rgb(251, 113, 133)' && getComputedStyle(document.querySelector('#pref-accent-ember + .accent-dot')).backgroundColor==='rgb(255, 137, 100)'`);
   await set('general.theme','light');
   await check('light theme retunes accent and swatches', `getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()==='#0369a1' && getComputedStyle(document.querySelector('#pref-accent-rose + .accent-dot')).backgroundColor==='rgb(190, 18, 60)'`);
   await screenshot('tier1-accent-ocean-light.png');
