@@ -1,4 +1,4 @@
-/* postlite site behaviour: theme, mobile nav, scrollspy, copy buttons, reveal */
+/* postlite site behaviour: theme, mobile nav, scrollspy, copy buttons */
 
 (() => {
   "use strict";
@@ -109,24 +109,5 @@
 
     sections.forEach((sec) => observer.observe(sec));
     setActive(sections[0]?.id ?? "");
-  }
-
-  /* ----- reveal on scroll (landing only) ----- */
-
-  const revealEls = $$(".reveal");
-  if (revealEls.length) {
-    if ("IntersectionObserver" in window && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      const io = new IntersectionObserver((entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            entry.target.classList.add("in");
-            io.unobserve(entry.target);
-          }
-        }
-      }, { rootMargin: "0px 0px -8% 0px", threshold: 0.08 });
-      revealEls.forEach((el) => io.observe(el));
-    } else {
-      revealEls.forEach((el) => el.classList.add("in"));
-    }
   }
 })();
