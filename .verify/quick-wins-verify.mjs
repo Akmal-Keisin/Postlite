@@ -590,6 +590,25 @@ try {
         && !window.__previewEscaped);
     })()`);
   });
+  await check('Cloudflare challenge preview explains the response and preserves Raw', `(() => {
+    const tab = __verify.state.tabs[0];
+    const frame = document.querySelector('#html-preview');
+    const html = { key: 'Content-Type', value: 'text/html' };
+    const challengeBody = '<noscript>Enable JavaScript and cookies to continue</noscript>'
+      + '<script>window._cf_chl_opt = {}; var path = "/cdn-cgi/challenge-platform/";<\/script>';
+    const cases = [
+      { headers: [html, { key: 'CF-Mitigated', value: 'challenge' }], body: '<p>Just a moment...</p>' },
+      { headers: [html], body: challengeBody },
+      { headers: [html], body: '<noscript>Enable JavaScript and cookies to continue</noscript>', ordinaryHtml: true },
+    ];
+    return cases.every(({ headers, body, ordinaryHtml }) => {
+      tab.response = { ...tab.response, headers, body };
+      __verify.renderResponse();
+      document.querySelector('#res-tabs [data-tab="preview"]').click();
+      const expected = ordinaryHtml ? frame.srcdoc === body : frame.srcdoc.includes('Cloudflare returned a browser verification page.');
+      return expected && frame.getAttribute('sandbox') === '' && document.querySelector('#raw').textContent === body;
+    });
+  })()`);
   await check('truncated saves carry a truncation warning', async () => {
     await evaluate(`(() => { __verify.state.settings.response.maxResponseSizeKB = 1; __verify.applyAppSettings(); return true })()`);
     await sendTo('/api/large');

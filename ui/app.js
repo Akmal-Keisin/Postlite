@@ -2935,9 +2935,15 @@ function syncResStage() {
 // HTML stays sandboxed; PDFs delegate parsing to the WebView's native document viewer.
 const previewEmptyDoc = '<!doctype html><body style="font:12px system-ui,sans-serif;color:#595959;margin:14px">Preview is available for HTML and PDF responses.</body>';
 const previewPdfTruncatedDoc = '<!doctype html><body style="font:12px system-ui,sans-serif;color:#595959;margin:14px">This PDF was truncated by the response size limit and cannot be previewed. Increase the limit and send again, or save the received bytes.</body>';
+const previewCloudflareChallengeDoc = '<!doctype html><html lang="en"><head><title>Cloudflare browser verification</title></head><body style="font:12px system-ui,sans-serif;color:#595959;margin:14px"><p><strong>Cloudflare returned a browser verification page.</strong></p><p>Postlite Preview cannot complete browser verification. See Raw for the original response or Headers for the Cloudflare Ray ID.</p></body></html>';
 
 const previewable = (response) =>
   response.headers.some((h) => /(?:^|[\s:;])(?:text\/html|application\/xhtml\+xml)\b/i.test(`${h.key}: ${h.value}`));
+
+const responseIsCloudflareChallenge = (response) =>
+  response.headers.some(({ key, value }) => key.toLowerCase() === "cf-mitigated" && value.trim().toLowerCase() === "challenge")
+  || (previewable(response) && response.body?.includes("window._cf_chl_opt")
+    && response.body.includes("/cdn-cgi/challenge-platform/"));
 
 const responseIsPdf = (response) => {
   if (!response || response.error) return false;
@@ -3015,7 +3021,8 @@ function renderPreview() {
       frame.hidden = true;
       pdf.hidden = false;
     }
-  } else frame.srcdoc = previewable(response) ? response.body : previewEmptyDoc;
+  } else if (responseIsCloudflareChallenge(response)) frame.srcdoc = previewCloudflareChallengeDoc;
+  else frame.srcdoc = previewable(response) ? response.body : previewEmptyDoc;
 }
 
 $("#preview").addEventListener("click", (event) => {

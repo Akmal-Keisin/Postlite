@@ -140,6 +140,7 @@ struct ResponsePayload {
 }
 
 const MAX_BODY_BYTES: usize = 2_000_000;
+const POSTLITE_USER_AGENT: &str = "Postlite";
 
 /// An environment reader, injected so the environment-proxy lookup can be faked in tests without
 /// mutating the process environment (which would race across parallel tests).
@@ -425,6 +426,7 @@ async fn run_request(request: RequestPayload, ctx: &Ctx) -> ResponsePayload {
     };
 
     let mut builder = reqwest::Client::builder()
+        .user_agent(POSTLITE_USER_AGENT)
         .timeout(Duration::from_millis(settings.request_timeout_ms as u64))
         .redirect(if settings.follow_redirects {
             reqwest::redirect::Policy::limited(settings.max_redirects as usize)
@@ -839,6 +841,7 @@ async fn oauth2_token_request_with_timeout(
         form = format!("{form}&scope={}", urlencoded(&config.scope));
     }
     let client = reqwest::Client::builder()
+        .user_agent(POSTLITE_USER_AGENT)
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
         .timeout(timeout)
@@ -1641,6 +1644,53 @@ mod tests {
             assert_eq!(response.body.len(), cap);
             assert_eq!(response.truncated, size > cap);
             server.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn outgoing_headers_default_and_preserve_explicit_values() {
+        for custom in [false, true] {
+            let (url, server) = serve("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+            let mut payload = request();
+            payload.url = url;
+            if custom {
+                payload.headers = [
+                    ("uSeR-Agent", "CustomClient/1.0"),
+                    ("Accept", "application/json"),
+                    ("Accept-Encoding", "identity"),
+                ]
+                .into_iter()
+                .map(|(key, value)| HeaderPair {
+                    key: key.into(),
+                    value: value.into(),
+                })
+                .collect();
+            }
+            let response = run_request(payload, &Ctx::no_jar()).await;
+            assert_eq!(response.status, 204, "{:?}", response.error);
+            let received = server.join().unwrap();
+            let values = |name: &str| -> Vec<&str> {
+                received
+                    .lines()
+                    .filter_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case(name).then_some(value.trim())
+                    })
+                    .collect()
+            };
+            if custom {
+                assert_eq!(values("user-agent"), ["CustomClient/1.0"]);
+                assert_eq!(values("accept"), ["application/json"]);
+                assert_eq!(values("accept-encoding"), ["identity"]);
+            } else {
+                assert_eq!(values("user-agent"), ["Postlite"]);
+                assert_eq!(values("accept"), ["*/*"]);
+                let encodings = values("accept-encoding");
+                assert_eq!(encodings.len(), 1);
+                assert!(encodings[0]
+                    .split(',')
+                    .any(|encoding| encoding.trim() == "gzip"));
+            }
         }
     }
 

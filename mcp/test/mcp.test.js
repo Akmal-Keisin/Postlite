@@ -221,6 +221,32 @@ test("multipart upload sends text and file parts with mime", async () => {
   }
 });
 
+test("outgoing headers default and preserve explicit values", async () => {
+  const { server, received, base } = await captureServer();
+  const { doc, uploadFile } = fixtureDoc(base);
+  try {
+    await withClient(doc, async (call) => {
+      const send = (headers) => call("send_http_request", { method: "GET", url: base, headers });
+      assert.equal((await send()).data.response.status, 200);
+      const custom = await send({
+        "uSeR-Agent": "CustomClient/1.0",
+        Accept: "application/json",
+        "Accept-Encoding": "identity;q=1",
+      });
+      assert.equal(custom.data.response.status, 200);
+      assert.equal(received[0].headers["user-agent"], "Postlite");
+      assert.equal(received[0].headers.accept, "*/*");
+      assert.equal(received[0].headers["accept-encoding"], "identity");
+      assert.equal(received[1].headers["user-agent"], "CustomClient/1.0");
+      assert.equal(received[1].headers.accept, "application/json");
+      assert.equal(received[1].headers["accept-encoding"], "identity;q=1");
+    });
+  } finally {
+    server.close();
+    fs.rmSync(uploadFile, { force: true });
+  }
+});
+
 test("response cap truncates but reports full size", async () => {
   const { server, base } = await captureServer();
   const { doc, uploadFile } = fixtureDoc(base);

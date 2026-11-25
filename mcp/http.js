@@ -79,6 +79,11 @@ export async function executeRequest(prepared, settings) {
     }
 
     let headers = prepared.headers.map((h) => [h.key, h.value]);
+    const headerNames = new Set(headers.map(([key]) => key.toLowerCase()));
+    if (!headerNames.has("user-agent")) headers.push(["User-Agent", "Postlite"]);
+    if (!headerNames.has("accept")) headers.push(["Accept", "*/*"]);
+    // undici.request returns encoded bytes as-is. Request an uncompressed body by default.
+    if (!headerNames.has("accept-encoding")) headers.push(["Accept-Encoding", "identity"]);
     if (settings.disableCache) {
       headers = headers.filter(([key]) => !["cache-control", "pragma"].includes(key.toLowerCase()));
       headers.push(["Cache-Control", "no-cache"], ["Pragma", "no-cache"]);
