@@ -5,6 +5,7 @@ mod backup;
 mod curl;
 mod history;
 mod http;
+mod oauth;
 mod postman;
 mod prepare;
 mod workbench;
@@ -14,9 +15,24 @@ mod workspace_edit;
 use std::path::PathBuf;
 
 use gpui::{
-    App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size,
+    App, AppContext, Application, Bounds, Context, Entity, IntoElement, ParentElement, Render,
+    Styled, TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
 };
 use gpui_component::Root;
+
+struct Desktop {
+    workbench: Entity<workbench::Workbench>,
+}
+
+impl Render for Desktop {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .child(self.workbench.clone())
+            .children(Root::render_sheet_layer(window, cx))
+            .children(Root::render_dialog_layer(window, cx))
+    }
+}
 
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
@@ -77,7 +93,8 @@ fn main() {
                             .update(cx, |view, cx| view.prepare_to_close(window, cx))
                             .unwrap_or(true)
                     });
-                    cx.new(|cx| Root::new(workbench, window, cx))
+                    let desktop = cx.new(|_| Desktop { workbench });
+                    cx.new(|cx| Root::new(desktop, window, cx))
                 },
             )
             .expect("could not open the Postlite window");

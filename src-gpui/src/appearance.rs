@@ -237,10 +237,18 @@ pub struct Icons;
 impl AssetSource for Icons {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
         const SOURCE: &str = include_str!("../../ui/index.html");
-        let Some(name) = path
+        let name = path
             .strip_prefix("postlite/")
             .and_then(|p| p.strip_suffix(".svg"))
-        else {
+            .or_else(|| match path {
+                "icons/close.svg" => Some("x"),
+                "icons/check.svg" => Some("check"),
+                "icons/search.svg" => Some("search"),
+                "icons/eye.svg" => Some("eye"),
+                "icons/eye-off.svg" => Some("eye-off"),
+                _ => None,
+            });
+        let Some(name) = name else {
             return Ok(None);
         };
         let markup = if name == "brand" {

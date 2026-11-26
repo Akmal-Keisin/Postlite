@@ -28,7 +28,9 @@ jobs:
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: |
+            ./src-tauri -> target
+            ./postlite-core -> target
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -41,6 +43,10 @@ jobs:
       - name: Test
         working-directory: src-tauri
         run: cargo test --release
+
+      - name: Test shared request and session code
+        working-directory: postlite-core
+        run: cargo test --release --locked
 
       - name: Build
         working-directory: src-tauri

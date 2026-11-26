@@ -1,5 +1,9 @@
 //! Shared, window-independent HTTP transport for the Postlite desktop apps.
 
+mod jar;
+pub mod session;
+mod store;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

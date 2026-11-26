@@ -146,10 +146,22 @@ impl Workbench {
         value: Value,
         cx: &mut Context<Self>,
     ) {
+        let owner = matches!(
+            target,
+            FieldTarget::AuthType | FieldTarget::Auth("oauth2", _)
+        )
+        .then(|| self.active_request())
+        .flatten()
+        .filter(|request| request["auth"]["type"] == "oauth2")
+        .and_then(|request| request["id"].as_str())
+        .map(|id| crate::prepare::scoped_owner(&self.workspace().id, id));
         if self
             .active_request_mut()
             .is_some_and(|request| target.replace(request, value))
         {
+            if let Some(owner) = owner {
+                self.session.oauth.invalidate(&owner);
+            }
             self.changed(cx);
         }
     }

@@ -4,6 +4,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{SecondsFormat, Utc};
 use regex::{Captures, Regex};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 static VARIABLE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{\{([^{}]+?)\}\}").expect("literal variable regex"));
@@ -20,8 +21,8 @@ type Vars<'a> = HashMap<&'a str, Cow<'a, str>>;
 type Pairs = Vec<(String, String)>;
 
 /// Build the existing desktop transport payload from the saved request and its parent scopes.
-/// OAuth and scripts belong to the execution runtime. Reject requests whose pre-send effects
-/// cannot be reproduced yet. Post-response test scripts run in a later milestone.
+/// OAuth credentials are supplied by the session just before sending. Scripts whose pre-send
+/// effects cannot be reproduced yet still stop the request.
 pub fn prepare(
     request: &Value,
     collection: Option<&Value>,
@@ -60,6 +61,55 @@ pub fn preview(
     )
 }
 
+fn auth_owner<'a>(
+    request: &'a Value,
+    collection: Option<&'a Value>,
+    ancestors: &[&'a Value],
+) -> Option<&'a Value> {
+    if text(&request["auth"]["type"], "inherit") != "inherit" {
+        Some(request)
+    } else {
+        collection
+            .into_iter()
+            .chain(ancestors.iter().copied())
+            .rev()
+            .find(|node| text(&node["auth"]["type"], "noauth") != "inherit")
+    }
+}
+
+pub fn oauth_owner<'a>(
+    request: &'a Value,
+    collection: Option<&'a Value>,
+    ancestors: &[&'a Value],
+) -> Option<&'a Value> {
+    auth_owner(request, collection, ancestors).filter(|owner| owner["auth"]["type"] == "oauth2")
+}
+
+pub fn scoped_owner(workspace: &str, node: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update((workspace.len() as u64).to_be_bytes());
+    digest.update(workspace);
+    digest.update(node);
+    format!("{:x}", digest.finalize())
+}
+
+pub fn oauth_config(
+    request: &Value,
+    collection: Option<&Value>,
+    ancestors: &[&Value],
+    workspace: &str,
+) -> Result<Option<crate::oauth::Config>, String> {
+    oauth_owner(request, collection, ancestors)
+        .map(|owner| {
+            let id = owner["id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| "OAuth 2.0 needs an authentication owner ID".to_owned())?;
+            crate::oauth::Config::from_auth(&scoped_owner(workspace, id), &owner["auth"]["oauth2"])
+        })
+        .transpose()
+}
+
 fn prepare_impl(
     request: &Value,
     collection: Option<&Value>,
@@ -75,20 +125,9 @@ fn prepare_impl(
     }
 
     let parents = collection.into_iter().chain(ancestors.iter().copied());
-    let request_auth = &request["auth"];
-    let auth = if text(&request_auth["type"], "inherit") != "inherit" {
-        request_auth
-    } else {
-        parents
-            .clone()
-            .rev()
-            .map(|parent| &parent["auth"])
-            .find(|auth| text(&auth["type"], "noauth") != "inherit")
-            .unwrap_or(&Value::Null)
-    };
-    if !preview && auth["type"] == "oauth2" {
-        return Err("OAuth 2.0 is not yet available in the GPUI build".into());
-    }
+    let auth = auth_owner(request, collection, ancestors)
+        .map(|owner| &owner["auth"])
+        .unwrap_or(&Value::Null);
     if !preview
         && parents
             .chain([request])
@@ -410,7 +449,7 @@ fn request_settings(settings: &Value, workspace_id: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::prepare;
+    use super::{oauth_config, prepare};
     use serde_json::{Value, json};
 
     // Expected IPC payloads recorded from ui/app.js's executeRequest with a mock invoke.
@@ -571,8 +610,9 @@ mod tests {
         let request = json!({"url": "https://example.test"});
         let collection = json!({"auth": {"type": "oauth2"}});
         assert!(
-            prepare(&request, Some(&collection), &[], None, &Value::Null, "w")
-                .unwrap_err()
+            oauth_config(&request, Some(&collection), &[], "w")
+                .err()
+                .unwrap()
                 .contains("OAuth 2.0")
         );
         let folder = json!({"scripts": {"pre": "  pm.request.method = 'POST';  "}});

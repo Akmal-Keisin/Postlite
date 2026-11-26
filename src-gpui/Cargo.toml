@@ -13,7 +13,8 @@ postlite-core = { path = "../postlite-core" }
 rand = "0.9"
 regex = "1"
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
 

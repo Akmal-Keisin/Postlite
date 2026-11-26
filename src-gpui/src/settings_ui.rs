@@ -85,6 +85,18 @@ impl Workbench {
                         ("QUERY", "QUERY"),
                     ],
                 ))
+                .child(settings_row(
+                    &weak,
+                    &settings["request"],
+                    "proxy",
+                    "mode",
+                    "Proxy",
+                    &[
+                        ("direct", "Direct"),
+                        ("manual", "Manual"),
+                        ("environment", "From environment"),
+                    ],
+                ))
                 .child(view_title("Response", p))
                 .child(settings_row(
                     &weak,
@@ -101,6 +113,11 @@ impl Workbench {
                 ("general", "confirmBeforeDelete", "Confirm before deleting"),
                 ("request", "followRedirects", "Follow redirects"),
                 ("request", "sslVerify", "Verify TLS certificates"),
+                (
+                    "request",
+                    "persistCookies",
+                    "Persist cookies between launches",
+                ),
                 ("privacy", "maskSensitiveHeaders", "Mask sensitive headers"),
                 ("privacy", "maskSecretVariables", "Mask secret variables"),
             ] {
@@ -121,6 +138,16 @@ impl Workbench {
             }
             let export = weak.clone();
             let restore = weak.clone();
+            let cookies = weak.clone();
+            form = form.child(
+                Button::new("clear-cookies")
+                    .outline()
+                    .small()
+                    .label("Clear workspace cookies")
+                    .on_click(move |_, window, cx| {
+                        let _ = cookies.update(cx, |app, cx| app.confirm_clear_cookies(window, cx));
+                    }),
+            );
             form = form.child(view_title("Import / Export", p)).child(
                 div()
                     .flex()
@@ -164,6 +191,9 @@ impl Workbench {
             self.doc.settings[section] = json!({});
         }
         self.doc.settings[section][name] = value;
+        if (section, name) == ("request", "persistCookies") {
+            self.sync_cookie_preference(cx);
+        }
         if section == "general" && matches!(name, "theme" | "appearance" | "accent") {
             self.palette = theme(&self.doc.settings, window, cx);
         }
@@ -209,7 +239,20 @@ fn settings_row(
                     .label(name)
                     .on_click(move |_, window, cx| {
                         let _ = view.update(cx, |app, cx| {
-                            app.setting(section, key, json!(value), window, cx)
+                            if section == "proxy" {
+                                if value == "manual" {
+                                    app.open_proxy(window, cx);
+                                } else {
+                                    let mut proxy = app.doc.settings["request"]["proxy"].clone();
+                                    if !proxy.is_object() {
+                                        proxy = json!({});
+                                    }
+                                    proxy["mode"] = json!(value);
+                                    app.setting("request", "proxy", proxy, window, cx);
+                                }
+                            } else {
+                                app.setting(section, key, json!(value), window, cx);
+                            }
                         });
                     });
                     if selected == value {

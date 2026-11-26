@@ -2,12 +2,18 @@
 mod backup_ui;
 #[path = "code_ui.rs"]
 mod code_ui;
+#[path = "cookies_ui.rs"]
+mod cookies_ui;
 #[path = "layout.rs"]
 mod layout;
+#[path = "oauth_ui.rs"]
+mod oauth_ui;
 #[path = "panels.rs"]
 mod panels;
 #[path = "response_ui.rs"]
 mod response_ui;
+#[path = "session_ui.rs"]
+mod session_ui;
 #[path = "settings_ui.rs"]
 mod settings_ui;
 #[path = "variables_ui.rs"]
@@ -16,7 +22,7 @@ mod variables_ui;
 mod workspace_ui;
 
 use std::collections::{HashMap, HashSet};
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use gpui::{
     AnyWindowHandle, App, AppContext, ClickEvent, Context, Div, ElementId, Entity, FontWeight,
@@ -90,6 +96,8 @@ pub(super) struct Workbench {
     mask_secrets: bool,
     error: Option<String>,
     storage: Option<PathBuf>,
+    session: Arc<http::Session>,
+    cookies_drawer: Option<gpui::WeakEntity<cookies_ui::CookieDrawer>>,
     revision: u64,
     saved_revision: u64,
     writing: bool,
@@ -155,6 +163,20 @@ impl Workbench {
         let mask_secrets = doc.settings["privacy"]["maskSensitiveHeaders"]
             .as_bool()
             .unwrap_or(true);
+        let session = Arc::new(http::Session::open(
+            storage.as_deref(),
+            doc.settings["request"]["persistCookies"] != false,
+        ));
+        let shutdown = session.clone();
+        App::on_app_quit(cx, move |app| {
+            let session = shutdown.clone();
+            let flush = app.background_executor().spawn(async move {
+                session.update_cookie_setting();
+                session.cookies.flush_all();
+            });
+            async move { flush.await }
+        })
+        .detach();
         let mut workbench = Self {
             doc,
             document_generation: uuid::Uuid::new_v4(),
@@ -175,6 +197,8 @@ impl Workbench {
             mask_secrets,
             error,
             storage,
+            session,
+            cookies_drawer: None,
             revision: 0,
             saved_revision: 0,
             writing: false,
@@ -420,6 +444,7 @@ impl Workbench {
     fn activate_workspace(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if index != self.doc.active_workspace && index < self.doc.workspaces.len() {
             self.sync_url(cx);
+            self.dismiss_cookies(window, cx);
             self.doc.active_workspace = index;
             self.expanded.clear();
             self.filter.clear();
@@ -564,15 +589,20 @@ impl Workbench {
             .map(|item| item.ancestors.as_slice())
             .unwrap_or_default();
         let environment = collection.and_then(|item| self.bound_environment(item));
-        let payload = match prepare::prepare(
+        let prepared = prepare::prepare(
             &request,
             collection,
             ancestors,
             environment,
             &self.doc.settings,
             &workspace.id,
-        ) {
-            Ok(payload) => payload,
+        )
+        .and_then(|payload| {
+            prepare::oauth_config(&request, collection, ancestors, &workspace.id)
+                .map(|oauth| (payload, oauth))
+        });
+        let (payload, oauth) = match prepared {
+            Ok(prepared) => prepared,
             Err(error) => {
                 let outcome = Err(error);
                 if history::record(self.workspace_mut(), &request, &outcome) {
@@ -590,15 +620,25 @@ impl Workbench {
         let document_generation = self.document_generation;
         let generation = uuid::Uuid::new_v4();
         self.pending.insert(key.clone(), generation);
+        if oauth.is_some()
+            && let Some(owner) = self.active_oauth_owner()
+        {
+            self.watch_oauth(owner, cx);
+        }
         cx.notify();
-        let job = cx
-            .background_executor()
-            .spawn(async move { http::send(payload) });
+        let session = self.session.clone();
+        let job = http::runtime().map(|runtime| runtime.spawn(session.dispatch(payload, oauth)));
         cx.spawn_in(window, async move |this, cx| {
-            let result = job.await;
+            let result = match job {
+                Ok(task) => task.await.unwrap_or_else(|error| Err(error.to_string())),
+                Err(error) => Err(error),
+            };
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.document_generation != document_generation {
                     return;
+                }
+                if this.workspace().id == key.0 {
+                    this.refresh_cookies(cx);
                 }
 
                 if let Some(workspace) = this

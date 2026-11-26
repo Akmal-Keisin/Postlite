@@ -1,4 +1,5 @@
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -106,6 +107,54 @@ fn is_tauri_profile(target: &Path, read_only: Option<&Path>) -> bool {
         resolved.starts_with(&canonical_dir)
             || fs::canonicalize(read_only).is_ok_and(|original| resolved == original)
     })
+}
+
+/// A writable copy gets its own cookie directory and OS credential namespace. Use the same
+/// canonical parent and filename that workspace saves will replace.
+pub(crate) fn session_profile(workspace: &Path) -> Option<(PathBuf, String)> {
+    isolated_session_profile(workspace, default_workspace_path().as_deref())
+}
+
+fn isolated_session_profile(
+    workspace: &Path,
+    original: Option<&Path>,
+) -> Option<(PathBuf, String)> {
+    let workspace = std::path::absolute(workspace).ok()?;
+    let file = absolute_profile_path(workspace.parent()?)?.join(workspace.file_name()?);
+    if is_tauri_profile(&file, original) {
+        return None;
+    }
+    let digest = Sha256::digest(file.as_os_str().as_encoded_bytes());
+    let name: String = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let directory = file.parent()?.join(format!(".postlite-session-{name}"));
+    for path in [
+        directory.clone(),
+        directory.join("cookies"),
+        directory.join("secrets"),
+    ] {
+        if let Ok(metadata) = fs::symlink_metadata(path) {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return None;
+            }
+        }
+    }
+    Some((directory, format!("app.postlite.gpui.{name}")))
+}
+
+fn absolute_profile_path(path: &Path) -> Option<PathBuf> {
+    match fs::canonicalize(path) {
+        Ok(path) => Some(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if fs::symlink_metadata(path).is_ok() {
+                return None;
+            }
+            Some(absolute_profile_path(path.parent()?)?.join(path.file_name()?))
+        }
+        Err(_) => None,
+    }
 }
 
 fn new_staging_file(directory: &Path) -> io::Result<(PathBuf, File)> {
@@ -229,21 +278,24 @@ impl Document {
             Value::Array(self.workspaces.iter().map(Workspace::snapshot).collect()),
         );
         let mut snapshot = Value::Object(snapshot);
-        strip_proxy_credentials(&mut snapshot);
+        strip_session_credentials(&mut snapshot);
         snapshot
     }
 }
 
-fn strip_proxy_credentials(value: &mut Value) {
+fn strip_session_credentials(value: &mut Value) {
     match value {
         Value::Object(map) => {
             if let Some(Value::Object(proxy)) = map.get_mut("proxy") {
                 proxy.remove("username");
                 proxy.remove("password");
             }
-            map.values_mut().for_each(strip_proxy_credentials);
+            if let Some(Value::Object(oauth)) = map.get_mut("oauth2") {
+                oauth.remove("clientSecret");
+            }
+            map.values_mut().for_each(strip_session_credentials);
         }
-        Value::Array(items) => items.iter_mut().for_each(strip_proxy_credentials),
+        Value::Array(items) => items.iter_mut().for_each(strip_session_credentials),
         _ => {}
     }
 }
@@ -620,6 +672,56 @@ mod tests {
         }
         assert_eq!(fs::read(&live).unwrap(), b"existing Tauri data");
         assert_eq!(fs::read_dir(&profile).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn session_storage_is_isolated_from_tauri_and_other_copies() {
+        let dir = TempDir::new();
+        let desktop = dir.0.join("app.postlite.desktop");
+        fs::create_dir(&desktop).unwrap();
+        let live = desktop.join("workspace.json");
+        fs::write(&live, b"{}").unwrap();
+        let first = dir.0.join("copy.json");
+        let second = dir.0.join("other.json");
+        let session = |path: &Path| isolated_session_profile(path, Some(&live));
+
+        let first_session = session(&first).unwrap();
+        let second_session = session(&second).unwrap();
+        assert_ne!(first_session.0, second_session.0);
+        assert_ne!(first_session.1, second_session.1);
+        assert!(session(&live).is_none());
+        assert!(session(&desktop.join("other.json")).is_none());
+        assert!(!first_session.0.exists());
+
+        fs::write(&first, b"{}").unwrap();
+        assert_eq!(session(&first), Some(first_session.clone()));
+        #[cfg(unix)]
+        {
+            let alias = dir.0.join("live-alias.json");
+            std::os::unix::fs::symlink(&live, &alias).unwrap();
+            assert!(session(&alias).is_none());
+            std::os::unix::fs::symlink(&desktop, &first_session.0).unwrap();
+            assert!(session(&first).is_none());
+        }
+    }
+
+    #[test]
+    fn snapshots_strip_legacy_session_credentials() {
+        let doc = parse(json!({
+            "settings": {"request": {"proxy": {"username": "user", "password": "secret", "mode": "manual"}}},
+            "collections": [{"id": "collection", "auth": {"type": "oauth2",
+                "oauth2": {"clientSecret": "secret", "clientId": "client"}
+            }}]
+        })).unwrap();
+        let snapshot = doc.snapshot();
+        assert_eq!(
+            snapshot["settings"]["request"]["proxy"],
+            json!({"mode": "manual"})
+        );
+        assert_eq!(
+            snapshot["workspaces"][0]["collections"][0]["auth"]["oauth2"],
+            json!({"clientId":"client"})
+        );
     }
 
     #[test]

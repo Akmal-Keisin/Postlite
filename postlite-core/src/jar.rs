@@ -3,7 +3,6 @@
 //! enforces.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -16,6 +15,7 @@ use crate::store::{EncryptedStore, KeySource, StoreError};
 /// Writes coalesce: a burst of responses produces one file write, and the tail is caught by
 /// `flush()` on workspace switch and window close.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
+const NO_SECRET_STORE_NOTE: &str = "cookies are not saved: no secret store found on this system";
 
 /// One row of the Cookie Manager drawer. Values are real here; masking is a display concern (§10).
 #[derive(Debug, Serialize)]
@@ -35,86 +35,96 @@ pub struct CookieRow {
 
 pub struct PostliteJar {
     inner: RwLock<cookie_store::CookieStore>,
+    persistence: Option<Mutex<Persistence>>,
+}
+
+struct Persistence {
     store: EncryptedStore,
-    persist: AtomicBool,
-    dirty: Mutex<bool>,
-    last_write: Mutex<Option<Instant>>,
+    enabled: bool,
+    dirty: bool,
+    last_write: Option<Instant>,
 }
 
 /// Why a jar is not persisting, in words the drawer can show instead of an empty list. A restored
 /// jar needs no note: the drawer counts `rows()`.
-pub enum JarOpen {
+pub(crate) enum JarOpen {
     Restored(Arc<PostliteJar>),
     Empty(Arc<PostliteJar>, String),
 }
 
 impl PostliteJar {
-    pub fn open(dir: &Path, name: &str, keys: Arc<dyn KeySource>, persist: bool) -> JarOpen {
-        let jar = Arc::new(Self {
-            inner: RwLock::new(cookie_store::CookieStore::new()),
-            store: EncryptedStore::open(dir, name, keys),
-            persist: AtomicBool::new(persist),
-            dirty: Mutex::new(false),
-            last_write: Mutex::new(None),
-        });
-
-        match jar.store.load() {
-            Ok(None) if persist && !jar.store.secret_store_usable() => JarOpen::Empty(
-                jar,
-                "cookies are not saved: no secret store found on this system".into(),
-            ),
-            Ok(None) => JarOpen::Restored(jar),
+    pub(crate) fn open(dir: &Path, name: &str, keys: Arc<dyn KeySource>, persist: bool) -> JarOpen {
+        let store = EncryptedStore::open(dir, name, keys);
+        if !store.secret_store_usable() {
+            return JarOpen::Empty(Self::memory_only(), NO_SECRET_STORE_NOTE.into());
+        }
+        let mut cookies = cookie_store::CookieStore::new();
+        let saved = if persist {
+            store.load()
+        } else {
+            store.delete().map(|()| None)
+        };
+        let note = match saved {
+            Ok(None) => None,
             Ok(Some(bytes)) => match cookie_store::serde::json::load(bytes.as_slice()) {
                 Ok(loaded) => {
-                    *jar.inner.write().unwrap() = loaded;
-                    JarOpen::Restored(jar)
+                    cookies = loaded;
+                    None
                 }
-                Err(e) => JarOpen::Empty(jar, format!("saved cookies could not be read: {e}")),
+                Err(error) => Some(format!("saved cookies could not be read: {error}")),
             },
-            Err(StoreError::NoSecretStore) => JarOpen::Empty(
-                jar,
-                "cookies are not saved: no secret store found on this system".into(),
-            ),
-            Err(e) => JarOpen::Empty(jar, e.message()),
+            Err(StoreError::NoSecretStore) => {
+                return JarOpen::Empty(Self::memory_only(), NO_SECRET_STORE_NOTE.into());
+            }
+            Err(error) => Some(error.message()),
+        };
+        let jar = Arc::new(Self {
+            inner: RwLock::new(cookies),
+            persistence: Some(Mutex::new(Persistence {
+                store,
+                enabled: persist,
+                dirty: false,
+                last_write: None,
+            })),
+        });
+        match note {
+            Some(note) => JarOpen::Empty(jar, note),
+            None => JarOpen::Restored(jar),
         }
     }
 
+    pub(crate) fn memory_only() -> Arc<Self> {
+        Arc::new(Self {
+            inner: RwLock::new(cookie_store::CookieStore::new()),
+            persistence: None,
+        })
+    }
+
     pub fn set_persist(&self, on: bool) {
-        self.persist.store(on, Ordering::Relaxed);
-        let mut dirty = self.dirty.lock().unwrap();
-        if on {
-            // Re-enabling must not wait for the next response to put the current jar back on disk.
-            *dirty = true;
-        } else {
-            // Turning persistence off must not leave a jar behind that would come back later.
-            *dirty = false;
-            let _ = self.store.delete();
+        if let Some(persistence) = &self.persistence {
+            let mut persistence = persistence.lock().unwrap();
+            persistence.enabled = on;
+            persistence.dirty = on;
+            if !on {
+                let _ = persistence.store.delete();
+            }
         }
     }
 
     pub fn persists(&self) -> bool {
-        self.persist.load(Ordering::Relaxed)
+        self.persistence
+            .as_ref()
+            .is_some_and(|persistence| persistence.lock().unwrap().enabled)
     }
 
     /// Write now if anything changed and the coalescing window has passed.
     pub fn maybe_flush(&self) {
-        if !self.dirty_now() {
-            return;
-        }
-        let due = match *self.last_write.lock().unwrap() {
-            None => true,
-            Some(previous) => previous.elapsed() >= FLUSH_INTERVAL,
-        };
-        if due {
-            self.write();
-        }
+        self.flush_if_due(false);
     }
 
     /// Write regardless of the coalescing window.
     pub fn flush(&self) {
-        if *self.dirty.lock().unwrap() {
-            self.write();
-        }
+        self.flush_if_due(true);
     }
 
     pub fn rows(&self) -> Vec<CookieRow> {
@@ -153,8 +163,11 @@ impl PostliteJar {
         path: Option<&str>,
         name: Option<&str>,
     ) -> usize {
-        let targets: Vec<(String, String, String)> = match self.inner.read() {
-            Ok(store) => store
+        let removed = {
+            let Ok(mut store) = self.inner.write() else {
+                return 0;
+            };
+            let targets: Vec<(String, String, String)> = store
                 .iter_any()
                 .filter(|cookie| {
                     domain.map_or(true, |want| String::from(&cookie.domain) == want)
@@ -168,58 +181,64 @@ impl PostliteJar {
                         cookie.name().to_owned(),
                     )
                 })
-                .collect(),
-            Err(_) => return 0,
-        };
-        if targets.is_empty() {
-            return 0;
-        }
-        if let Ok(mut store) = self.inner.write() {
+                .collect();
             for (domain, path, name) in &targets {
                 store.remove(domain, path, name);
             }
+            targets.len()
+        };
+        if removed > 0 {
+            self.mark_dirty();
         }
-        self.mark_dirty();
-        targets.len()
+        removed
     }
 
     /// Forget everything for this workspace: memory, the encrypted file, and its key.
     pub fn clear_all(&self) {
+        let persistence = self.persistence.as_ref().map(|state| state.lock().unwrap());
         if let Ok(mut store) = self.inner.write() {
             store.clear();
         }
-        *self.dirty.lock().unwrap() = false;
-        let _ = self.store.delete();
-    }
-
-    fn dirty_now(&self) -> bool {
-        self.persists() && *self.dirty.lock().unwrap()
-    }
-
-    fn mark_dirty(&self) {
-        // With persistence off there is nothing to write, and a stale flag would survive into
-        // the moment persistence is turned back on.
-        if self.persists() {
-            *self.dirty.lock().unwrap() = true;
+        if let Some(mut persistence) = persistence {
+            persistence.dirty = false;
+            let _ = persistence.store.delete();
         }
     }
 
-    fn write(&self) {
+    fn mark_dirty(&self) {
+        if let Some(persistence) = &self.persistence {
+            let mut persistence = persistence.lock().unwrap();
+            persistence.dirty = persistence.enabled;
+        }
+    }
+
+    fn flush_if_due(&self, force: bool) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        let mut persistence = persistence.lock().unwrap();
+        let due = persistence
+            .last_write
+            .is_none_or(|previous| previous.elapsed() >= FLUSH_INTERVAL);
+        if !persistence.dirty || (!force && !due) {
+            return;
+        }
         let mut bytes = Vec::new();
         let outcome = {
             let store = match self.inner.read() {
                 Ok(guard) => guard,
                 Err(_) => return,
             };
-            cookie_store::serde::json::save(&store, &mut bytes).map(|_| self.store.save(&bytes))
+            cookie_store::serde::json::save(&store, &mut bytes)
         };
-        match outcome {
-            Ok(Ok(())) | Ok(Err(StoreError::NoSecretStore)) => {
-                // Nothing was written because there is nowhere safe to write it; the drawer says so.
-                *self.dirty.lock().unwrap() = false;
-                *self.last_write.lock().unwrap() = Some(Instant::now());
-            }
-            _ => {}
+        if outcome.is_ok()
+            && matches!(
+                persistence.store.save(&bytes),
+                Ok(()) | Err(StoreError::NoSecretStore)
+            )
+        {
+            persistence.dirty = false;
+            persistence.last_write = Some(Instant::now());
         }
     }
 }
@@ -323,7 +342,11 @@ mod tests {
     fn path_scope_is_honoured() {
         let dir = TempDir::new("path");
         let jar = open_jar(&dir, FakeKeySource::empty());
-        receive(&jar, "api=1; Path=/api; Max-Age=60", "http://example.com/api/login");
+        receive(
+            &jar,
+            "api=1; Path=/api; Max-Age=60",
+            "http://example.com/api/login",
+        );
         // With no Path attribute the scope is the request URL's directory, not the whole site.
         receive(&jar, "root=2; Max-Age=60", "http://example.com/login");
 
@@ -350,18 +373,30 @@ mod tests {
         let dir = TempDir::new("domain");
         let jar = open_jar(&dir, FakeKeySource::empty());
         for domain in ["other.com", "example.org", "com", ".com"] {
-            receive(&jar, &format!("sid=abc; Domain={domain}; Path=/"), "http://example.com/login");
+            receive(
+                &jar,
+                &format!("sid=abc; Domain={domain}; Path=/"),
+                "http://example.com/login",
+            );
         }
         assert!(jar.rows().is_empty(), "{:?}", jar.rows());
 
         // A genuine subdomain scope still works.
-        receive(&jar, "sub=1; Domain=example.com; Path=/", "http://shop.example.com/login");
+        receive(
+            &jar,
+            "sub=1; Domain=example.com; Path=/",
+            "http://shop.example.com/login",
+        );
         assert_eq!(sent(&jar, "http://shop.example.com/a"), "sub=1");
 
         // ...and a single-label host is legitimate, so Domain=localhost must not be refused.
         let local = TempDir::new("local");
         let local_jar = open_jar(&local, FakeKeySource::empty());
-        receive(&local_jar, "sid=abc; Domain=localhost; Path=/", "http://localhost:8080/login");
+        receive(
+            &local_jar,
+            "sid=abc; Domain=localhost; Path=/",
+            "http://localhost:8080/login",
+        );
         assert_eq!(sent(&local_jar, "http://localhost:8080/a"), "sid=abc");
     }
 
@@ -369,15 +404,27 @@ mod tests {
     fn max_age_wins_over_a_past_expires() {
         let dir = TempDir::new("expiry");
         let jar = open_jar(&dir, FakeKeySource::empty());
-        receive(&jar, "v=1; Max-Age=3600; Expires=Mon, 01 Jan 1990 00:00:00 GMT", "http://example.com/a");
-        assert_eq!(sent(&jar, "http://example.com/a"), "v=1", "Max-Age must win over a past Expires");
+        receive(
+            &jar,
+            "v=1; Max-Age=3600; Expires=Mon, 01 Jan 1990 00:00:00 GMT",
+            "http://example.com/a",
+        );
+        assert_eq!(
+            sent(&jar, "http://example.com/a"),
+            "v=1",
+            "Max-Age must win over a past Expires"
+        );
     }
 
     #[test]
     fn a_cookie_that_arrives_expired_is_not_stored() {
         let dir = TempDir::new("stale");
         let jar = open_jar(&dir, FakeKeySource::empty());
-        receive(&jar, "gone=1; Expires=Mon, 01 Jan 1990 00:00:00 GMT", "http://example.com/b");
+        receive(
+            &jar,
+            "gone=1; Expires=Mon, 01 Jan 1990 00:00:00 GMT",
+            "http://example.com/b",
+        );
         assert_eq!(sent(&jar, "http://example.com/b"), "");
         assert!(jar.rows().is_empty(), "{:?}", jar.rows());
     }
@@ -387,7 +434,11 @@ mod tests {
         let dir = TempDir::new("secure");
         let jar = open_jar(&dir, FakeKeySource::empty());
         receive(&jar, "tok=1; Secure; Max-Age=60", "http://example.com/a");
-        assert_eq!(sent(&jar, "http://example.com/a"), "", "a Secure cookie must not go over plain http");
+        assert_eq!(
+            sent(&jar, "http://example.com/a"),
+            "",
+            "a Secure cookie must not go over plain http"
+        );
 
         receive(&jar, "tok=1; Secure; Max-Age=60", "https://example.com/a");
         assert_eq!(sent(&jar, "https://example.com/a"), "tok=1");
@@ -398,7 +449,11 @@ mod tests {
     fn persistent_cookies_survive_a_restart() {
         let dir = TempDir::new("restart");
         let keys = FakeKeySource::empty();
-        receive(&open_jar(&dir, keys.clone()), "theme=dark; Max-Age=3600", "http://example.com/a");
+        receive(
+            &open_jar(&dir, keys.clone()),
+            "theme=dark; Max-Age=3600",
+            "http://example.com/a",
+        );
         open_jar(&dir, keys.clone()).flush();
 
         let reopened = open_jar(&dir, keys);
@@ -428,7 +483,11 @@ mod tests {
         let dir = TempDir::new("logout");
         let keys = FakeKeySource::empty();
         let jar = open_jar(&dir, keys.clone());
-        receive(&jar, "sid=abc; Path=/; Max-Age=3600", "http://example.com/a");
+        receive(
+            &jar,
+            "sid=abc; Path=/; Max-Age=3600",
+            "http://example.com/a",
+        );
         receive(&jar, "sid=; Path=/; Max-Age=0", "http://example.com/logout");
 
         assert_eq!(sent(&jar, "http://example.com/a"), "");
@@ -448,7 +507,10 @@ mod tests {
         receive(&jar, "b=2; Max-Age=60", "http://example.com/b");
         jar.maybe_flush();
         let same = fs::read(dir.path().join("workspace-a.bin")).unwrap();
-        assert_eq!(first, same, "a burst inside the window must not rewrite the file");
+        assert_eq!(
+            first, same,
+            "a burst inside the window must not rewrite the file"
+        );
 
         jar.flush();
         let forced = fs::read(dir.path().join("workspace-a.bin")).unwrap();
@@ -472,17 +534,37 @@ mod tests {
     }
 
     #[test]
+    fn reopening_with_persistence_off_discards_saved_cookies() {
+        let dir = TempDir::new("reopen-off");
+        let keys = FakeKeySource::empty();
+        let jar = open_jar(&dir, keys.clone());
+        receive(&jar, "sid=abc; Max-Age=3600", "http://example.com/");
+        jar.flush();
+        drop(jar);
+        assert!(!dir.files().is_empty());
+
+        let jar = match PostliteJar::open(dir.path(), "workspace-a", keys, false) {
+            JarOpen::Restored(jar) | JarOpen::Empty(jar, _) => jar,
+        };
+        assert!(!jar.persists());
+        assert!(jar.rows().is_empty());
+        assert!(dir.files().is_empty());
+    }
+
+    #[test]
     fn no_secret_store_keeps_cookies_in_memory_only_and_says_why() {
         let dir = TempDir::new("nostore");
-        let note = match PostliteJar::open(dir.path(), "workspace-a", Arc::new(NoSecretStoreKeys), true) {
-            JarOpen::Empty(_, note) => note,
-            JarOpen::Restored(_) => panic!("expected the no-store note"),
-        };
+        let note =
+            match PostliteJar::open(dir.path(), "workspace-a", Arc::new(NoSecretStoreKeys), true) {
+                JarOpen::Empty(_, note) => note,
+                JarOpen::Restored(_) => panic!("expected the no-store note"),
+            };
         assert!(note.contains("no secret store"), "{note}");
 
-        let jar = match PostliteJar::open(dir.path(), "workspace-a", Arc::new(NoSecretStoreKeys), true) {
-            JarOpen::Empty(jar, _) | JarOpen::Restored(jar) => jar,
-        };
+        let jar =
+            match PostliteJar::open(dir.path(), "workspace-a", Arc::new(NoSecretStoreKeys), true) {
+                JarOpen::Empty(jar, _) | JarOpen::Restored(jar) => jar,
+            };
         receive(&jar, "sid=abc; Max-Age=3600", "http://example.com/a");
         jar.flush();
 
@@ -500,7 +582,10 @@ mod tests {
         receive(&jar, "c=3; Path=/; Max-Age=60", "http://other.test/c");
         jar.flush();
 
-        assert_eq!(jar.remove_matching(Some("example.com"), Some("/x"), Some("a")), 1);
+        assert_eq!(
+            jar.remove_matching(Some("example.com"), Some("/x"), Some("a")),
+            1
+        );
         assert_eq!(
             jar.remove_matching(Some("example.com"), Some("/x"), Some("a")),
             0,
@@ -533,7 +618,10 @@ mod tests {
         );
         let row = &jar.rows()[0];
         assert_eq!(row.name, "sid");
-        assert_eq!(row.value, "abc", "the row holds the real value; masking is display-only");
+        assert_eq!(
+            row.value, "abc",
+            "the row holds the real value; masking is display-only"
+        );
         assert_eq!(row.domain, "example.com");
         assert_eq!(row.path, "/api");
         assert!(row.secure && row.http_only);
@@ -546,7 +634,8 @@ mod tests {
     fn a_renamed_corrupt_file_leaves_the_jar_empty_but_visible() {
         let dir = TempDir::new("corrupt");
         fs::write(dir.path().join("workspace-a.bin"), b"not a cookie store").unwrap();
-        let note = match PostliteJar::open(dir.path(), "workspace-a", FakeKeySource::empty(), true) {
+        let note = match PostliteJar::open(dir.path(), "workspace-a", FakeKeySource::empty(), true)
+        {
             JarOpen::Empty(_, note) => note,
             JarOpen::Restored(_) => panic!("expected a corrupt-store note"),
         };

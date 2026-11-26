@@ -3073,17 +3073,13 @@ dependencies = [
 name = "postlite"
 version = "0.2.8"
 dependencies = [
- "aes-gcm",
- "cookie_store",
- "keyring",
  "postlite-core",
- "rand",
  "reqwest 0.12.28",
  "rfd",
- "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tokio",
  "url",
 ]
@@ -3092,8 +3088,13 @@ dependencies = [
 name = "postlite-core"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
+ "cookie_store",
+ "keyring",
+ "rand",
  "reqwest 0.12.28",
  "serde",
+ "serde_json",
  "tokio",
  "url",
 ]

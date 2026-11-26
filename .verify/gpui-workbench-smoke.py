@@ -14,6 +14,7 @@ import time
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--screenshots", type=Path, help="directory for optional workbench captures")
+parser.add_argument("--sessions", action="store_true", help="check OAuth and the cookie drawer")
 args = parser.parse_args()
 if args.screenshots:
     args.screenshots.mkdir(parents=True, exist_ok=True)
@@ -25,12 +26,20 @@ def capture(window, name):
         subprocess.run(["import", "-window", window, str(args.screenshots / name)], check=True)
 
 sent=[]
+tokens=[]
 class Echo(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         data=self.rfile.read(int(self.headers["Content-Length"]))
-        sent.append((self.path,self.headers.get("X-Scope"),self.headers.get("Authorization"),data.decode()))
-        body=b'{"gpui": "native saved request"}'
+        if self.path == "/token":
+            tokens.append(data.decode())
+            body=b'{"access_token":"fixture","expires_in":3600}'
+        else:
+            sent.append((self.path,self.headers.get("X-Scope"),self.headers.get("Authorization"),
+                         data.decode(),self.headers.get("Cookie")))
+            body=b'{"gpui": "native saved request"}'
         self.send_response(200)
+        if args.sessions and self.path != "/token":
+            self.send_header("Set-Cookie", "fixture=remembered; Path=/; HttpOnly")
         self.send_header("Content-Type","application/json")
         self.send_header("Content-Length",str(len(body)))
         self.end_headers()
@@ -54,6 +63,10 @@ with http.server.ThreadingHTTPServer(("127.0.0.1",0),Echo) as server:
         "auth":{"type":"bearer","bearer":{"token":"fixture"}},
         "variables":[{"key":"scope","value":"collection"}],
         "items":[{"kind":"folder","id":"weather","name":"Weather","auth":{"type":"inherit"},"variables":[{"key":"scope","value":"folder"}],"items":[request]}]}
+    if args.sessions:
+        collection["auth"]={"type":"oauth2","oauth2":{
+            "grantType":"client_credentials","clientId":"smoke",
+            "tokenUrl":f"http://127.0.0.1:{server.server_port}/token"}}
     data={"version":2,"settings":{"general":{"theme":"dark","restoreLastSession":True}},
         "activeWorkspaceId":"main","workspaces":[{"id":"main","name":"Fieldnotes","collections":[collection],
         "environments":[environment],"tabs":[],"activeTabIndex":-1},
@@ -89,9 +102,39 @@ with http.server.ThreadingHTTPServer(("127.0.0.1",0),Echo) as server:
                 if sent:
                     break
                 time.sleep(.05)
-            assert sent==[("/Bromo%20%2F%20Ijen?page=2","folder","Bearer fixture",'{"station": "Bromo / Ijen"}')],sent
+            expected=("/Bromo%20%2F%20Ijen?page=2","folder","Bearer fixture",'{"station": "Bromo / Ijen"}')
+            assert sent==[(*expected,None)],sent
             time.sleep(.4)
             capture(wid, "sent.png")
+            if args.sessions:
+                geometry=dict(part.split("=",1) for part in xdo("getwindowgeometry","--shell",wid).splitlines())
+                width=int(geometry["WIDTH"])
+                xdo("mousemove","--window",wid,width-96,175,"click",1)
+                time.sleep(.5)
+                capture(wid, "cookies.png")
+                xdo("key","Escape")
+                xdo("mousemove","--window",wid,545,123,"click",1)
+                xdo("key","ctrl+Return")
+                for _ in range(60):
+                    if len(sent) == 2:
+                        break
+                    time.sleep(.05)
+                assert sent==[(*expected,None),(*expected,"fixture=remembered")],sent
+                xdo("mousemove","--window",wid,width-96,175,"click",1)
+                time.sleep(.5)
+                xdo("mousemove","--window",wid,width-44,171,"click",1)
+                time.sleep(.4)
+                capture(wid, "cookies-deleted.png")
+                xdo("key","Escape")
+                xdo("mousemove","--window",wid,545,123,"click",1)
+                xdo("key","ctrl+Return")
+                for _ in range(60):
+                    if len(sent) == 3:
+                        break
+                    time.sleep(.05)
+                assert sent==[(*expected,None),(*expected,"fixture=remembered"),(*expected,None)],sent
+                assert tokens==["grant_type=client_credentials&client_id=smoke"],tokens
+                print("PASS inherited OAuth token exchange and cache reuse, workspace cookie replay, and cookie drawer deletion",flush=True)
             xdo("mousemove","--window",wid,22,120,"click",1)
             xdo("mousemove","--window",wid,104,145,"click",1)
             time.sleep(.9)
@@ -101,7 +144,7 @@ with http.server.ThreadingHTTPServer(("127.0.0.1",0),Echo) as server:
             assert active["history"][0]["ref"] == "request"
             assert active["history"][0]["url"] == "{{base_url}}/:id"
             capture(wid, "environment.png")
-            print("PASS nested request send, encoded path/query, environment override, folder override, inherited bearer, and environment tab save",flush=True)
+            print("PASS nested request send, encoded path/query, environment override, folder override, inherited auth, and environment tab save",flush=True)
         finally:
             if app.poll() is None:
                 app.terminate()

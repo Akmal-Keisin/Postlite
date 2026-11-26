@@ -141,7 +141,21 @@ impl Workbench {
         self.sync_url(cx);
         let result = if replace {
             backup::replace(payload).map(|document| {
+                self.dismiss_cookies(window, cx);
+                let owners = self
+                    .doc
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| {
+                        super::oauth_ui::oauth_owners(
+                            &workspace.id,
+                            workspace.collections.iter().chain(&workspace.tabs),
+                        )
+                    })
+                    .collect();
+                self.forget_oauth(owners, cx);
                 self.doc = document;
+                self.sync_cookie_preference(cx);
                 self.document_generation = uuid::Uuid::new_v4();
                 self.results.clear();
                 self.pending.clear();

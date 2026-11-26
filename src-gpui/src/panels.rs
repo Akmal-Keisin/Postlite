@@ -109,7 +109,14 @@ impl Workbench {
             .child(
                 panel_head("Request", palette)
                     .child(div().flex_1())
-                    .child(toolbar_label("Cookies", palette))
+                    .child(
+                        toolbar_label("Cookies", palette)
+                            .id("cookies-drawer")
+                            .cursor_pointer()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_cookies(window, cx)),
+                            ),
+                    )
                     .child(
                         toolbar_label("Code", palette)
                             .id("code-drawer")
@@ -499,11 +506,11 @@ fn auth_panel(workbench: &Workbench, request: &Value, cx: &mut Context<Workbench
         ],
         "bearer" => &[("Token", "token", true)],
         "oauth2" => &[
-            ("Grant type", "grantType", false),
             ("Authorization URL", "authorizeUrl", false),
             ("Token URL", "tokenUrl", false),
             ("Client ID", "clientId", false),
             ("Scope", "scope", false),
+            ("Redirect port (0 = random)", "redirectPort", false),
         ],
         _ => &[],
     };
@@ -530,9 +537,40 @@ fn auth_panel(workbench: &Workbench, request: &Value, cx: &mut Context<Workbench
             menu
         });
     let mut panel = div().flex().flex_col().gap_2().child(auth_select);
+    let is_code = auth["oauth2"]["grantType"] == "authorization_code";
+    if kind == "oauth2" {
+        let view = cx.entity().downgrade();
+        panel = panel.child(super::oauth_ui::oauth_choice(
+            "oauth-grant",
+            is_code,
+            super::oauth_ui::GRANTS,
+            move |code, _, cx| {
+                let _ = view.update(cx, |app, cx| {
+                    app.set_request_field(
+                        FieldTarget::Auth("oauth2", "grantType"),
+                        json!(if code {
+                            "authorization_code"
+                        } else {
+                            "client_credentials"
+                        }),
+                        cx,
+                    );
+                });
+            },
+        ));
+    }
     for &(name, key, secret) in fields {
+        if kind == "oauth2" && !is_code && matches!(key, "authorizeUrl" | "redirectPort") {
+            continue;
+        }
         let masked = workbench.mask_secrets && secret;
-        let value = masked_value(string(&auth[kind][key]), masked);
+        let number = auth[kind][key].as_u64().map(|n| n.to_string());
+        let value = masked_value(
+            number
+                .as_deref()
+                .unwrap_or_else(|| string(&auth[kind][key])),
+            masked,
+        );
         panel = panel.child(
             div()
                 .flex()
@@ -549,7 +587,24 @@ fn auth_panel(workbench: &Workbench, request: &Value, cx: &mut Context<Workbench
                 )),
         );
     }
-    panel
+    if kind == "oauth2" {
+        let view = cx.entity().downgrade();
+        panel = panel.child(super::oauth_ui::oauth_choice(
+            "oauth-client-auth",
+            auth["oauth2"]["clientAuthIn"] == "basic",
+            super::oauth_ui::CLIENT_AUTH,
+            move |basic, _, cx| {
+                let _ = view.update(cx, |app, cx| {
+                    app.set_request_field(
+                        FieldTarget::Auth("oauth2", "clientAuthIn"),
+                        json!(if basic { "basic" } else { "body" }),
+                        cx,
+                    );
+                });
+            },
+        ));
+    }
+    panel.child(workbench.oauth_controls(cx))
 }
 
 fn body_panel(workbench: &Workbench, body: &Value, cx: &mut Context<Workbench>) -> Div {

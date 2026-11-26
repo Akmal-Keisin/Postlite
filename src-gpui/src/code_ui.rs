@@ -31,7 +31,15 @@ impl Workbench {
             &self.doc.settings,
             &workspace.id,
         )
-        .map(|payload| curl::export(&payload));
+        .map(|mut payload| {
+            if let Ok(Some(config)) =
+                prepare::oauth_config(request, collection, ancestors, &workspace.id)
+                && let Some(token) = self.session.oauth.cached(&config)
+            {
+                crate::http::add_bearer(&mut payload, &token);
+            }
+            curl::export(&payload)
+        });
         let state = cx.new(|cx| InputState::new(window, cx).multi_line(true).soft_wrap(true));
         state.update(cx, |editor, cx| {
             editor.set_value(

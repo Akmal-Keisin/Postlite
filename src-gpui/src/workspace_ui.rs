@@ -174,7 +174,11 @@ impl Workbench {
 
     fn delete_resource(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_url(cx);
+        let workspace = self.workspace();
+        let owners =
+            super::oauth_ui::oauth_owners(&workspace.id, find_node(&workspace.collections, id));
         if workspace_edit::delete_node(self.workspace_mut(), id) {
+            self.forget_oauth(owners, cx);
             self.expanded.remove(id);
             self.present_active(window, cx);
             self.changed(cx);
@@ -405,7 +409,18 @@ impl Workbench {
         };
         self.sync_url(cx);
         let old_active = self.doc.active_workspace;
-        self.doc.workspaces.remove(index);
+        if index == old_active {
+            self.dismiss_cookies(window, cx);
+        }
+        let removed = self.doc.workspaces.remove(index);
+        self.forget_oauth(
+            super::oauth_ui::oauth_owners(
+                &removed.id,
+                removed.collections.iter().chain(&removed.tabs),
+            ),
+            cx,
+        );
+        self.purge_cookies(removed.id, cx);
         self.results.retain(|(workspace, _), _| workspace != id);
         self.pending.retain(|(workspace, _), _| workspace != id);
         if self.doc.workspaces.is_empty() {
@@ -565,6 +580,22 @@ impl Workbench {
                 });
             }));
             if folder {
+                let target = view.clone();
+                let source = id.clone();
+                menu = menu.item(PopupMenuItem::new("OAuth 2.0 settings").on_click(
+                    move |_, window, cx| {
+                        let _ = target.update(cx, |this, cx| {
+                            if let Some(node) = find_node(&this.workspace().collections, &source) {
+                                this.edit_parent_oauth(
+                                    &source,
+                                    &node["auth"]["oauth2"],
+                                    window,
+                                    cx,
+                                );
+                            }
+                        });
+                    },
+                ));
                 let entity = view.clone();
                 let source = id.clone();
                 menu = menu.item(

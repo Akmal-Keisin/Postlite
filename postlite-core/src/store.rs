@@ -169,7 +169,8 @@ impl EncryptedStore {
 }
 
 fn nonce_of(bytes: &[u8]) -> Result<AesNonce<Aes256Gcm>, StoreError> {
-    AesNonce::<Aes256Gcm>::try_from(bytes).map_err(|_| StoreError::Corrupt("bad nonce length".into()))
+    AesNonce::<Aes256Gcm>::try_from(bytes)
+        .map_err(|_| StoreError::Corrupt("bad nonce length".into()))
 }
 
 /// The real OS secret store, namespaced by the app identifier so that an isolated verify build
@@ -203,7 +204,9 @@ impl KeySource for KeyringSource {
     }
 
     fn set(&self, key: &[u8]) -> Result<(), StoreError> {
-        self.entry.set_secret(key).map_err(|_| StoreError::NoSecretStore)
+        self.entry
+            .set_secret(key)
+            .map_err(|_| StoreError::NoSecretStore)
     }
 
     fn remove(&self) -> Result<(), StoreError> {
@@ -368,19 +371,20 @@ mod tests {
     #[test]
     fn wrong_key_is_quarantined_and_starts_empty() {
         let dir = TempDir::new("wrongkey");
-        EncryptedStore::open(dir.path(), "workspace-a", FakeKeySource::with_key(vec![1u8; KEY_LEN]))
-            .save(SECRET)
-            .unwrap();
+        EncryptedStore::open(
+            dir.path(),
+            "workspace-a",
+            FakeKeySource::with_key(vec![1u8; KEY_LEN]),
+        )
+        .save(SECRET)
+        .unwrap();
 
         let other = EncryptedStore::open(
             dir.path(),
             "workspace-a",
             FakeKeySource::with_key(vec![2u8; KEY_LEN]),
         );
-        assert!(matches!(
-            other.load(),
-            Err(StoreError::Corrupt(_))
-        ));
+        assert!(matches!(other.load(), Err(StoreError::Corrupt(_))));
         assert!(dir.path().join("workspace-a.bin.corrupt").exists());
         assert!(!dir.path().join("workspace-a.bin").exists());
     }
@@ -391,11 +395,23 @@ mod tests {
             ("short", b"PLCS\x01abc".to_vec()),
             (
                 "magic",
-                [b"XXXX".to_vec(), b"\x01".to_vec(), vec![0u8; NONCE_LEN], vec![9u8; 32]].concat(),
+                [
+                    b"XXXX".to_vec(),
+                    b"\x01".to_vec(),
+                    vec![0u8; NONCE_LEN],
+                    vec![9u8; 32],
+                ]
+                .concat(),
             ),
             (
                 "version",
-                [MAGIC.to_vec(), b"\x02".to_vec(), vec![0u8; NONCE_LEN], vec![9u8; 32]].concat(),
+                [
+                    MAGIC.to_vec(),
+                    b"\x02".to_vec(),
+                    vec![0u8; NONCE_LEN],
+                    vec![9u8; 32],
+                ]
+                .concat(),
             ),
         ] {
             let dir = TempDir::new(label);
@@ -405,7 +421,10 @@ mod tests {
                 matches!(store.load(), Err(StoreError::Corrupt(_))),
                 "{label} must be reported corrupt"
             );
-            assert!(dir.path().join("workspace-a.bin.corrupt").exists(), "{label}");
+            assert!(
+                dir.path().join("workspace-a.bin.corrupt").exists(),
+                "{label}"
+            );
         }
     }
 
@@ -420,7 +439,11 @@ mod tests {
         assert!(!dir.path().join("workspace-a.bin.corrupt").exists());
 
         // A file that cannot be decrypted without a key is reported, not invented.
-        fs::write(dir.path().join("workspace-a.bin"), [MAGIC.to_vec(), b"\x01".to_vec(), vec![0u8; 44]].concat()).unwrap();
+        fs::write(
+            dir.path().join("workspace-a.bin"),
+            [MAGIC.to_vec(), b"\x01".to_vec(), vec![0u8; 44]].concat(),
+        )
+        .unwrap();
         assert!(matches!(store.load(), Err(StoreError::NoSecretStore)));
     }
 
@@ -442,15 +465,26 @@ mod tests {
     #[test]
     fn a_short_key_in_the_store_is_refused_rather_than_padded() {
         let dir = TempDir::new("shortkey");
-        let store = EncryptedStore::open(dir.path(), "workspace-a", FakeKeySource::with_key(vec![3u8; 8]));
+        let store = EncryptedStore::open(
+            dir.path(),
+            "workspace-a",
+            FakeKeySource::with_key(vec![3u8; 8]),
+        );
         assert_eq!(store.save(SECRET), Err(StoreError::NoSecretStore));
     }
 
     #[test]
     fn usable_only_when_a_key_can_be_read_or_created() {
         let dir = TempDir::new("usable");
-        assert!(EncryptedStore::open(dir.path(), "workspace-a", FakeKeySource::empty()).secret_store_usable());
-        let short = EncryptedStore::open(dir.path(), "workspace-a", FakeKeySource::with_key(vec![3u8; 8]));
+        assert!(
+            EncryptedStore::open(dir.path(), "workspace-a", FakeKeySource::empty())
+                .secret_store_usable()
+        );
+        let short = EncryptedStore::open(
+            dir.path(),
+            "workspace-a",
+            FakeKeySource::with_key(vec![3u8; 8]),
+        );
         assert!(!short.secret_store_usable());
         let none = EncryptedStore::open(dir.path(), "workspace-a", Arc::new(NoSecretStoreKeys));
         assert!(!none.secret_store_usable());
