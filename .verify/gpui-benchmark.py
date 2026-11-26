@@ -6,6 +6,7 @@ import ctypes
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import statistics
 import subprocess
@@ -111,8 +112,12 @@ def tree_pss(root_pid):
     return total / 1024, measured
 
 
-def measure(binary, title, probe):
+def measure(binary, title, probe, workspace=None):
     with tempfile.TemporaryDirectory(prefix="postlite-benchmark-") as profile:
+        if workspace is not None:
+            app_data = Path(profile) / "app.postlite.desktop"
+            app_data.mkdir()
+            shutil.copyfile(workspace, app_data / "workspace.json")
         env = os.environ.copy()
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("WAYLAND_SOCKET", None)
@@ -146,6 +151,7 @@ def main():
     parser.add_argument("--tauri", type=Path, default=ROOT / "src-tauri/target/release/postlite")
     parser.add_argument("--gpui", type=Path, default=ROOT / "src-gpui/target/release/postlite-gpui")
     parser.add_argument("--runs", type=int, default=7)
+    parser.add_argument("--workspace", type=Path, help="copy a fixture into both isolated profiles")
     args = parser.parse_args()
     if args.runs < 1:
         parser.error("--runs must be positive")
@@ -158,7 +164,7 @@ def main():
     try:
         for run in range(args.runs + 1):
             for binary, title in targets[:: 1 if run % 2 == 0 else -1]:
-                sample = measure(binary, title, probe)
+                sample = measure(binary, title, probe, args.workspace)
                 if run == 0:
                     continue
                 samples[title].append(sample)

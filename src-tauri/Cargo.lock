@@ -3076,6 +3076,7 @@ dependencies = [
  "aes-gcm",
  "cookie_store",
  "keyring",
+ "postlite-core",
  "rand",
  "reqwest 0.12.28",
  "rfd",
@@ -3083,6 +3084,16 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "postlite-core"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "serde",
  "tokio",
  "url",
 ]
