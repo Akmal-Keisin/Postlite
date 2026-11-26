@@ -1,6 +1,7 @@
 # Rust / Tauri build artifacts
 src-tauri/target/
 src-tauri/gen/schemas/
+src-gpui/target/
 
 # Node (verification harnesses run with plain node, no deps installed)
 node_modules/
