@@ -505,7 +505,7 @@ async fn run_request(request: RequestPayload, ctx: &Ctx) -> ResponsePayload {
     }
 
     let started = Instant::now();
-    let response = match builder.send().await {
+    let mut response = match builder.send().await {
         Ok(r) => r,
         Err(e) => return with_error(empty, e.to_string()),
     };
@@ -520,20 +520,30 @@ async fn run_request(request: RequestPayload, ctx: &Ctx) -> ResponsePayload {
         })
         .collect();
 
-    let bytes = match response.bytes().await {
-        Ok(b) => b,
-        Err(e) => return with_error(empty, format!("failed reading body: {e}")),
-    };
-
-    let size_bytes = bytes.len();
+    // Count the entire decoded body while retaining only the displayable prefix.
+    let mut size_bytes = 0usize;
+    let mut bytes = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                size_bytes = size_bytes.saturating_add(chunk.len());
+                let remaining = max_body_bytes - bytes.len();
+                bytes.extend_from_slice(&chunk[..remaining.min(chunk.len())]);
+            }
+            Ok(None) => break,
+            Err(e) => return with_error(empty, format!("failed reading body: {e}")),
+        }
+    }
     let truncated = size_bytes > max_body_bytes;
-    let slice = &bytes[..size_bytes.min(max_body_bytes)];
-    let body = String::from_utf8_lossy(slice).to_string();
-    // Text bodies are exact in `body` (lossy of valid UTF-8 is identity); only
-    // binary content needs the base64 escape hatch for byte-faithful saves.
-    let body_b64 = match std::str::from_utf8(slice) {
-        Ok(_) => None,
-        Err(_) => Some(b64_encode(slice)),
+    let (body, body_b64) = match String::from_utf8(bytes) {
+        Ok(text) => (text, None),
+        Err(error) => {
+            let bytes = error.as_bytes();
+            (
+                String::from_utf8_lossy(bytes).into_owned(),
+                Some(b64_encode(bytes)),
+            )
+        }
     };
 
     ResponsePayload {
@@ -1433,15 +1443,24 @@ fn workspace_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("workspace.json"))
 }
 
-#[tauri::command]
+// Keep workspace disk I/O and IPC serialization off the GTK event thread.
+#[cfg_attr(target_os = "linux", tauri::command(async))]
+#[cfg_attr(not(target_os = "linux"), tauri::command)]
 fn load_workspace(app: AppHandle) -> Option<String> {
     workspace_file(&app)
         .ok()
         .and_then(|path| std::fs::read_to_string(path).ok())
 }
 
-#[tauri::command]
+#[cfg_attr(target_os = "linux", tauri::command(async))]
+#[cfg_attr(not(target_os = "linux"), tauri::command)]
 fn save_workspace(app: AppHandle, state: String) -> Result<(), String> {
+    // Concurrent IPC calls must serialize access to the shared staging file.
+    #[cfg(target_os = "linux")]
+    let _save = {
+        static SAVE: Mutex<()> = Mutex::new(());
+        SAVE.lock().map_err(|e| e.to_string())?
+    };
     let path = workspace_file(&app)?;
     let staging = path.with_extension("json.staging");
     // Proxy credentials belong to the global store, never to the portable workspace file (§8).
@@ -1645,6 +1664,58 @@ mod tests {
             assert_eq!(response.truncated, size > cap);
             server.join().unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn large_chunked_response_preserves_size_and_capped_bytes() {
+        const CHUNK_SIZE: usize = 64 * 1024;
+        const CHUNKS: usize = 1024;
+        const CAP: usize = 1024;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut payload = request();
+        payload.url = format!("http://{}/", listener.local_addr().unwrap());
+        payload.settings = Some(HttpSettings {
+            max_response_size_kb: 1,
+            ..Default::default()
+        });
+        let server = thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() != 0 && line != "\r\n" {
+                line.clear();
+            }
+
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let chunk = [0xff; CHUNK_SIZE];
+            for _ in 0..CHUNKS {
+                write!(stream, "{CHUNK_SIZE:x}\r\n").unwrap();
+                stream.write_all(&chunk).unwrap();
+                stream.write_all(b"\r\n").unwrap();
+            }
+            stream.write_all(b"0\r\n\r\n").unwrap();
+        });
+
+        let response = run_request(payload, &Ctx::no_jar()).await;
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.status, 200);
+        assert!(response.truncated);
+        assert_eq!(response.size_bytes, CHUNK_SIZE * CHUNKS);
+        assert_eq!(
+            b64_decode(response.body_b64.as_deref().unwrap()).unwrap(),
+            [0xff; CAP]
+        );
+        server.join().unwrap();
     }
 
     #[tokio::test]
@@ -2675,15 +2746,18 @@ mod tests {
     #[test]
     fn per_node_secret_store_roundtrip_is_isolated() {
         let temp = TempDir::new("oauth2-test");
-        let secrets = Secrets { dir: temp.path().to_path_buf(), identifier: "test".to_string() };
-        let store_a = secrets.store_named("oauth2-abc");
-        let bytes = serde_json::json!({ "secret": "s1" });
-        store_a.save(serde_json::to_vec(&bytes).unwrap().as_slice()).unwrap();
-        let loaded = secrets.store_named("oauth2-abc").load().unwrap().unwrap();
-        let value = serde_json::from_slice::<serde_json::Value>(&loaded).unwrap();
-        assert_eq!(value["secret"], "s1");
-        let store_b = secrets.store_named("oauth2-def");
-        assert!(store_b.load().unwrap().is_none());
+        let keys = store::FakeKeySource::empty();
+        let open = |node_id| {
+            store::EncryptedStore::open(
+                temp.path(),
+                &oauth2_store_name(node_id).unwrap(),
+                keys.clone(),
+            )
+        };
+        let secret = br#"{"secret":"s1"}"#;
+        open("abc").save(secret).unwrap();
+        assert_eq!(open("abc").load().unwrap().as_deref(), Some(secret.as_slice()));
+        assert_eq!(open("def").load().unwrap(), None);
     }
 
     #[test]
