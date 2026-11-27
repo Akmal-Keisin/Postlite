@@ -1,6 +1,6 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::OnceLock};
 
-use gpui::{AssetSource, Rgba, SharedString, Styled, Svg, px, rgb, svg};
+use gpui::{App, AssetSource, ParentElement, Rgba, SharedString, Styled, Svg, div, px, rgb, svg};
 use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,6 +10,182 @@ pub enum Appearance {
     Studio,
     Ledger,
 }
+
+/// Every size and shape that distinguishes one appearance from another.
+/// One static table per style keeps each lookup a single field read and keeps
+/// the four designs comparable side by side.
+pub struct Metrics {
+    /// Top bar, status bar, request tab strip and sidebar heading heights.
+    pub top: f32,
+    pub status: f32,
+    pub tab_strip: f32,
+    pub sidebar_heading: f32,
+    /// A single request tab inside the strip.
+    pub tab: f32,
+    pub tab_radius: f32,
+    pub tab_gap: f32,
+    /// Sidebar tree rows.
+    pub row: f32,
+    pub row_radius: f32,
+    /// Address bar controls and the padding around them.
+    pub command: f32,
+    pub command_pad: f32,
+    pub radius: f32,
+    /// Request and response pane headings and their section tabs.
+    pub pane_head: f32,
+    pub section_tabs: f32,
+    pub heading: f32,
+    pub title: f32,
+    pub sidebar_title: f32,
+    /// Key-value table rows.
+    pub kv_row: f32,
+    /// Corner radius of small chips such as counts and statuses.
+    pub chip_radius: f32,
+    /// Body text size and the font used for chrome labels.
+    pub text: f32,
+    pub heading_font: Face,
+    pub body_font: Face,
+    /// Inset around the request and response panes; zero keeps them flush.
+    pub pane_inset: f32,
+    pub pane_radius: f32,
+    /// Ledger-style double rules under the top bar and the address bar.
+    pub double_rule: bool,
+    /// Divider lines between tabs and under sidebar rows.
+    pub divided_tabs: bool,
+    pub ruled_rows: bool,
+    /// Alternating backgrounds on key-value rows.
+    pub striped_rows: bool,
+    /// Left gutter rule beside the response body.
+    pub gutter: f32,
+}
+
+const WORKBENCH: Metrics = Metrics {
+    top: 50.,
+    status: 26.,
+    tab_strip: 40.,
+    sidebar_heading: 43.,
+    tab: 33.,
+    tab_radius: 6.,
+    tab_gap: 3.,
+    row: 27.,
+    row_radius: 5.,
+    command: 40.,
+    command_pad: 12.,
+    radius: 8.,
+    pane_head: 39.,
+    section_tabs: 40.,
+    heading: 14.,
+    title: 16.,
+    sidebar_title: 13.,
+    kv_row: 32.,
+    chip_radius: 6.,
+    text: 13.,
+    heading_font: Face::Sans,
+    body_font: Face::Sans,
+    pane_inset: 0.,
+    pane_radius: 0.,
+    double_rule: false,
+    divided_tabs: false,
+    ruled_rows: false,
+    striped_rows: false,
+    gutter: 0.,
+};
+
+const TERMINAL: Metrics = Metrics {
+    top: 40.,
+    status: 22.,
+    tab_strip: 32.,
+    sidebar_heading: 35.,
+    tab: 26.,
+    tab_radius: 2.,
+    tab_gap: 2.,
+    row: 23.,
+    row_radius: 2.,
+    command: 32.,
+    command_pad: 8.,
+    radius: 2.,
+    pane_head: 32.,
+    section_tabs: 32.,
+    heading: 12.,
+    title: 13.,
+    sidebar_title: 12.,
+    kv_row: 26.,
+    chip_radius: 2.,
+    text: 12.,
+    heading_font: Face::Mono,
+    body_font: Face::Mono,
+    pane_inset: 0.,
+    pane_radius: 0.,
+    double_rule: false,
+    divided_tabs: false,
+    ruled_rows: false,
+    striped_rows: true,
+    gutter: 0.,
+};
+
+const STUDIO: Metrics = Metrics {
+    top: 56.,
+    status: 26.,
+    tab_strip: 44.,
+    sidebar_heading: 48.,
+    tab: 30.,
+    tab_radius: 999.,
+    tab_gap: 6.,
+    row: 30.,
+    row_radius: 8.,
+    command: 42.,
+    command_pad: 12.,
+    radius: 999.,
+    pane_head: 44.,
+    section_tabs: 42.,
+    heading: 16.,
+    title: 19.,
+    sidebar_title: 15.,
+    kv_row: 34.,
+    chip_radius: 999.,
+    text: 13.,
+    heading_font: Face::Sans,
+    body_font: Face::Sans,
+    pane_inset: 8.,
+    pane_radius: 14.,
+    double_rule: false,
+    divided_tabs: false,
+    ruled_rows: false,
+    striped_rows: false,
+    gutter: 0.,
+};
+
+const LEDGER: Metrics = Metrics {
+    top: 52.,
+    status: 26.,
+    tab_strip: 42.,
+    sidebar_heading: 46.,
+    tab: 42.,
+    tab_radius: 0.,
+    tab_gap: 0.,
+    row: 28.,
+    row_radius: 0.,
+    command: 40.,
+    command_pad: 12.,
+    radius: 0.,
+    pane_head: 42.,
+    section_tabs: 38.,
+    heading: 20.,
+    title: 22.,
+    sidebar_title: 18.,
+    kv_row: 32.,
+    chip_radius: 0.,
+    text: 13.,
+    heading_font: Face::Serif,
+    body_font: Face::Sans,
+    pane_inset: 0.,
+    pane_radius: 0.,
+    double_rule: true,
+    divided_tabs: true,
+    ruled_rows: true,
+    striped_rows: false,
+    gutter: 3.,
+};
 
 impl Appearance {
     pub fn read(settings: &Value) -> Self {
@@ -21,92 +197,120 @@ impl Appearance {
         }
     }
 
-    pub fn top(self) -> f32 {
+    pub const fn metrics(self) -> &'static Metrics {
         match self {
-            Self::Terminal => 41.,
-            Self::Studio => 58.,
-            Self::Ledger => 52.,
-            _ => 50.,
-        }
-    }
-    pub fn status(self) -> f32 {
-        if self == Self::Terminal { 22. } else { 26. }
-    }
-    pub fn tab(self) -> f32 {
-        match self {
-            Self::Terminal => 33.,
-            Self::Studio => 45.,
-            Self::Ledger => 42.,
-            _ => 40.,
-        }
-    }
-    pub fn sidebar_heading(self) -> f32 {
-        match self {
-            Self::Terminal => 35.,
-            Self::Studio => 48.,
-            Self::Ledger => 46.,
-            _ => 43.,
-        }
-    }
-    pub fn row(self) -> f32 {
-        match self {
-            Self::Terminal => 23.,
-            Self::Studio => 29.,
-            _ => 27.,
-        }
-    }
-    pub fn command(self) -> f32 {
-        match self {
-            Self::Terminal => 32.,
-            Self::Studio => 44.,
-            Self::Ledger => 42.,
-            _ => 40.,
-        }
-    }
-    pub fn radius(self) -> f32 {
-        match self {
-            Self::Terminal => 2.,
-            Self::Studio => 999.,
-            Self::Ledger => 0.,
-            _ => 8.,
-        }
-    }
-    pub fn heading(self) -> f32 {
-        match self {
-            Self::Terminal => 12.,
-            Self::Studio => 16.,
-            Self::Ledger => 22.,
-            _ => 14.,
-        }
-    }
-    pub fn title(self) -> f32 {
-        match self {
-            Self::Terminal => 12.,
-            Self::Studio => 19.,
-            Self::Ledger => 22.,
-            _ => 16.,
-        }
-    }
-    pub fn heading_font(self) -> &'static str {
-        match self {
-            Self::Terminal => MONO,
-            Self::Ledger => SERIF,
-            _ => SANS,
+            Self::Workbench => &WORKBENCH,
+            Self::Terminal => &TERMINAL,
+            Self::Studio => &STUDIO,
+            Self::Ledger => &LEDGER,
         }
     }
 }
 
-#[cfg(target_os = "windows")]
-pub const SANS: &str = "Segoe UI";
-#[cfg(target_os = "macos")]
-pub const SANS: &str = ".AppleSystemUIFont";
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub const SANS: &str = "sans-serif";
-pub const MONO: &str = "monospace";
-pub const SERIF: &str = "serif";
+impl std::ops::Deref for Appearance {
+    type Target = Metrics;
+    fn deref(&self) -> &Metrics {
+        self.metrics()
+    }
+}
 
+/// Height of the double rule Ledger draws under its top and address bars.
+pub const DOUBLE_RULE: f32 = 3.;
+
+/// A role in the type system, resolved to an installed family at startup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Face {
+    Sans,
+    Mono,
+    Serif,
+}
+
+impl Face {
+    pub fn family(self) -> &'static str {
+        let [sans, mono, serif] = *FAMILIES.get_or_init(|| fallback_families(&[]));
+        match self {
+            Self::Sans => sans,
+            Self::Mono => mono,
+            Self::Serif => serif,
+        }
+    }
+}
+
+pub fn mono() -> &'static str {
+    Face::Mono.family()
+}
+
+static FAMILIES: OnceLock<[&'static str; 3]> = OnceLock::new();
+
+#[cfg(target_os = "macos")]
+const CANDIDATES: [&[&str]; 3] = [
+    &[".AppleSystemUIFont"],
+    &["SF Mono", "Menlo", "Monaco"],
+    &["New York", "Charter", "Georgia", "Times New Roman"],
+];
+#[cfg(target_os = "windows")]
+const CANDIDATES: [&[&str]; 3] = [
+    &["Segoe UI"],
+    &["Cascadia Mono", "Consolas", "Courier New"],
+    &["Georgia", "Cambria", "Times New Roman"],
+];
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const CANDIDATES: [&[&str]; 3] = [
+    &[
+        "Inter",
+        "Noto Sans",
+        "Cantarell",
+        "Ubuntu",
+        "DejaVu Sans",
+        "Liberation Sans",
+    ],
+    &[
+        "JetBrains Mono",
+        "Fira Code",
+        "Noto Sans Mono",
+        "DejaVu Sans Mono",
+        "Ubuntu Mono",
+        "Liberation Mono",
+    ],
+    &[
+        "Noto Serif",
+        "Source Serif 4",
+        "Charter",
+        "DejaVu Serif",
+        "Liberation Serif",
+        "Georgia",
+    ],
+];
+
+/// Picks the first preferred family of each role that is installed. The
+/// generic CSS names are a last resort: the Linux text system does not map
+/// them, so `serif` and `monospace` otherwise render in the default sans.
+fn fallback_families(installed: &[String]) -> [&'static str; 3] {
+    const GENERIC: [&str; 3] = ["sans-serif", "monospace", "serif"];
+    std::array::from_fn(|role| {
+        CANDIDATES[role]
+            .iter()
+            .copied()
+            .find(|name| installed.iter().any(|found| found == name))
+            .or(if installed.is_empty() {
+                CANDIDATES[role].first().copied()
+            } else {
+                None
+            })
+            .unwrap_or(GENERIC[role])
+    })
+}
+
+/// Resolves the type families once, before the first window renders.
+pub fn load_fonts(cx: &App) {
+    let installed = cx.text_system().all_font_names();
+    let _ = FAMILIES.set(fallback_families(&installed));
+}
+
+#[derive(Clone)]
 pub struct Palette {
     pub appearance: Appearance,
+    pub dark: bool,
     pub bg: Rgba,
     pub panel: Rgba,
     pub raised: Rgba,
@@ -120,26 +324,84 @@ pub struct Palette {
     pub faint: Rgba,
     pub accent: Rgba,
     pub accent_text: Rgba,
+    pub primary: Rgba,
+    pub primary_text: Rgba,
+    pub primary_hover: Rgba,
+    pub primary_active: Rgba,
+    pub selected: Rgba,
     pub cyan: Rgba,
     pub ok: Rgba,
     pub warn: Rgba,
     pub error: Rgba,
     pub info: Rgba,
     pub violet: Rgba,
+    /// JSON syntax: object keys and string values.
+    pub key: Rgba,
+    pub string: Rgba,
+}
+
+fn accent_tones(name: &str) -> (u32, u32) {
+    match name {
+        "ocean" => (0x38bdf8, 0x0369a1),
+        "mint" => (0x34d399, 0x047857),
+        "violet" => (0xa78bfa, 0x6d28d9),
+        "rose" => (0xfb7185, 0xbe123c),
+        "amber" => (0xfbbf24, 0xb45309),
+        "teal" => (0x2dd4bf, 0x0f766e),
+        "magenta" => (0xe879f9, 0xa21caf),
+        _ => (0xff8964, 0xae3218),
+    }
+}
+
+pub fn primary_fill(name: &str, dark: bool) -> Rgba {
+    let (bright, deep) = accent_tones(name);
+    if dark && matches!(name, "mint" | "amber" | "teal") {
+        rgb(bright)
+    } else if dark {
+        tint(rgb(deep), rgb(bright), 0.08)
+    } else {
+        rgb(deep)
+    }
+}
+
+fn tint(base: Rgba, color: Rgba, amount: f32) -> Rgba {
+    base.blend(Rgba { a: amount, ..color })
+}
+
+fn luminance(color: Rgba) -> f32 {
+    let linear = |channel: f32| {
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+}
+
+fn ink_on(fill: Rgba) -> Rgba {
+    let dark = tint(rgb(0x080808), fill, 0.18);
+    let light = tint(rgb(0xffffff), fill, 0.035);
+    let surface = luminance(fill) + 0.05;
+    if surface / (luminance(dark) + 0.05) > (luminance(light) + 0.05) / surface {
+        dark
+    } else {
+        light
+    }
 }
 
 impl Palette {
     pub fn new(settings: &Value, dark: bool) -> Self {
         let choose = |night, day| rgb(if dark { night } else { day });
-        let (accent_dark, accent_light) = match settings["general"]["accent"].as_str() {
-            Some("ocean") => (0x38bdf8, 0x0369a1),
-            Some("mint") => (0x34d399, 0x047857),
-            Some("violet") => (0xa78bfa, 0x6d28d9),
-            Some("rose") => (0xfb7185, 0xbe123c),
-            Some("amber") => (0xfbbf24, 0xb45309),
-            Some("teal") => (0x2dd4bf, 0x0f766e),
-            Some("magenta") => (0xe879f9, 0xa21caf),
-            _ => (0xff8964, 0xae3218),
+        let name = settings["general"]["accent"].as_str().unwrap_or("ember");
+        let (bright, deep) = accent_tones(name);
+        let accent = choose(bright, deep);
+        let primary = primary_fill(name, dark);
+        let primary_text = ink_on(primary);
+        let edge = if luminance(primary_text) > luminance(primary) {
+            rgb(0)
+        } else {
+            rgb(0xffffff)
         };
         let appearance = Appearance::read(settings);
         let surfaces = match (appearance, dark) {
@@ -191,6 +453,7 @@ impl Palette {
         ] = surfaces.map(rgb);
         Self {
             appearance,
+            dark,
             bg,
             panel,
             raised,
@@ -202,15 +465,48 @@ impl Palette {
             text,
             dim,
             faint,
-            accent: choose(accent_dark, accent_light),
-            accent_text: choose(0x200f0b, 0xfffaf1),
+            accent,
+            accent_text: ink_on(accent),
+            primary,
+            primary_text,
+            primary_hover: tint(primary, edge, 0.10),
+            primary_active: tint(primary, edge, 0.19),
+            selected: tint(side, accent, if dark { 0.15 } else { 0.10 }),
             cyan: choose(0x35c9dd, 0x096b7b),
             ok: choose(0x46d68c, 0x176b42),
             warn: choose(0xf2b544, 0x825400),
             error: choose(0xff5d73, 0xba2942),
             info: choose(0x58a6ff, 0x2265a9),
             violet: choose(0xb78cff, 0x7150a5),
+            key: choose(0x9bd5df, 0x096578),
+            string: choose(0xa6dcb6, 0x236d39),
         }
+    }
+
+    /// Closes a horizontal bar with the appearance's bottom rule: a double rule
+    /// for Ledger and a single hairline elsewhere. The double rule sits inside
+    /// the bar so every appearance keeps the same outer height.
+    pub fn underline<E: Styled + ParentElement>(&self, bar: E) -> E {
+        if self.appearance.double_rule {
+            bar.relative().child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(DOUBLE_RULE))
+                    .border_t_1()
+                    .border_b_1()
+                    .border_color(self.line),
+            )
+        } else {
+            bar.border_b_1().border_color(self.line)
+        }
+    }
+
+    /// Background of the even key-value rows when the appearance stripes them.
+    pub fn stripe(&self, index: usize) -> Option<Rgba> {
+        (self.appearance.striped_rows && index % 2 == 1).then_some(self.bg)
     }
 
     pub fn method(&self, method: &str) -> Rgba {
@@ -255,6 +551,10 @@ impl AssetSource for Icons {
             Some(
                 "viewBox=\"0 0 24 24\"><path fill=\"none\" stroke=\"white\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"M5.4 12h3l1.7-4 2.6 8 1.7-4h4.2\"/>",
             )
+        } else if name == "send" {
+            Some(
+                r#"viewBox="0 0 24 24"><path fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M21 3 3 10l7 3 3 7 8-17Zm0 0L10 13"/>"#,
+            )
         } else if name == "chevron-down" {
             Some(
                 "viewBox=\"0 0 16 16\"><path fill=\"none\" stroke=\"white\" stroke-width=\"1.3\" stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"m3.5 5.5 4.5 5.5 4.5-5.5\"/>",
@@ -278,5 +578,62 @@ impl AssetSource for Icons {
 
     fn list(&self, _: &str) -> gpui::Result<Vec<SharedString>> {
         Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn font_roles_prefer_installed_families_and_never_return_empty() {
+        let installed = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let [_, mono, serif] = fallback_families(&installed(&[CANDIDATES[1][2], CANDIDATES[2][1]]));
+        assert_eq!((mono, serif), (CANDIDATES[1][2], CANDIDATES[2][1]));
+        assert_eq!(
+            fallback_families(&installed(&["Nothing Matching"])),
+            ["sans-serif", "monospace", "serif"]
+        );
+    }
+
+    #[test]
+    fn every_appearance_keeps_the_shared_layout_budget() {
+        for appearance in [
+            Appearance::Workbench,
+            Appearance::Terminal,
+            Appearance::Studio,
+            Appearance::Ledger,
+        ] {
+            assert!(appearance.tab <= appearance.tab_strip, "{appearance:?}");
+            assert!(
+                appearance.command < appearance.tab_strip + 12.,
+                "{appearance:?}"
+            );
+            assert!(
+                appearance.gutter == 0. || appearance.pane_inset == 0.,
+                "{appearance:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn primary_labels_keep_contrast_across_accents_and_interaction_states() {
+        for name in [
+            "ember", "ocean", "mint", "violet", "rose", "amber", "teal", "magenta",
+        ] {
+            for dark in [false, true] {
+                let palette = Palette::new(&serde_json::json!({"general":{"accent":name}}), dark);
+                let ink = luminance(palette.primary_text) + 0.05;
+                for fill in [
+                    palette.primary,
+                    palette.primary_hover,
+                    palette.primary_active,
+                ] {
+                    let surface = luminance(fill) + 0.05;
+                    let ratio = ink.max(surface) / ink.min(surface);
+                    assert!(ratio >= 4.5, "{name} dark={dark}: {ratio}");
+                }
+            }
+        }
     }
 }

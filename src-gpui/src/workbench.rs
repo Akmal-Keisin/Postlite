@@ -4,6 +4,8 @@ mod backup_ui;
 mod code_ui;
 #[path = "cookies_ui.rs"]
 mod cookies_ui;
+#[path = "json_tree.rs"]
+mod json_tree;
 #[path = "layout.rs"]
 mod layout;
 #[path = "oauth_ui.rs"]
@@ -16,6 +18,12 @@ mod response_ui;
 mod session_ui;
 #[path = "settings_ui.rs"]
 mod settings_ui;
+#[path = "shortcuts.rs"]
+mod shortcuts;
+#[path = "tree_drag.rs"]
+mod tree_drag;
+#[path = "tree_menu.rs"]
+mod tree_menu;
 #[path = "variables_ui.rs"]
 mod variables_ui;
 #[path = "workspace_ui.rs"]
@@ -27,20 +35,21 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use gpui::{
     AnyWindowHandle, App, AppContext, ClickEvent, Context, Div, ElementId, Entity, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, Rgba, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, Subscription, Task, Window, div, px,
+    StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder,
+    px,
 };
 use gpui_component::{
     Disableable, Sizable,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
-    menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
+    menu::{DropdownMenu, PopupMenuItem},
 };
 use layout::{Axis, Layout};
 use serde_json::{Value, json};
 use workspace_ui::NameAction;
 
 use crate::{
-    appearance::{Palette, icon},
+    appearance::{Appearance, Palette, icon, mono},
     history, http, prepare,
     workspace::{Document, Workspace, save_isolated},
 };
@@ -48,6 +57,7 @@ use crate::{
 const METHODS: &[&str] = &[
     "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "QUERY",
 ];
+const RESPONSE_DISPLAY_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Rail {
@@ -84,6 +94,11 @@ pub(super) struct Workbench {
     search: Entity<InputState>,
     filter: String,
     body: Option<Entity<InputState>>,
+    json: Option<json_tree::JsonTree>,
+    tree_menu: Option<tree_menu::TreeMenu>,
+    json_scroll: gpui::UniformListScrollHandle,
+    html_preview: Option<SharedString>,
+    html_preview_id: usize,
     viewing_example: Option<(String, Result<http::Response, String>)>,
     panel_editor: Option<panels::FieldEditor>,
     active_rail: Rail,
@@ -106,6 +121,7 @@ pub(super) struct Workbench {
     closing: Option<AnyWindowHandle>,
     results: HashMap<RequestKey, Result<http::Response, String>>,
     pending: HashMap<RequestKey, uuid::Uuid>,
+    focus: gpui::FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -185,6 +201,11 @@ impl Workbench {
             search,
             filter: String::new(),
             body: None,
+            json: None,
+            tree_menu: None,
+            json_scroll: gpui::UniformListScrollHandle::new(),
+            html_preview: None,
+            html_preview_id: 0,
             viewing_example: None,
             panel_editor: None,
             active_rail: Rail::Collections,
@@ -207,8 +228,11 @@ impl Workbench {
             closing: None,
             results: HashMap::new(),
             pending: HashMap::new(),
+            focus: cx.focus_handle(),
             _subscriptions: vec![enter, search_change, system_theme],
         };
+        // Focus the workbench so shortcuts work before anything is clicked.
+        window.focus(&workbench.focus);
         workbench.present_active(window, cx);
         workbench
     }
@@ -278,7 +302,7 @@ impl Workbench {
                 std::fs::create_dir_all(parent)
                     .map_err(|error| format!("Could not create workspace directory: {error}"))?;
             }
-            save_isolated(&path, &document)
+            save_isolated(&path, document)
         });
         cx.spawn(async move |view, cx| {
             let result = work.await;
@@ -363,25 +387,53 @@ impl Workbench {
     }
 
     fn refresh_body(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.html_preview = (self.res_section == 2)
+            .then(|| self.response_preview())
+            .flatten();
+        if self.html_preview.is_some() {
+            self.html_preview_id = self.html_preview_id.wrapping_add(1);
+        }
+        if self.res_section > 1 {
+            self.body = None;
+            return;
+        }
+        // Pretty shows JSON objects and arrays as a foldable tree. Folds
+        // survive switching views as long as the response is the same.
+        if self.res_section == 0 {
+            let body = self
+                .active_response()
+                .and_then(|r| r.as_ref().ok())
+                .filter(|r| r.pretty.is_some())
+                .map(|r| r.wire.body.as_str());
+            match body {
+                Some(body) if self.json.as_ref().is_some_and(|tree| tree.is_from(body)) => {}
+                Some(body) => {
+                    self.json = json_tree::JsonTree::parse(body);
+                    self.json_scroll = gpui::UniformListScrollHandle::new();
+                }
+                None => self.json = None,
+            }
+            if self.json.is_some() {
+                self.body = None;
+                return;
+            }
+        }
+        let wrap = self.doc.settings["response"]["wordWrap"] != false;
         let value = self
             .active_response()
             .and_then(|r| r.as_ref().ok())
             .map(|r| {
-                if self.res_section == 0 {
-                    r.pretty.as_ref().unwrap_or(&r.wire.body)
-                } else {
-                    &r.wire.body
-                }
-                .clone()
+                let text = r.text(self.res_section == 0);
+                &text[..text.floor_char_boundary(RESPONSE_DISPLAY_BYTES)]
             });
-        if let Some(value) = value {
-            let body = self.body.get_or_insert_with(|| {
-                cx.new(|cx| InputState::new(window, cx).multi_line(true).soft_wrap(true))
-            });
-            body.update(cx, |input, cx| input.set_value(value, window, cx));
-        } else {
-            self.body = None;
-        }
+        self.body = value.map(|value| {
+            cx.new(|cx| {
+                InputState::new(window, cx)
+                    .multi_line(true)
+                    .soft_wrap(wrap)
+                    .default_value(value.to_owned())
+            })
+        });
     }
 
     fn present_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -395,13 +447,17 @@ impl Workbench {
         self.url
             .update(cx, |input, cx| input.set_value(url, window, cx));
         self.req_section = 0;
-        self.res_section = match self.doc.settings["response"]["defaultView"].as_str() {
+        self.res_section = self.default_response_section();
+        self.refresh_body(window, cx);
+        cx.notify();
+    }
+
+    fn default_response_section(&self) -> usize {
+        match self.doc.settings["response"]["defaultView"].as_str() {
             Some("raw") => 1,
             Some("preview") => 2,
             _ => 0,
-        };
-        self.refresh_body(window, cx);
-        cx.notify();
+        }
     }
 
     fn sync_url(&mut self, cx: &App) -> bool {
@@ -409,20 +465,23 @@ impl Workbench {
         let Some(tab) = self.active_request_mut() else {
             return false;
         };
-        let mut parts = url.split('?');
-        let base = parts.next().unwrap_or_default();
-        let parsed: Vec<_> = parts.next().unwrap_or_default().split('&').filter(|piece| !piece.is_empty())
-            .map(|pair| {
-                let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-                let key = crate::postman::decode_uri_component(key);
-                let description = tab["params"].as_array().into_iter().flatten().rev()
-                    .find(|row| row["key"] == key).and_then(|row| row["description"].as_str()).unwrap_or_default();
-                json!({"key":key,"value":crate::postman::decode_uri_component(value),"enabled":true,"description":description})
-            }).collect();
-        let path = crate::postman::path_variables(base, &tab["pathVars"]);
-        let mut changed = tab["url"] != base;
+        let (base, query) = prepare::split_url(url.as_ref());
+        let parsed: Vec<_> = prepare::query_pairs(query)
+            .map(|(key, value)| {
+                let description = tab["params"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .rev()
+                    .find(|row| row["key"] == key)
+                    .map_or("", |row| val(row, "description"));
+                json!({"key":key,"value":value,"enabled":true,"description":description})
+            })
+            .collect();
+        let path = crate::postman::path_variables(&base, &tab["pathVars"]);
+        let mut changed = tab["url"] != base.as_ref();
         if changed {
-            tab["url"] = json!(base);
+            tab["url"] = Value::String(base.into_owned());
         }
         if !path.is_empty() || tab.get("pathVars").is_some() {
             let path = json!(path);
@@ -571,12 +630,14 @@ impl Workbench {
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_url(cx);
-        self.viewing_example = None;
         let Some(key) = self.active_key() else {
             return;
         };
         if self.pending.contains_key(&key) {
             return;
+        }
+        if self.viewing_example.take().is_some() {
+            self.refresh_body(window, cx);
         }
         let workspace = self.workspace();
         let Some(request) = self.active_request().cloned() else {
@@ -793,55 +854,56 @@ impl Workbench {
                     }),
             );
         }
-        div()
-            .h(px(p.appearance.top()))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(16.))
-            .px(px(14.))
-            .bg(p.side)
-            .border_b_1()
-            .border_color(p.line)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(22.))
-                            .rounded(px(5.))
-                            .bg(p.accent)
-                            .child(icon("brand", p.accent_text, 24.)),
-                    )
-                    .child(
-                        div()
-                            .font_weight(FontWeight::BOLD)
-                            .font_family(p.appearance.heading_font())
-                            .text_size(px(p.appearance.title()))
-                            .child("Postlite"),
-                    ),
-            )
-            .child(context)
-            .child(div().flex_1())
-            .child(
-                Button::new("import")
-                    .outline()
-                    .small()
-                    .h(px(32.))
-                    .bg(p.raised)
-                    .child(icon("import", p.dim, 14.))
-                    .label("Import")
-                    .on_click(cx.listener(|this, _, _, cx| this.import_postman(cx))),
-            )
-            .child(
-                icon_button("settings", "gear", p.faint, p.hover, 28.)
-                    .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))),
-            )
+        p.underline(
+            div()
+                .h(px(p.appearance.top))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(16.))
+                .px(px(14.))
+                .bg(p.side),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(22.))
+                        .rounded(px(p.appearance.radius.min(5.)))
+                        .bg(p.accent)
+                        .child(icon("brand", p.accent_text, 24.)),
+                )
+                .child(
+                    div()
+                        .font_weight(FontWeight::BOLD)
+                        .font_family(p.appearance.heading_font.family())
+                        .text_size(px(p.appearance.title))
+                        .child("Postlite"),
+                ),
+        )
+        .child(context)
+        .child(div().flex_1())
+        .child(
+            Button::new("import")
+                .outline()
+                .small()
+                .h(px(p.appearance.command - 8.))
+                .rounded(px(p.appearance.radius))
+                .bg(p.raised)
+                .child(icon("import", p.dim, 14.))
+                .label("Import")
+                .on_click(cx.listener(|this, _, _, cx| this.import_postman(cx))),
+        )
+        .child(
+            icon_button("settings", "gear", p.faint, p.hover, 28.)
+                .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))),
+        )
     }
 
     fn rail(&self, cx: &mut Context<Self>) -> Div {
@@ -871,7 +933,7 @@ impl Workbench {
                 36.,
             );
             if selected {
-                button = button.bg(p.raised);
+                button = button.bg(p.selected);
             }
             rail = rail.child(button.on_click(
                 cx.listener(move |this, _, window, cx| this.switch_rail(kind, window, cx)),
@@ -886,13 +948,15 @@ impl Workbench {
             .flex()
             .items_center()
             .gap(px(2.))
-            .h(px(p.appearance.sidebar_heading()))
+            .h(px(p.appearance.sidebar_heading))
             .px(px(14.))
             .border_b_1()
             .border_color(p.line)
             .child(
                 div()
                     .font_weight(FontWeight::SEMIBOLD)
+                    .font_family(p.appearance.heading_font.family())
+                    .text_size(px(p.appearance.sidebar_title))
                     .child(self.active_rail.label()),
             )
             .child(div().flex_1());
@@ -947,8 +1011,8 @@ impl Workbench {
         let workspace = self.workspace();
         match self.active_rail {
             Rail::Collections => {
-                for collection in &workspace.collections {
-                    list = list.children(self.tree(collection, 0, cx));
+                for (index, collection) in workspace.collections.iter().enumerate() {
+                    list = list.children(self.tree(collection, 0, "", index, cx));
                 }
             }
             Rail::Environments => {
@@ -958,7 +1022,19 @@ impl Workbench {
                         continue;
                     }
                     let id = val(env, "id").to_owned();
-                    let menu = Self::resource_menu(id.clone(), name.to_owned(), false, true, cx);
+                    let targeted = self.tree_menu.as_ref().is_some_and(|menu| menu.id == id);
+                    let open_menu = {
+                        let (id, label) = (id.clone(), name.to_owned());
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.open_tree_menu(
+                                id.clone(),
+                                label.clone(),
+                                tree_menu::MenuKind::Environment,
+                                event,
+                                cx,
+                            )
+                        })
+                    };
                     list = list.child(
                         tree_row(SharedString::from(format!("env-{id}")), p, 0, false)
                             .child(icon("globe", p.accent, 15.))
@@ -970,7 +1046,10 @@ impl Workbench {
                                     cx,
                                 );
                             }))
-                            .context_menu(menu),
+                            .when(targeted, |row| {
+                                row.bg(p.hover).border_1().border_color(p.line)
+                            })
+                            .on_mouse_down(gpui::MouseButton::Right, open_menu),
                     );
                 }
             }
@@ -986,7 +1065,7 @@ impl Workbench {
                     }
                     list = list.child(
                         tree_row(("history", index), p, 0, false)
-                            .child(method_chip(method, p, 38.))
+                            .child(method_chip(method, p, 54.))
                             .child(div().truncate().child(title.to_owned()))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 let entry = &this.workspace().history[index];
@@ -1031,7 +1110,14 @@ impl Workbench {
             .clamp(180., 480.) as f32
     }
 
-    fn tree(&self, node: &Value, depth: usize, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+    fn tree(
+        &self,
+        node: &Value,
+        depth: usize,
+        parent: &str,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
         let p = &self.palette;
         let child_nodes = items(node);
         let has_filter = !self.filter.is_empty();
@@ -1040,18 +1126,32 @@ impl Workbench {
         }
         let id = val(node, "id").to_owned();
         let key = SharedString::from(format!("tree-{id}"));
-        let menu = Self::resource_menu(
-            id.clone(),
-            name(node, "Item").to_owned(),
-            child_nodes.is_some(),
-            depth == 0,
-            cx,
-        );
+        let kind = match (child_nodes.is_some(), depth) {
+            (true, 0) => tree_menu::MenuKind::Collection,
+            (true, _) => tree_menu::MenuKind::Folder,
+            _ => tree_menu::MenuKind::Request,
+        };
+        let targeted = self.tree_menu.as_ref().is_some_and(|menu| menu.id == id);
+        let open_menu = {
+            let (id, label) = (id.clone(), name(node, "Item").to_owned());
+            cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                this.open_tree_menu(id.clone(), label.clone(), kind, event, cx)
+            })
+        };
+        let drag = tree_drag::TreeDrag {
+            id: id.clone(),
+            parent: parent.to_owned(),
+            index,
+            label: name(node, "Item").to_owned(),
+            method: child_nodes.is_none().then(|| method(node).to_owned()),
+        };
         if let Some(children) = child_nodes {
             let expanded = has_filter || self.expanded.contains(&id);
             let glyph = if depth == 0 { "stack" } else { "folder" };
             let mut rows = vec![
                 tree_row(key, p, depth, false)
+                    .pl(px(2. + depth as f32 * 16.))
+                    .child(drag_grip(p))
                     .child(icon(
                         if expanded { "chevron-down" } else { "caret" },
                         p.faint,
@@ -1069,14 +1169,20 @@ impl Workbench {
                         }
                         cx.notify();
                     }))
-                    .context_menu(menu)
+                    .map(|row| self.draggable_row(row, drag, cx))
+                    .when(targeted, |row| {
+                        row.bg(p.hover).border_1().border_color(p.line)
+                    })
+                    .on_mouse_down(gpui::MouseButton::Right, open_menu)
                     .into_any_element(),
             ];
             if expanded {
+                let parent = val(node, "id");
                 rows.extend(
                     children
                         .iter()
-                        .flat_map(|child| self.tree(child, depth + 1, cx)),
+                        .enumerate()
+                        .flat_map(|(index, child)| self.tree(child, depth + 1, parent, index, cx)),
                 );
             }
             rows
@@ -1084,7 +1190,9 @@ impl Workbench {
             let selected = self.active_request().is_some_and(|req| req["id"] == id);
             vec![
                 tree_row(key, p, depth, selected)
-                    .child(method_chip(method(node), p, 34.))
+                    .pl(px(2. + depth as f32 * 16.))
+                    .child(drag_grip(p))
+                    .child(method_chip(method(node), p, 54.))
                     .child(
                         div()
                             .truncate()
@@ -1093,7 +1201,11 @@ impl Workbench {
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.open_request(&id, window, cx)),
                     )
-                    .context_menu(menu)
+                    .map(|row| self.draggable_row(row, drag, cx))
+                    .when(targeted && !selected, |row| {
+                        row.bg(p.hover).border_1().border_color(p.line)
+                    })
+                    .on_mouse_down(gpui::MouseButton::Right, open_menu)
                     .into_any_element(),
             ]
         }
@@ -1103,13 +1215,13 @@ impl Workbench {
         let p = &self.palette;
         let mut tabs = div()
             .id("request-tabs")
-            .h(px(p.appearance.tab()))
+            .h(px(p.appearance.tab_strip))
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(3.))
+            .gap(px(p.appearance.tab_gap))
             .overflow_x_scroll()
-            .px(px(7.))
+            .px(px(if p.appearance.divided_tabs { 0. } else { 7. }))
             .bg(p.side)
             .border_b_1()
             .border_color(p.line);
@@ -1131,18 +1243,53 @@ impl Workbench {
                 .id(("request-tab", index))
                 .min_w(px(118.))
                 .max_w(px(260.))
-                .h(px(33.))
+                .h(px(p.appearance.tab))
                 .flex_none()
                 .flex()
                 .items_center()
                 .gap(px(9.))
-                .px(px(8.))
-                .rounded_t(px(6.))
+                .px(px(if p.appearance == Appearance::Studio {
+                    12.
+                } else {
+                    8.
+                }))
                 .cursor_pointer()
                 .hover(|s| s.bg(p.hover));
-            if selected {
-                item = item.bg(p.panel).border_b_2().border_color(p.accent);
-            }
+            item = match p.appearance {
+                // Pills float in the strip; the active one gets an outline.
+                Appearance::Studio => item
+                    .rounded(px(p.appearance.tab_radius))
+                    .border_1()
+                    .border_color(if selected {
+                        p.line
+                    } else {
+                        Rgba { a: 0., ..p.line }
+                    })
+                    .when(selected, |item| item.bg(p.raised)),
+                // Ledger columns are ruled apart and underlined when active.
+                Appearance::Ledger => item
+                    .relative()
+                    .h_full()
+                    .px(px(12.))
+                    .border_r_1()
+                    .border_color(p.line)
+                    .when(selected, |item| {
+                        item.bg(p.panel).child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .h(px(2.))
+                                .bg(p.accent),
+                        )
+                    }),
+                _ => item
+                    .rounded_t(px(p.appearance.tab_radius))
+                    .when(selected, |item| {
+                        item.bg(p.selected).border_b_2().border_color(p.accent)
+                    }),
+            };
             item = if env {
                 item.child(icon("globe", p.cyan, 14.))
             } else {
@@ -1170,21 +1317,16 @@ impl Workbench {
     }
 
     fn address_height(&self) -> f32 {
-        use crate::appearance::Appearance;
-        self.palette.appearance.command()
-            + if self.palette.appearance == Appearance::Terminal {
-                17.
-            } else {
-                25.
-            }
+        let appearance = self.palette.appearance;
+        appearance.command + appearance.command_pad * 2. + 1.
     }
 
     fn address(&self, can_split: bool, cx: &mut Context<Self>) -> Div {
         let p = &self.palette;
         let request_method = self.active_request().map(method).unwrap_or("GET");
         let view = cx.entity().downgrade();
-        let command = p.appearance.command();
-        let radius = p.appearance.radius();
+        let command = p.appearance.command;
+        let radius = p.appearance.radius;
         let methods = Button::new("method")
             .ghost()
             .w(px(104.))
@@ -1202,85 +1344,127 @@ impl Workbench {
                 }
                 menu
             });
-        div()
-            .h(px(self.address_height()))
+        p.underline(
+            div()
+                .h(px(self.address_height()))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(if p.appearance == Appearance::Studio {
+                    8.
+                } else {
+                    7.
+                }))
+                .px(px(14.))
+                .bg(match p.appearance {
+                    Appearance::Studio => p.side,
+                    Appearance::Ledger => p.panel,
+                    _ => p.raised,
+                }),
+        )
+        .child(
+            div()
+                .h(px(command))
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .rounded(px(radius))
+                .border_1()
+                .border_color(p.line)
+                .bg(p.input)
+                .child(
+                    div()
+                        .h_full()
+                        .flex_none()
+                        .border_r_1()
+                        .border_color(p.line)
+                        .child(methods),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .px(px(4.))
+                        .font_family(mono())
+                        .child(Input::new(&self.url).appearance(false)),
+                )
+                .children(self.variable_peek(cx)),
+        )
+        .child(
+            self.request_action(
+                "send",
+                if self.is_sending() {
+                    "Sending…"
+                } else {
+                    "Send"
+                },
+                "send",
+                if self.is_sending() {
+                    p.faint
+                } else {
+                    p.primary_text
+                },
+            )
+            .primary()
+            .disabled(self.is_sending())
+            .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
+        )
+        .child(self.request_save_button(cx))
+        .child(
+            Button::new("side-by-side")
+                .ghost()
+                .small()
+                .compact()
+                .rounded(px(p.appearance.radius))
+                .label("◫  Side by side")
+                .flex_none()
+                .min_w(px(101.))
+                .disabled(!can_split)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.side_by_side = !this.side_by_side;
+                    if !this.doc.settings["gpuiLayout"].is_object() {
+                        this.doc.settings["gpuiLayout"] = json!({});
+                    }
+                    this.doc.settings["gpuiLayout"]["sideBySide"] = json!(this.side_by_side);
+                    this.changed(cx);
+                })),
+        )
+    }
+
+    fn request_action(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        glyph: &'static str,
+        ink: Rgba,
+    ) -> Button {
+        let appearance = self.palette.appearance;
+        Button::new(id)
+            .small()
+            .compact()
             .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(7.))
-            .px(px(14.))
-            .bg(p.raised)
-            .border_b_1()
-            .border_color(p.line)
+            .min_w(px(80.))
+            .px(px(12.))
+            .h(px(appearance.command - 4.))
+            .rounded(px(appearance.radius))
             .child(
                 div()
-                    .h(px(command))
-                    .flex_1()
-                    .min_w_0()
                     .flex()
                     .items_center()
-                    .rounded(px(radius))
-                    .border_1()
-                    .border_color(p.line)
-                    .bg(p.input)
-                    .child(
-                        div()
-                            .h_full()
-                            .flex_none()
-                            .border_r_1()
-                            .border_color(p.line)
-                            .child(methods),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .px(px(4.))
-                            .font_family("monospace")
-                            .child(Input::new(&self.url).appearance(false)),
-                    )
-                    .children(self.variable_peek(cx)),
-            )
-            .child(
-                Button::new("send")
-                    .primary()
-                    .label(if self.is_sending() {
-                        "Sending…"
-                    } else {
-                        "Send"
-                    })
-                    .w(px(94.))
-                    .h(px(command))
-                    .rounded(px(radius))
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::BOLD)
-                    .disabled(self.is_sending())
-                    .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
-            )
-            .child(self.request_save_button(cx))
-            .child(
-                Button::new("side-by-side")
-                    .ghost()
-                    .label("◫  Side by side")
-                    .w(px(117.))
-                    .disabled(!can_split)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.side_by_side = !this.side_by_side;
-                        if !this.doc.settings["gpuiLayout"].is_object() {
-                            this.doc.settings["gpuiLayout"] = json!({});
-                        }
-                        this.doc.settings["gpuiLayout"]["sideBySide"] = json!(this.side_by_side);
-                        this.changed(cx);
-                    })),
+                    .gap(px(5.))
+                    .text_color(ink)
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(icon(glyph, ink, 13.))
+                    .child(label),
             )
     }
 
     fn request_save_button(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let button = Button::new("save")
-            .outline()
-            .label("Save")
-            .w(px(66.))
-            .h(px(40.));
+        let button = self
+            .request_action("save", "Save", "bookmark", self.palette.text)
+            .outline();
         if let Some(collection) = self.active_collection() {
             let id = val(collection, "id").to_owned();
             return button
@@ -1360,7 +1544,7 @@ impl Workbench {
                     .py(px(4.))
                     .border_b_1()
                     .border_color(p.soft_line)
-                    .font_family("monospace");
+                    .font_family(mono());
                 for (field, label, displayed) in [
                     ("key", "Variable key", val(row, "key")),
                     ("value", "Variable value", value),
@@ -1467,7 +1651,7 @@ impl Workbench {
             + "   "
             + &count(workspace.tabs.len(), "open tab");
         div()
-            .h(px(p.appearance.status()))
+            .h(px(p.appearance.status))
             .flex_none()
             .flex()
             .items_center()
@@ -1503,8 +1687,10 @@ impl Workbench {
             .child(
                 Button::new("save-profile")
                     .outline()
-                    .small()
-                    .h(px(20.))
+                    .xsmall()
+                    .h(px(p.appearance.status - 8.))
+                    .rounded(px(p.appearance.chip_radius.min(4.)))
+                    .text_size(px(11.))
                     .label("Save now")
                     .disabled(self.storage.is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.save_profile(cx))),
@@ -1513,7 +1699,7 @@ impl Workbench {
             .child(div().flex_1())
             .child(
                 div()
-                    .font_family("monospace")
+                    .font_family(mono())
                     .child("Postlite 0.2.8 · local-first"),
             )
     }
@@ -1542,11 +1728,17 @@ impl Render for Workbench {
                 let can_split = window.viewport_size().width >= px(48. + sidebar + 840.);
                 let split = can_split && self.side_by_side;
                 let request = self.request_panel(cx);
-                let response = self.response_panel(cx);
+                let response = self.response_panel(window, cx);
                 let axis = if split { Axis::Width } else { Axis::Height };
                 let size = px(self.layout_size(axis, window));
                 let divider = self.divider(axis, window, cx);
-                let panes = div().min_h_0().min_w_0().flex_1().flex();
+                let inset = p.appearance.pane_inset;
+                let panes = div()
+                    .min_h_0()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .when(inset > 0., |panes| panes.p(px(inset)).bg(p.side));
                 let (panes, response) = if split {
                     (panes, response.flex_none().w(size).h_full())
                 } else {
@@ -1574,14 +1766,20 @@ impl Render for Workbench {
             .flex_col()
             .bg(p.bg)
             .text_color(p.text)
-            .text_size(px(13.))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.modifiers.control {
-                    match event.keystroke.key.as_str() {
-                        "enter" => this.send(window, cx),
-                        "," => this.open_settings(window, cx),
-                        _ => {}
-                    }
+            .font_family(p.appearance.body_font.family())
+            .text_size(px(p.appearance.text))
+            .track_focus(&self.focus)
+            // Capture runs before focused inputs, so text fields cannot swallow
+            // the app shortcuts.
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.tree_menu.is_some() && event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.close_tree_menu(cx);
+                    return;
+                }
+                if let Some(shortcut) = shortcuts::Shortcut::from_keystroke(&event.keystroke) {
+                    cx.stop_propagation();
+                    this.run_shortcut(shortcut, window, cx);
                 }
             }))
             .on_mouse_move(
@@ -1594,6 +1792,7 @@ impl Render for Workbench {
             .child(self.top_bar(cx))
             .child(shell.child(main))
             .child(self.status(cx))
+            .children(self.tree_menu_layer(cx))
     }
 }
 
@@ -1650,9 +1849,11 @@ fn method_chip(method: &str, p: &Palette, width: f32) -> Div {
     div()
         .w(px(width))
         .flex_none()
-        .font_family("monospace")
-        .text_size(px(11.))
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_family(mono())
+        .text_size(px(10.5))
+        .font_weight(FontWeight::BOLD)
+        .whitespace_nowrap()
+        .overflow_hidden()
         .text_color(p.method(method))
         .child(method.to_owned())
 }
@@ -1660,19 +1861,37 @@ fn method_chip(method: &str, p: &Palette, width: f32) -> Div {
 fn tree_row(id: impl Into<ElementId>, p: &Palette, depth: usize, selected: bool) -> Stateful<Div> {
     let mut row = div()
         .id(id)
-        .h(px(p.appearance.row()))
+        .h(px(p.appearance.row))
         .flex()
         .items_center()
         .gap(px(6.))
+        .group("tree-row")
         .pl(px(12. + depth as f32 * 16.))
         .pr(px(6.))
-        .rounded(px(5.))
+        .rounded(px(p.appearance.row_radius))
+        .when(p.appearance.ruled_rows, |row| {
+            row.border_b_1().border_color(p.soft_line)
+        })
         .cursor_pointer()
         .hover(|s| s.bg(p.hover));
     if selected {
-        row = row.bg(p.raised);
+        row = row.bg(p.selected);
     }
     row
+}
+
+/// The six-dot handle that appears on hover to show a row can be dragged.
+fn drag_grip(p: &Palette) -> Div {
+    div()
+        .w(px(10.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .opacity(0.)
+        .group_hover("tree-row", |style| style.opacity(1.))
+        .cursor_grab()
+        .child(icon("grip", p.faint, 12.))
 }
 
 fn icon_button(

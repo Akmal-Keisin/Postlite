@@ -175,6 +175,10 @@ cargo tauri build
 
 The UI is a static folder embedded at build time. Edits to `ui/` need a rebuild before they show up in the packaged app.
 
+### Native GPUI build (experimental)
+
+`src-gpui/` holds a native port of the desktop app built with GPUI, which starts faster and uses less memory than the Tauri build. It has its own requirements and install steps for Linux, macOS, and Windows. See [src-gpui/README.md](src-gpui/README.md#install).
+
 ---
 
 ## Where your data lives

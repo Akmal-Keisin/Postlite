@@ -397,14 +397,66 @@ fn prepare_url(authored: &str, path_vars: &Value, vars: &Vars<'_>) -> String {
     )
 }
 
-fn append_query(url: &mut String, pairs: impl Iterator<Item = (String, String)>) {
+pub(crate) fn split_url(raw: &str) -> (Cow<'_, str>, &str) {
+    let (address, fragment) = raw.split_once('#').unwrap_or((raw, ""));
+    let Some((base, query)) = address.split_once('?') else {
+        return (Cow::Borrowed(raw), "");
+    };
+    let base = if address.len() < raw.len() {
+        Cow::Owned(format!("{base}#{fragment}"))
+    } else {
+        Cow::Borrowed(base)
+    };
+    (base, query)
+}
+
+pub(crate) fn query_pairs(query: &str) -> impl Iterator<Item = (String, String)> + '_ {
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (decode_uri_component(key), decode_uri_component(value))
+        })
+}
+
+fn decode_uri_component(raw: &str) -> String {
+    if !raw.contains('%') {
+        return raw.to_owned();
+    }
+    let mut decoded = Vec::with_capacity(raw.len());
+    let mut bytes = raw.bytes();
+    let hex = |byte: u8| char::from(byte).to_digit(16).map(|digit| digit as u8);
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let (Some(high), Some(low)) = (bytes.next().and_then(hex), bytes.next().and_then(hex))
+            else {
+                return raw.to_owned();
+            };
+            decoded.push(high * 16 + low);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    String::from_utf8(decoded).unwrap_or_else(|_| raw.to_owned())
+}
+
+pub(crate) fn append_query(url: &mut String, pairs: impl Iterator<Item = (String, String)>) {
+    let mut pairs = pairs.filter(|(key, _)| !trim(key).is_empty()).peekable();
+    if pairs.peek().is_none() {
+        return;
+    }
+    let fragment = url.find('#').map(|index| url.split_off(index));
     let mut separator = if url.contains('?') { '&' } else { '?' };
-    for (key, value) in pairs.filter(|(key, _)| !trim(key).is_empty()) {
+    for (key, value) in pairs {
         url.push(separator);
         url.push_str(&encode_component(&key));
         url.push('=');
         url.push_str(&encode_component(&value));
         separator = '&';
+    }
+    if let Some(fragment) = fragment {
+        url.push_str(&fragment);
     }
 }
 

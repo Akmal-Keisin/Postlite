@@ -53,7 +53,7 @@ impl Axis {
             .map(|value| value as f32)
     }
 
-    fn write(self, settings: &mut Value, value: Option<f32>) {
+    pub(super) fn write(self, settings: &mut Value, value: Option<f32>) {
         if self == Self::Sidebar {
             settings["sidebarWidth"] = json!(value.unwrap_or(276.));
             return;
@@ -198,9 +198,9 @@ impl Workbench {
             }
             Axis::Height => {
                 f32::from(viewport.height)
-                    - appearance.top()
-                    - appearance.status()
-                    - appearance.tab()
+                    - appearance.top
+                    - appearance.status
+                    - appearance.tab_strip
                     - self.address_height()
             }
         }

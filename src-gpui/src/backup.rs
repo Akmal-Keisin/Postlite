@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use crate::workspace::{self, Document};
 
 pub fn export(document: &Document) -> Value {
-    let mut payload = document.snapshot();
+    let mut payload = document.clone().into_snapshot();
     if let Some(workspaces) = payload["workspaces"].as_array_mut() {
         for workspace in workspaces {
             workspace["history"] = json!([]);

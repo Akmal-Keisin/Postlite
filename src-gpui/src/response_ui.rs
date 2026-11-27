@@ -2,7 +2,8 @@ use super::Workbench;
 use crate::{appearance::icon, http::Response, workspace_edit};
 use base64::Engine;
 use gpui::{
-    AppContext, Context, Div, ParentElement, StatefulInteractiveElement, Styled, Window, div, px,
+    AppContext, Context, Div, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    Window, div, px,
 };
 use gpui_component::{
     Sizable, WindowExt,
@@ -10,9 +11,24 @@ use gpui_component::{
     input::{Input, InputState},
     menu::{DropdownMenu, PopupMenuItem},
 };
+use html5ever::{parse_document, tendril::TendrilSink};
+use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use serde_json::{Value, json};
 
+const MAX_PREVIEW_NODES: usize = 2048;
+
 impl Workbench {
+    pub(super) fn response_preview(&self) -> Option<SharedString> {
+        let wire = &self.active_response()?.as_ref().ok()?.wire;
+        if !content_type(wire).is_some_and(is_html)
+            || wire.truncated
+            || wire.body.len() > 256 * 1024
+        {
+            return None;
+        }
+        safe_html(&wire.body).map(Into::into)
+    }
+
     pub(super) fn request_examples(&self, cx: &mut Context<Self>) -> Div {
         let p = &self.palette;
         let mut actions = div().flex().items_center().gap(px(4.));
@@ -161,15 +177,11 @@ impl Workbench {
             return;
         };
         let wire = &response.wire;
-        let suffix = wire
-            .headers
-            .iter()
-            .find(|header| header.key.eq_ignore_ascii_case("content-type"))
-            .map(|header| header.value.split(';').next().unwrap_or_default())
-            .map(|mime| match mime {
+        let suffix = content_type(wire)
+            .map(|mime| match mime.to_ascii_lowercase().as_str() {
                 "application/json" => "json",
                 "application/pdf" => "pdf",
-                "text/html" => "html",
+                "text/html" | "application/xhtml+xml" => "html",
                 "application/xml" | "text/xml" => "xml",
                 "image/png" => "png",
                 "image/jpeg" => "jpg",
@@ -211,6 +223,76 @@ impl Workbench {
     }
 }
 
+pub(super) fn is_html(mime: &str) -> bool {
+    mime.eq_ignore_ascii_case("text/html") || mime.eq_ignore_ascii_case("application/xhtml+xml")
+}
+
+pub(super) fn content_type(wire: &postlite_core::ResponsePayload) -> Option<&str> {
+    wire.headers
+        .iter()
+        .find(|header| header.key.eq_ignore_ascii_case("content-type"))
+        .and_then(|header| header.value.split(';').next())
+        .map(str::trim)
+}
+
+fn safe_html(source: &str) -> Option<String> {
+    let parsed = parse_document(RcDom::default(), Default::default()).one(source);
+    let mut output = String::new();
+    let mut remaining = MAX_PREVIEW_NODES;
+    write_preview_node(&parsed.document, &mut output, 0, &mut remaining)?;
+    Some(output)
+}
+
+fn write_preview_node(
+    node: &Handle,
+    output: &mut String,
+    depth: usize,
+    remaining: &mut usize,
+) -> Option<()> {
+    *remaining = remaining.checked_sub(1)?;
+    if depth >= 32 {
+        return Some(());
+    }
+    let tag = match &node.data {
+        NodeData::Element { name, .. } => match name.local.as_ref() {
+            "head" | "script" | "style" | "template" | "noscript" | "iframe" | "object" => {
+                return Some(());
+            }
+            tag @ ("h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "blockquote" | "ul"
+            | "ol" | "li" | "pre" | "code" | "br" | "hr" | "em" | "i" | "strong" | "b"
+            | "s" | "del" | "table" | "thead" | "tbody" | "tr" | "th" | "td") => Some(tag),
+            _ => None,
+        },
+        NodeData::Document => None,
+        NodeData::Text { contents } => {
+            for character in contents.borrow().chars() {
+                match character {
+                    '&' => output.push_str("&amp;"),
+                    '<' => output.push_str("&lt;"),
+                    '>' => output.push_str("&gt;"),
+                    _ => output.push(character),
+                }
+            }
+            return Some(());
+        }
+        _ => return Some(()),
+    };
+    if let Some(tag) = tag {
+        output.push('<');
+        output.push_str(tag);
+        output.push('>');
+    }
+    for child in node.children.borrow().iter() {
+        write_preview_node(child, output, depth + 1, remaining)?;
+    }
+    if let Some(tag) = tag.filter(|tag| !matches!(*tag, "br" | "hr")) {
+        output.push_str("</");
+        output.push_str(tag);
+        output.push('>');
+    }
+    Some(())
+}
+
 fn example_response(example: &Value) -> Response {
     let body = example["body"].as_str().unwrap_or_default().to_owned();
     let pretty = crate::http::pretty(&body, example["truncated"] == true);
@@ -228,5 +310,47 @@ fn example_response(example: &Value) -> Response {
             error: None,
             note: example["note"].as_str().map(str::to_owned),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn html_preview_preserves_content_and_discards_active_markup() {
+        let result = super::safe_html(
+            r#"<head><title>Hidden title</title></head><h1>Report &amp; summary</h1>
+            <strong>Bold</strong><script>hidden script</script><style>hidden style</style>
+            <a href="file:///private">Link label</a><img src="https://example.test/image">
+            <p onclick="evil()">&lt;img src=escaped&gt;</p>"#,
+        )
+        .unwrap();
+        for expected in [
+            "<h1>Report &amp; summary</h1>",
+            "<strong>Bold</strong>",
+            "Link label",
+            "<p>&lt;img src=escaped&gt;</p>",
+        ] {
+            assert!(result.contains(expected), "missing {expected} in {result}");
+        }
+        for excluded in [
+            "Hidden title",
+            "hidden script",
+            "hidden style",
+            "file://",
+            "https://",
+            "onclick",
+            "<img",
+        ] {
+            assert!(
+                !result.contains(excluded),
+                "unexpected {excluded} in {result}"
+            );
+        }
+    }
+
+    #[test]
+    fn html_preview_rejects_excessive_element_counts() {
+        let source = "<p>x</p>".repeat(super::MAX_PREVIEW_NODES);
+        assert!(super::safe_html(&source).is_none());
     }
 }

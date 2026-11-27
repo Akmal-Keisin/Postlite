@@ -164,21 +164,14 @@ fn export_item(node: &Value) -> Value {
     }
     let mut raw = text(node, "url", "").to_owned();
     let query = rows(&node["params"])
-        .filter(|row| row["enabled"] != false && !string_value(&row["key"]).trim().is_empty())
+        .filter(|row| row["enabled"] != false)
         .map(|row| {
-            use crate::prepare::encode_component;
-            format!(
-                "{}={}",
-                encode_component(&string_value(&row["key"])),
-                encode_component(&string_value(&row["value"]))
+            (
+                string_value(&row["key"]).into_owned(),
+                string_value(&row["value"]).into_owned(),
             )
-        })
-        .collect::<Vec<_>>()
-        .join("&");
-    if !query.is_empty() {
-        raw.push(if raw.contains('?') { '&' } else { '?' });
-        raw.push_str(&query);
-    }
+        });
+    crate::prepare::append_query(&mut raw, query);
     let mut url = json!({"raw":raw,"query":rows(&node["params"]).map(|row| export_row(row, true)).collect::<Vec<_>>()});
     if let Some(path) = node["pathVars"].as_array().filter(|vars| !vars.is_empty()) {
         url["variable"] = json!(
@@ -479,24 +472,6 @@ fn import_items(items: &[Value], skipped: &mut usize, inherited_unsupported: boo
     result
 }
 
-pub(crate) fn decode_uri_component(raw: &str) -> String {
-    let mut decoded = Vec::with_capacity(raw.len());
-    let mut bytes = raw.bytes();
-    let hex = |byte: u8| char::from(byte).to_digit(16).map(|digit| digit as u8);
-    while let Some(byte) = bytes.next() {
-        if byte == b'%' {
-            let (Some(high), Some(low)) = (bytes.next().and_then(hex), bytes.next().and_then(hex))
-            else {
-                return raw.to_owned();
-            };
-            decoded.push(high * 16 + low);
-        } else {
-            decoded.push(byte);
-        }
-    }
-    String::from_utf8(decoded).unwrap_or_else(|_| raw.to_owned())
-}
-
 fn import_query(raw: &str, structured: &Value) -> Vec<Value> {
     if let Some(query) = structured.as_array() {
         return query
@@ -513,19 +488,8 @@ fn import_query(raw: &str, structured: &Value) -> Vec<Value> {
             })
             .collect();
     }
-    raw.split('&')
-        .filter(|pair| !pair.is_empty())
-        .map(|pair| {
-            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-            normal_row(
-                json!(decode_uri_component(key)),
-                json!(decode_uri_component(value)),
-                true,
-                false,
-                "",
-                "text",
-            )
-        })
+    crate::prepare::query_pairs(raw)
+        .map(|(key, value)| normal_row(json!(key), json!(value), true, false, "", "text"))
         .collect()
 }
 
@@ -558,9 +522,8 @@ fn import_request(item: &Value) -> Value {
         .as_str()
         .or_else(|| url.as_str())
         .unwrap_or_else(|| text(url, "raw", ""));
-    let mut parts = raw_url.split('?');
-    let base = parts.next().unwrap_or_default();
-    let query = import_query(parts.next().unwrap_or_default(), &url["query"]);
+    let (base, query) = crate::prepare::split_url(raw_url);
+    let query = import_query(query, &url["query"]);
     let headers = if request["header"].is_array() {
         rows(&request["header"])
             .filter(|row| truthy(&row["key"]))
@@ -592,7 +555,7 @@ fn import_request(item: &Value) -> Value {
     json!({
         "kind": "request", "id": new_id(), "name": field(item, "name", "Request"),
         "method": text(request, "method", "GET").to_uppercase(), "url": base,
-        "params": query, "pathVars": path_variables(base, &url["variable"]),
+        "params": query, "pathVars": path_variables(&base, &url["variable"]),
         "body": import_body(&request["body"], &headers), "headers": headers,
         "auth": import_auth(&request["auth"], "inherit"), "scripts": import_events(&item["event"]),
         "examples": examples,

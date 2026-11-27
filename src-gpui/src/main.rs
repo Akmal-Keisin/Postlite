@@ -69,6 +69,7 @@ fn main() {
         .with_assets(appearance::Icons)
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
+            appearance::load_fonts(cx);
             let bounds = Bounds::centered(None, size(px(1240.), px(820.)), cx);
             cx.open_window(
                 WindowOptions {
@@ -78,6 +79,8 @@ fn main() {
                     }),
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(1080.), px(600.))),
+                    // Matches the installed desktop entry so launchers show its icon.
+                    app_id: Some("app.postlite.gpui".into()),
                     ..Default::default()
                 },
                 move |window, cx| {

@@ -140,11 +140,6 @@ impl Found {
             }
         }
         let data = self.data.join("&");
-        if self.get && !data.is_empty() {
-            self.url
-                .push(if self.url.contains('?') { '&' } else { '?' });
-            self.url.push_str(&data);
-        }
         let method = self.method.unwrap_or_else(|| {
             if self.get || data.is_empty() && self.form.is_empty() {
                 "GET"
@@ -191,18 +186,14 @@ impl Found {
         } else {
             json!({"mode":"none"})
         };
-        let mut url = self.url.split('?');
-        let base = url.next().unwrap_or_default();
-        let params: Vec<_> = url
-            .next()
-            .unwrap_or_default()
-            .split('&')
-            .filter(|pair| !pair.is_empty())
-            .map(|pair| {
-                let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-                json!({"key":crate::postman::decode_uri_component(key),
-                "value":crate::postman::decode_uri_component(value),"enabled":true})
-            })
+        let (base, query) = crate::prepare::split_url(&self.url);
+        let params: Vec<_> = crate::prepare::query_pairs(query)
+            .chain(crate::prepare::query_pairs(if self.get {
+                &data
+            } else {
+                ""
+            }))
+            .map(|(key, value)| json!({"key":key,"value":value,"enabled":true}))
             .collect();
         self.ignored.extend(self.notes);
         Ok(Import {
@@ -401,6 +392,19 @@ mod tests {
         assert_eq!(parsed["headers"][0]["value"], "it's \"valid\"");
         assert_eq!(parsed["body"]["form"][1]["type"], "file");
         assert_eq!(parsed["body"]["form"][1]["value"], "/tmp/file name.txt");
+    }
+
+    #[test]
+    fn imported_query_keeps_question_marks_and_stays_before_the_fragment() {
+        let import = import("curl 'https://example.test/path?next=/a?b=c#details'").unwrap();
+        assert_eq!(import.request["url"], "https://example.test/path#details");
+        assert_eq!(import.request["params"][0]["value"], "/a?b=c");
+        let sent =
+            crate::prepare::prepare(&import.request, None, &[], None, &Value::Null, "").unwrap();
+        assert_eq!(
+            sent["url"],
+            "https://example.test/path?next=%2Fa%3Fb%3Dc#details"
+        );
     }
 
     #[test]

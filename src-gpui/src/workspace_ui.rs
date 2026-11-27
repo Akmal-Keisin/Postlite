@@ -7,7 +7,6 @@ use gpui_component::{
     Sizable, WindowExt,
     button::{Button, ButtonVariants},
     input::{Input, InputState},
-    menu::{PopupMenu, PopupMenuItem},
 };
 use serde_json::{Value, json};
 use std::path::Path;
@@ -245,7 +244,7 @@ impl Workbench {
         }
     }
 
-    fn variable_dialog(&self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn variable_dialog(&self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, cx| {
             let Some(view) = weak.upgrade() else {
@@ -555,88 +554,6 @@ impl Workbench {
         file_name.push_str(".json");
         self.save_document(document, &file_name, cx);
     }
-
-    pub(super) fn resource_menu(
-        id: String,
-        label: String,
-        folder: bool,
-        export: bool,
-        cx: &Context<Self>,
-    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
-        let view = cx.entity().downgrade();
-        move |mut menu, _, _| {
-            let identifier = id.clone();
-            let text = label.clone();
-            let target = view.clone();
-            menu = menu.item(PopupMenuItem::new("Rename").on_click(move |_, window, cx| {
-                let _ = target.update(cx, |this, cx| {
-                    this.ask_name(
-                        "Rename",
-                        NameAction::Rename(identifier.clone()),
-                        &text,
-                        window,
-                        cx,
-                    )
-                });
-            }));
-            if folder {
-                let target = view.clone();
-                let source = id.clone();
-                menu = menu.item(PopupMenuItem::new("OAuth 2.0 settings").on_click(
-                    move |_, window, cx| {
-                        let _ = target.update(cx, |this, cx| {
-                            if let Some(node) = find_node(&this.workspace().collections, &source) {
-                                this.edit_parent_oauth(
-                                    &source,
-                                    &node["auth"]["oauth2"],
-                                    window,
-                                    cx,
-                                );
-                            }
-                        });
-                    },
-                ));
-                let entity = view.clone();
-                let source = id.clone();
-                menu = menu.item(
-                    PopupMenuItem::new("Variables").on_click(move |_, window, cx| {
-                        let _ = entity.update(cx, |this, cx| {
-                            this.variable_dialog(source.clone(), window, cx)
-                        });
-                    }),
-                );
-                let target = view.clone();
-                let parent = id.clone();
-                menu = menu.item(PopupMenuItem::new("New folder").on_click(
-                    move |_, window, cx| {
-                        let _ = target.update(cx, |this, cx| {
-                            this.ask_name(
-                                "New folder",
-                                NameAction::Folder(parent.clone()),
-                                "",
-                                window,
-                                cx,
-                            )
-                        });
-                    },
-                ));
-            }
-            if export {
-                let identifier = id.clone();
-                let target = view.clone();
-                menu = menu.item(PopupMenuItem::new("Export").on_click(move |_, _, cx| {
-                    let _ = target.update(cx, |this, cx| this.export_resource(&identifier, cx));
-                }));
-            }
-            let target = view.clone();
-            let identifier = id.clone();
-            menu.item(PopupMenuItem::new("Delete").on_click(move |_, window, cx| {
-                let _ = target.update(cx, |this, cx| {
-                    this.remove_resource(identifier.clone(), window, cx)
-                });
-            }))
-        }
-    }
 }
 
 enum Import {
@@ -660,7 +577,7 @@ fn import_path(path: &Path) -> Result<Import, String> {
     result.map_err(|error| format!("{}: {error}", path.display()))
 }
 
-fn find_node<'a>(nodes: &'a [Value], id: &str) -> Option<&'a Value> {
+pub(super) fn find_node<'a>(nodes: &'a [Value], id: &str) -> Option<&'a Value> {
     nodes.iter().find_map(|node| {
         if node["id"] == id {
             Some(node)

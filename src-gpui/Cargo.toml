@@ -9,6 +9,8 @@ gpui = "=0.2.2"
 gpui-component = "=0.5.1"
 base64 = "0.22"
 chrono = "0.4"
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
 postlite-core = { path = "../postlite-core" }
 rand = "0.9"
 regex = "1"

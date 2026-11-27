@@ -14,6 +14,16 @@ pub struct Response {
     pub pretty: Option<String>,
 }
 
+impl Response {
+    pub fn text(&self, pretty: bool) -> &str {
+        if pretty {
+            self.pretty.as_deref().unwrap_or(&self.wire.body)
+        } else {
+            &self.wire.body
+        }
+    }
+}
+
 pub struct Session {
     pub cookies: JarManager,
     pub secrets: Arc<Secrets>,
@@ -180,6 +190,50 @@ mod tests {
             .filter_map(|line| line.split_once(':'))
             .find(|(key, _)| key.eq_ignore_ascii_case(name))
             .map_or("", |(_, value)| value.trim())
+    }
+
+    #[test]
+    fn counts_large_chunked_response_and_keeps_only_the_capped_binary_bytes() {
+        const CHUNK_BYTES: usize = 64 * 1024;
+        const CHUNKS: usize = 256;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let timeout = Some(std::time::Duration::from_secs(5));
+            stream.set_read_timeout(timeout).unwrap();
+            stream.set_write_timeout(timeout).unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() != 0 && line != "\r\n" {
+                line.clear();
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            let chunk = [0xff; CHUNK_BYTES];
+            for _ in 0..CHUNKS {
+                write!(stream, "{CHUNK_BYTES:x}\r\n").unwrap();
+                stream.write_all(&chunk).unwrap();
+                stream.write_all(b"\r\n").unwrap();
+            }
+            stream.write_all(b"0\r\n\r\n").unwrap();
+        });
+        let session = Arc::new(Session::memory_only());
+        let response = runtime().unwrap().block_on(session.dispatch(
+            json!({"method":"GET","url":url,"headers":[],"settings":{"max_response_size_kb":1}}),
+            None,
+        )).unwrap().wire;
+        assert_eq!(response.status, 200);
+        assert_eq!(response.size_bytes, CHUNK_BYTES * CHUNKS);
+        assert!(response.truncated);
+        assert_eq!(
+            postlite_core::b64_decode(response.body_b64.as_deref().unwrap()).unwrap(),
+            [0xff; 1024]
+        );
+        server.join().unwrap();
     }
 
     #[test]

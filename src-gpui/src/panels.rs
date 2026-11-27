@@ -4,17 +4,18 @@ pub(super) use edit::FieldEditor;
 use edit::FieldTarget;
 
 use super::Workbench;
-use crate::appearance::{Palette, icon};
+use crate::appearance::{Appearance, Palette, icon, mono};
 use gpui::{
     AnyElement, Bounds, ClipboardItem, Context, Div, FontWeight, Hsla, InteractiveElement,
-    IntoElement, ParentElement, Rgba, Stateful, StatefulInteractiveElement, Styled, canvas, div,
-    fill, point, px, size,
+    IntoElement, ParentElement, Rgba, Stateful, StatefulInteractiveElement, Styled, Window, canvas,
+    div, fill, point, prelude::FluentBuilder, px, size,
 };
 use gpui_component::{
     Sizable,
     button::Button,
     input::Input,
     menu::{DropdownMenu, PopupMenuItem},
+    text::TextView,
 };
 use serde_json::{Value, json};
 
@@ -106,24 +107,19 @@ impl Workbench {
             .min_h_0()
             .overflow_hidden()
             .bg(palette.panel)
+            .map(|pane| inset_pane(pane, palette))
             .child(
                 panel_head("Request", palette)
                     .child(div().flex_1())
                     .child(
-                        toolbar_label("Cookies", palette)
-                            .id("cookies-drawer")
-                            .cursor_pointer()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_cookies(window, cx)),
-                            ),
+                        toolbar_label("cookies-drawer", "Cookies", palette).on_click(
+                            cx.listener(|this, _, window, cx| this.open_cookies(window, cx)),
+                        ),
                     )
                     .child(
-                        toolbar_label("Code", palette)
-                            .id("code-drawer")
-                            .cursor_pointer()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_code(window, cx)),
-                            ),
+                        toolbar_label("code-drawer", "Code", palette).on_click(
+                            cx.listener(|this, _, window, cx| this.open_code(window, cx)),
+                        ),
                     ),
             )
             .child(tabs)
@@ -140,34 +136,75 @@ impl Workbench {
             )
     }
 
-    pub(super) fn response_panel(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn response_panel(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let palette = &self.palette;
         let response = self.active_response();
         let wire = response
             .and_then(|response| response.as_ref().ok())
             .map(|response| &response.wire);
-        let stage =
-            match response {
-                Some(Err(error)) => idle_response(Some(error), palette),
-                Some(Ok(response)) => match self.res_section {
-                    2 => centered_message("HTML and PDF previews are still being ported.", palette),
-                    3 => response_headers(&response.wire.headers, self.mask_secrets, palette),
-                    4 => centered_message("No tests ran for this response.", palette),
-                    _ => div()
+        let stage = match response {
+            Some(Err(error)) => idle_response(Some(error), palette),
+            Some(Ok(response)) => match self.res_section {
+                2 => match &self.html_preview {
+                    Some(html) => div()
+                        .id("response-preview")
                         .flex_1()
                         .min_h_0()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .font_family("monospace")
-                        .text_size(px(12.))
-                        .children(self.body.as_ref().map(|state| {
-                            Input::new(state).h_full().appearance(false).disabled(true)
-                        }))
+                        .overflow_y_scroll()
+                        .p(px(14.))
+                        .child(
+                            TextView::html(
+                                ("response-html", self.html_preview_id),
+                                html.clone(),
+                                window,
+                                cx,
+                            )
+                            .selectable(true)
+                            .h_auto(),
+                        )
                         .into_any_element(),
+                    None => {
+                        use super::response_ui::{content_type, is_html};
+                        let message = match content_type(&response.wire) {
+                            Some(mime) if mime.eq_ignore_ascii_case("application/pdf") => {
+                                "Save the response to open it as a PDF."
+                            }
+                            Some(mime) if is_html(mime) => {
+                                "This HTML response is too large to preview. Open Raw or save the response."
+                            }
+                            _ => "Preview is available for HTML responses.",
+                        };
+                        centered_message(message, palette)
+                    }
                 },
-                _ if self.is_sending() => centered_message("Sending request…", palette),
-                _ => idle_response(None, palette),
-            };
+                3 => response_headers(&response.wire.headers, self.mask_secrets, palette),
+                4 => centered_message("No tests ran for this response.", palette),
+                0 if self.json.is_some() => self
+                    .json_view(cx)
+                    .map(IntoElement::into_any_element)
+                    .unwrap_or_else(|| div().into_any_element()),
+                _ => div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .children(self.body.as_ref().map(|state| {
+                        Input::new(state)
+                            .h_full()
+                            .appearance(false)
+                            .disabled(true)
+                            .font_family(mono())
+                            .text_size(px(12.))
+                    }))
+                    .into_any_element(),
+            },
+            _ if self.is_sending() => centered_message("Sending request…", palette),
+            _ => idle_response(None, palette),
+        };
 
         let (status, color) = match response {
             Some(Ok(response)) => (
@@ -198,23 +235,30 @@ impl Workbench {
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .font_family("monospace")
+                .font_family(mono())
                 .text_size(px(11.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(color)
                 .bg(status_bg)
                 .border_1()
                 .border_color(status_border)
-                .rounded(px(6.))
+                .rounded(px(palette.appearance.chip_radius))
                 .px(px(7.))
                 .py(px(2.))
                 .child(div().size(px(6.)).rounded_full().bg(color))
                 .child(status),
         );
         if let Some(wire) = wire {
+            let settings = &self.doc.settings["response"];
             head = head
-                .child(metric(format!("{} ms", wire.elapsed_ms), palette))
-                .child(metric(format_size(wire.size_bytes), palette));
+                .children(
+                    (settings["showTime"] != false)
+                        .then(|| metric(format!("{} ms", wire.elapsed_ms), palette)),
+                )
+                .children(
+                    (settings["showSize"] != false)
+                        .then(|| metric(format_size(wire.size_bytes), palette)),
+                );
             if let Some(note) = &wire.note {
                 head = head.child(
                     div()
@@ -278,11 +322,11 @@ impl Workbench {
             .id("response-panel")
             .flex()
             .flex_col()
-            .flex_1()
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
             .bg(palette.bg)
+            .map(|pane| inset_pane(pane, palette))
             .child(head)
             .children(self.example_banner(cx))
             .child(section_tabs(
@@ -293,8 +337,33 @@ impl Workbench {
                 palette,
                 cx,
             ))
-            .child(stage)
-            .children(wire.filter(|wire| wire.truncated).map(|_| {
+            .child(if palette.appearance.gutter > 0. {
+                // Ledger rules a margin down the left of the response body.
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(
+                        div()
+                            .w(px(palette.appearance.gutter))
+                            .flex_none()
+                            .bg(palette.line),
+                    )
+                    .child(div().flex_1().min_w_0().min_h_0().flex().flex_col().child(stage))
+                    .into_any_element()
+            } else {
+                stage.into_any_element()
+            })
+            .children(response.and_then(|response| response.as_ref().ok()).and_then(|response| {
+                let limited_display = self.res_section <= 1
+                    && response.text(self.res_section == 0).len() > super::RESPONSE_DISPLAY_BYTES;
+                match (limited_display, response.wire.truncated) {
+                        (true, true) => Some("Showing the first 512 KiB. The capture reached the configured size limit."),
+                        (true, false) => Some("Showing the first 512 KiB. Copy or save to get the full captured body."),
+                    (false, true) => Some("Response truncated at the configured size limit."),
+                    _ => None,
+                }
+            }).map(|notice| {
                 div()
                     .border_t_1()
                     .border_color(palette.line)
@@ -303,8 +372,19 @@ impl Workbench {
                     .bg(palette.raised)
                     .text_size(px(12.))
                     .text_color(palette.warn)
-                    .child("Response truncated at the configured size limit.")
+                    .child(notice)
             }))
+    }
+}
+
+/// Studio floats its panes as rounded cards inside the workbench.
+fn inset_pane<E: Styled>(pane: E, palette: &Palette) -> E {
+    if palette.appearance.pane_inset > 0. {
+        pane.rounded(px(palette.appearance.pane_radius))
+            .border_1()
+            .border_color(palette.line)
+    } else {
+        pane
     }
 }
 
@@ -312,19 +392,22 @@ fn panel_head(title: &'static str, palette: &Palette) -> Div {
     div()
         .flex()
         .items_center()
-        .h(px(match palette.appearance {
-            crate::appearance::Appearance::Terminal => 32.,
-            crate::appearance::Appearance::Studio => 43.,
-            _ => 39.,
-        }))
+        .h(px(palette.appearance.pane_head))
         .flex_shrink_0()
         .min_w_0()
-        .px(px(14.))
+        .px(px(if palette.appearance.pane_inset > 0. {
+            16.
+        } else {
+            14.
+        }))
         .gap(px(10.))
+        .when(palette.appearance.divided_tabs, |head| {
+            head.border_b_1().border_color(palette.line)
+        })
         .child(
             div()
-                .font_family(palette.appearance.heading_font())
-                .text_size(px(palette.appearance.heading()))
+                .font_family(palette.appearance.heading_font.family())
+                .text_size(px(palette.appearance.heading))
                 .font_weight(FontWeight::BOLD)
                 .text_color(palette.text)
                 .child(title),
@@ -339,12 +422,13 @@ fn section_tabs(
     palette: &Palette,
     cx: &mut Context<Workbench>,
 ) -> Stateful<Div> {
+    let studio = palette.appearance == Appearance::Studio;
     div()
         .id(panel)
         .flex()
         .items_center()
-        .h(px(42.))
-        .gap(px(2.))
+        .h(px(palette.appearance.section_tabs))
+        .gap(px(if studio { 4. } else { 2. }))
         .flex_shrink_0()
         .px(px(14.))
         .border_b_1()
@@ -361,15 +445,24 @@ fn section_tabs(
                         .relative()
                         .flex()
                         .items_center()
-                        .h_full()
                         .flex_shrink_0()
                         .px(px(11.))
                         .gap(px(5.))
                         .cursor_pointer()
-                        .text_size(px(13.))
+                        .map(|tab| {
+                            if studio {
+                                // Studio swaps the underline for a soft pill.
+                                tab.h(px(28.))
+                                    .rounded_full()
+                                    .when(selected == index, |tab| tab.bg(palette.selected))
+                            } else {
+                                tab.h_full()
+                            }
+                        })
+                        .text_size(px(palette.appearance.text))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(if selected == index {
-                            palette.text
+                            palette.accent
                         } else {
                             palette.dim
                         })
@@ -380,7 +473,7 @@ fn section_tabs(
                                     this.panel_editor = None;
                                     this.req_section = index;
                                 }
-                            } else {
+                            } else if this.res_section != index {
                                 this.res_section = index;
                                 this.refresh_body(window, cx);
                             }
@@ -390,16 +483,21 @@ fn section_tabs(
                         .children((count > 0).then(|| {
                             div()
                                 .rounded_full()
-                                .bg(palette.hover)
+                                .bg(if selected == index {
+                                    palette.selected
+                                } else {
+                                    palette.hover
+                                })
                                 .border_1()
                                 .border_color(palette.line)
+                                .rounded(px(palette.appearance.chip_radius))
                                 .px(px(5.))
                                 .text_size(px(10.5))
-                                .font_family("monospace")
+                                .font_family(mono())
                                 .text_color(palette.dim)
                                 .child(count.to_string())
                         }))
-                        .children((selected == index).then(|| {
+                        .children((selected == index && !studio).then(|| {
                             div()
                                 .absolute()
                                 .bottom(px(0.))
@@ -413,9 +511,16 @@ fn section_tabs(
         )
 }
 
-fn toolbar_label(label: &'static str, palette: &Palette) -> Div {
+fn toolbar_label(id: &'static str, label: &'static str, palette: &Palette) -> Stateful<Div> {
     div()
-        .px(px(6.))
+        .id(id)
+        .h(px(25.))
+        .flex()
+        .items_center()
+        .px(px(7.))
+        .rounded(px(5.))
+        .cursor_pointer()
+        .hover(|style| style.bg(palette.selected).text_color(palette.accent))
         .text_size(px(12.))
         .text_color(palette.faint)
         .child(label)
@@ -424,7 +529,7 @@ fn toolbar_label(label: &'static str, palette: &Palette) -> Div {
 fn metric(label: String, palette: &Palette) -> Div {
     div()
         .text_size(px(11.))
-        .font_family("monospace")
+        .font_family(mono())
         .text_color(palette.dim)
         .child(label)
 }
@@ -448,7 +553,10 @@ fn add_caption(
             .id(label)
             .py(px(8.))
             .text_size(px(13.))
-            .text_color(palette.cyan)
+            .text_color(palette.accent)
+            .px(px(8.))
+            .rounded(px(5.))
+            .hover(|style| style.bg(palette.selected))
             .cursor_pointer()
             .on_click(
                 cx.listener(move |this, _, window, cx| this.add_request_row(table, window, cx)),
@@ -465,7 +573,7 @@ fn code_surface(text: &str, min_height: f32, palette: &Palette) -> Div {
         .rounded(px(6.))
         .bg(palette.input)
         .p_2()
-        .font_family("monospace")
+        .font_family(mono())
         .text_size(px(12.))
         .text_color(palette.text)
         .child(text.to_owned())
@@ -770,10 +878,11 @@ fn kv_table(
         let mut element = div()
             .flex()
             .items_center()
-            .h(px(32.))
+            .h(px(palette.appearance.kv_row))
+            .when_some(palette.stripe(index), |row, stripe| row.bg(stripe))
             .border_b_1()
             .border_color(palette.soft_line)
-            .font_family("monospace")
+            .font_family(mono())
             .text_size(px(12.))
             .text_color(if enabled { palette.text } else { palette.faint });
         if is_path {
@@ -877,9 +986,17 @@ fn checkbox(checked: bool, palette: &Palette) -> Div {
                 .size(px(14.))
                 .rounded(px(4.))
                 .border_1()
-                .border_color(if checked { palette.text } else { palette.line })
-                .bg(if checked { palette.text } else { palette.input })
-                .children(checked.then(|| icon("check", palette.input, 10.))),
+                .border_color(if checked {
+                    palette.accent
+                } else {
+                    palette.line
+                })
+                .bg(if checked {
+                    palette.accent
+                } else {
+                    palette.input
+                })
+                .children(checked.then(|| icon("check", palette.accent_text, 10.))),
         )
 }
 
@@ -904,7 +1021,7 @@ fn response_headers(
         .overflow_y_scroll()
         .px(px(14.))
         .py(px(8.))
-        .font_family("monospace")
+        .font_family(mono())
         .text_size(px(12.))
         .children(headers.iter().map(|header| {
             div()
@@ -968,7 +1085,7 @@ fn idle_response(error: Option<&str>, palette: &Palette) -> AnyElement {
             .child(
                 div()
                     .max_w_full()
-                    .font_family("monospace")
+                    .font_family(mono())
                     .text_size(px(12.))
                     .text_color(palette.error)
                     .child(error.to_owned()),
@@ -980,30 +1097,42 @@ fn idle_response(error: Option<&str>, palette: &Palette) -> AnyElement {
                     .child("Check the URL, connection, and TLS settings, then send again."),
             )
     } else {
-        card.child(icon("braces", palette.accent, 27.))
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("No response yet"),
-            )
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(palette.dim)
-                    .child("Send a request: status, timing, and body land here."),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .mt(px(6.))
-                    .text_size(px(11.))
-                    .text_color(palette.faint)
-                    .child(keycap("Ctrl", palette))
-                    .child("+")
-                    .child(keycap("↵", palette))
-                    .child(" to send"),
-            )
+        card.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(40.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(translucent(palette.accent, 0.28))
+                .bg(palette.selected)
+                .child(icon("braces", palette.accent, 23.)),
+        )
+        .child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("No response yet"),
+        )
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(palette.dim)
+                .child("Send a request to inspect its response."),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(3.))
+                .mt(px(2.))
+                .text_size(px(11.))
+                .text_color(palette.faint)
+                .child(keycap("Ctrl", palette))
+                .child("+")
+                .child(keycap("↵", palette))
+                .child(" to send"),
+        )
     };
     div()
         .relative()
@@ -1026,7 +1155,7 @@ fn keycap(text: &'static str, palette: &Palette) -> Div {
         .border_color(palette.line)
         .bg(palette.hover)
         .px(px(5.))
-        .font_family("monospace")
+        .font_family(mono())
         .text_color(palette.dim)
         .child(text)
 }

@@ -17,7 +17,7 @@ use postlite_core::session::{CookieFilter, CookieRow, CookieSnapshot};
 
 use super::Workbench;
 use crate::{
-    appearance::{MONO, Palette, icon},
+    appearance::{Palette, icon, mono},
     http::Session,
 };
 
@@ -216,7 +216,7 @@ impl CookieDrawer {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .font_family(MONO)
+                            .font_family(mono())
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(row.name.clone()),
                     )
@@ -252,7 +252,7 @@ impl CookieDrawer {
                             .flex_1()
                             .min_w_0()
                             .whitespace_normal()
-                            .font_family(MONO)
+                            .font_family(mono())
                             .rounded(px(5.))
                             .border_1()
                             .border_color(palette.line)
@@ -314,7 +314,7 @@ impl CookieDrawer {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .font_family(MONO)
+                            .font_family(mono())
                             .child(row.path.clone()),
                     )
                     .child(div().flex_none().child(expiry)),
@@ -384,7 +384,7 @@ impl Render for CookieDrawer {
                 div().flex().items_center().gap(px(8.)).px(px(8.)).py(px(4.))
                     .bg(palette.raised).rounded(px(5.)).border_1().border_color(palette.line)
                     .child(div().text_color(palette.dim).child("Domain"))
-                    .child(div().flex_1().min_w_0().truncate().font_family(MONO).child(domain.clone()))
+                    .child(div().flex_1().min_w_0().truncate().font_family(mono()).child(domain.clone()))
                     .child(Button::new("cookie-filter-clear").ghost().small().tooltip("Show all domains")
                         .child(icon("x", palette.faint, 14.))
                         .on_click(cx.listener(|drawer, _, _, cx| {
@@ -410,7 +410,7 @@ impl Render for CookieDrawer {
                                     .rounded(px(5.)).text_color(header_color).cursor_pointer()
                                     .hover(|style| style.bg(palette.hover))
                                     .child(icon("globe", header_color, 14.))
-                                    .child(div().flex_1().min_w_0().truncate().font_family(MONO)
+                                    .child(div().flex_1().min_w_0().truncate().font_family(mono())
                                         .font_weight(FontWeight::SEMIBOLD).child(domain.clone()))
                                     .child(rows.len().to_string())
                                     .on_click(cx.listener(move |drawer, _, _, cx| {
@@ -444,7 +444,7 @@ fn chip(label: &str, color: Rgba, palette: &Palette) -> Div {
         .bg(palette.raised)
         .text_color(color)
         .text_size(px(10.5))
-        .font_family(MONO)
+        .font_family(mono())
         .px(px(5.))
         .child(label.to_owned())
 }

@@ -4591,6 +4591,8 @@ dependencies = [
  "chrono",
  "gpui",
  "gpui-component",
+ "html5ever",
+ "markup5ever_rcdom",
  "postlite-core",
  "rand 0.9.5",
  "regex",

@@ -214,15 +214,23 @@ fn workspace_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("workspace.json"))
 }
 
-#[tauri::command]
+// Keep workspace disk I/O and IPC serialization off the GTK event thread.
+#[cfg_attr(target_os = "linux", tauri::command(async))]
+#[cfg_attr(not(target_os = "linux"), tauri::command)]
 fn load_workspace(app: AppHandle) -> Option<String> {
     workspace_file(&app)
         .ok()
         .and_then(|path| std::fs::read_to_string(path).ok())
 }
 
-#[tauri::command]
+#[cfg_attr(target_os = "linux", tauri::command(async))]
+#[cfg_attr(not(target_os = "linux"), tauri::command)]
 fn save_workspace(app: AppHandle, state: String) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let _save = {
+        static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        SAVE.lock().map_err(|error| error.to_string())?
+    };
     let path = workspace_file(&app)?;
     let staging = path.with_extension("json.staging");
     // Proxy credentials belong to the global store, never to the portable workspace file (§8).

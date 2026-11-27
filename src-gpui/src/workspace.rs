@@ -1,7 +1,7 @@
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -56,12 +56,12 @@ pub fn load(path: &Path) -> Result<Document, String> {
     parse(document).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-pub fn save_isolated(path: &Path, document: &Document) -> Result<(), String> {
+pub fn save_isolated(path: &Path, document: Document) -> Result<(), String> {
     save(path, document, default_workspace_path().as_deref())
         .map_err(|error| format!("Could not save workspace at {}: {error}", path.display()))
 }
 
-fn save(path: &Path, document: &Document, read_only: Option<&Path>) -> io::Result<()> {
+fn save(path: &Path, document: Document, read_only: Option<&Path>) -> io::Result<()> {
     let file_name = path.file_name().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -80,11 +80,13 @@ fn save(path: &Path, document: &Document, read_only: Option<&Path>) -> io::Resul
         ));
     }
 
-    let (staging, mut file) = new_staging_file(&directory)?;
-    let result = serde_json::to_writer(&mut file, &document.snapshot())
+    let (staging, file) = new_staging_file(&directory)?;
+    let mut writer = BufWriter::new(file);
+    let result = serde_json::to_writer(&mut writer, &document.into_snapshot())
         .map_err(io::Error::other)
-        .and_then(|_| file.sync_all());
-    drop(file);
+        .and_then(|_| writer.flush())
+        .and_then(|_| writer.get_ref().sync_all());
+    drop(writer);
     let result = result.and_then(|_| fs::rename(&staging, &target));
     if result.is_err() {
         let _ = fs::remove_file(staging);
@@ -220,23 +222,16 @@ impl Workspace {
         })
     }
 
-    fn snapshot(&self) -> Value {
-        let mut snapshot = self.extra.clone();
-        snapshot.insert("id".to_owned(), Value::String(self.id.clone()));
-        snapshot.insert("name".to_owned(), Value::String(self.name.clone()));
-        snapshot.insert(
-            "collections".to_owned(),
-            Value::Array(self.collections.clone()),
-        );
-        snapshot.insert(
-            "environments".to_owned(),
-            Value::Array(self.environments.clone()),
-        );
-        snapshot.insert("history".to_owned(), Value::Array(self.history.clone()));
+    fn into_snapshot(self) -> Value {
+        let mut snapshot = self.extra;
+        snapshot.insert("id".to_owned(), Value::String(self.id));
+        snapshot.insert("name".to_owned(), Value::String(self.name));
+        snapshot.insert("collections".to_owned(), Value::Array(self.collections));
+        snapshot.insert("environments".to_owned(), Value::Array(self.environments));
+        snapshot.insert("history".to_owned(), Value::Array(self.history));
 
         // A session that was disabled at load can still have saved tabs worth retaining.
         if !self.tabs.is_empty() || !snapshot.contains_key("tabs") {
-            snapshot.insert("tabs".to_owned(), Value::Array(self.tabs.clone()));
             let active = self.active_tab.filter(|index| *index < self.tabs.len());
             snapshot.insert(
                 "activeTabIndex".to_owned(),
@@ -249,14 +244,15 @@ impl Workspace {
                     .cloned()
                     .unwrap_or(Value::Null),
             );
+            snapshot.insert("tabs".to_owned(), Value::Array(self.tabs));
         }
         Value::Object(snapshot)
     }
 }
 
 impl Document {
-    pub(crate) fn snapshot(&self) -> Value {
-        let mut snapshot = self.extra.clone();
+    pub(crate) fn into_snapshot(self) -> Value {
+        let mut snapshot = self.extra;
         if snapshot
             .get("version")
             .and_then(Value::as_u64)
@@ -264,7 +260,7 @@ impl Document {
         {
             snapshot.insert("version".to_owned(), Value::from(2));
         }
-        snapshot.insert("settings".to_owned(), self.settings.clone());
+        snapshot.insert("settings".to_owned(), self.settings);
         let active = self
             .workspaces
             .get(self.active_workspace)
@@ -275,7 +271,12 @@ impl Document {
         );
         snapshot.insert(
             "workspaces".to_owned(),
-            Value::Array(self.workspaces.iter().map(Workspace::snapshot).collect()),
+            Value::Array(
+                self.workspaces
+                    .into_iter()
+                    .map(Workspace::into_snapshot)
+                    .collect(),
+            ),
         );
         let mut snapshot = Value::Object(snapshot);
         strip_session_credentials(&mut snapshot);
@@ -598,7 +599,7 @@ mod tests {
         })).unwrap()).unwrap();
         let mut document = load(&file).unwrap();
         document.workspaces[0].name = "After".to_owned();
-        save_isolated(&file, &document).unwrap();
+        save_isolated(&file, document).unwrap();
 
         let saved: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
         assert_eq!(saved["version"], 3);
@@ -640,7 +641,7 @@ mod tests {
             "activeTabId":"old-tab"
         }))
         .unwrap();
-        save_isolated(&file, &document).unwrap();
+        save_isolated(&file, document).unwrap();
 
         let saved: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
         assert_eq!(saved["version"], 2);
@@ -659,16 +660,16 @@ mod tests {
         fs::write(&live, b"existing Tauri data").unwrap();
 
         let document = Document::default();
-        assert!(save(&live, &document, Some(&live)).is_err());
-        assert!(save(&profile.join("another.json"), &document, Some(&live)).is_err());
+        assert!(save(&live, document.clone(), Some(&live)).is_err());
+        assert!(save(&profile.join("another.json"), document.clone(), Some(&live)).is_err());
         #[cfg(unix)]
         {
             let alias = dir.0.join("alias");
             std::os::unix::fs::symlink(&profile, &alias).unwrap();
-            assert!(save(&alias.join("workspace.json"), &document, Some(&live)).is_err());
+            assert!(save(&alias.join("workspace.json"), document.clone(), Some(&live)).is_err());
             let alias = dir.0.join("workspace.json");
             std::os::unix::fs::symlink(&live, &alias).unwrap();
-            assert!(save(&alias, &document, Some(&live)).is_err());
+            assert!(save(&alias, document, Some(&live)).is_err());
         }
         assert_eq!(fs::read(&live).unwrap(), b"existing Tauri data");
         assert_eq!(fs::read_dir(&profile).unwrap().count(), 1);
@@ -713,7 +714,7 @@ mod tests {
                 "oauth2": {"clientSecret": "secret", "clientId": "client"}
             }}]
         })).unwrap();
-        let snapshot = doc.snapshot();
+        let snapshot = doc.into_snapshot();
         assert_eq!(
             snapshot["settings"]["request"]["proxy"],
             json!({"mode": "manual"})
@@ -729,7 +730,7 @@ mod tests {
         let dir = TempDir::new();
         let file = dir.0.join("workspace.json");
         fs::create_dir(&file).unwrap();
-        assert!(save_isolated(&file, &Document::default()).is_err());
+        assert!(save_isolated(&file, Document::default()).is_err());
         assert!(file.is_dir());
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
     }

@@ -21,3 +21,5 @@ docs/
 
 # Brainstorm mockups for design discussions (local review artifacts too).
 .superpowers/
+
+graphify-out/

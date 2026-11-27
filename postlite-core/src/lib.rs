@@ -402,12 +402,14 @@ pub async fn run_request<J: reqwest::cookie::CookieStore + 'static>(
         preview.extend_from_slice(&chunk[..remaining.min(chunk.len())]);
     }
     let truncated = size_bytes > max_body_bytes;
-    let body = String::from_utf8_lossy(&preview).to_string();
     // Text bodies are exact in `body` (lossy of valid UTF-8 is identity); only
     // binary content needs the base64 escape hatch for byte-faithful saves.
-    let body_b64 = match std::str::from_utf8(&preview) {
-        Ok(_) => None,
-        Err(_) => Some(b64_encode(&preview)),
+    let (body, body_b64) = match String::from_utf8(preview) {
+        Ok(body) => (body, None),
+        Err(error) => (
+            String::from_utf8_lossy(error.as_bytes()).into_owned(),
+            Some(b64_encode(error.as_bytes())),
+        ),
     };
 
     ResponsePayload {
